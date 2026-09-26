@@ -1,0 +1,27 @@
+{
+  "name": "@skynote/core",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SkyNote platform-neutral in-memory canvas kernel & standard protocols",
+  "license": "Apache-2.0",
+  "sideEffects": false,
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./protocols": {
+      "types": "./src/protocols/index.ts",
+      "import": "./src/protocols/index.ts"
+    },
+    "./utils": {
+      "types": "./src/utils/index.ts",
+      "import": "./src/utils/index.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -70,3 +70,6 @@ export type PathFillRule = 'nonzero' | 'evenodd';
 
 /** 容器与文本内边距规范：支持统一单值，或四边独立设定 [上, 右, 下, 左] */
 export type TextPadding = number | [number, number, number, number];
+
+/** 容器图元溢出裁剪模式 */
+export type OverflowMode = 'visible' | 'hidden';

@@ -22,7 +22,8 @@ import type {
   TextDecorationLine,
   TextWrap,
   ImageFit,
-  PathFillRule
+  PathFillRule,
+  OverflowMode
 } from '../types';
 
 export type {
@@ -40,11 +41,22 @@ export type {
   TextDecorationLine,
   TextWrap,
   ImageFit,
-  PathFillRule
+  PathFillRule,
+  OverflowMode
 };
 
 /** 基础图元类型辨识符 */
-export type CanvasPrimitiveKind = 'rect' | 'text' | 'circle' | 'path' | 'line' | 'image';
+export type CanvasPrimitiveKind =
+  | 'rect'
+  | 'text'
+  | 'circle'
+  | 'ellipse'
+  | 'polygon'
+  | 'path'
+  | 'line'
+  | 'image'
+  | 'group'
+  | 'box';
 
 /** 矩形图元 */
 export interface RectPrimitive {
@@ -99,9 +111,44 @@ export interface CirclePrimitive {
   cy: number;
   r: number;
   fill?: string;
+  fillOpacity?: number;
   stroke?: string;
   strokeWidth?: number;
   strokeDashArray?: number[];
+  opacity?: number;
+}
+
+/** 椭圆图元 (双轴半径，支持流程图起止符与任意倾角) */
+export interface EllipsePrimitive {
+  kind: 'ellipse';
+  id?: string;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  rotation?: number;
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeDashArray?: number[];
+  opacity?: number;
+}
+
+/** 闭合多边形图元 (流程图菱形判断框、三角形、正多边形，支持自动闭合与顶点倒圆角) */
+export interface PolygonPrimitive {
+  kind: 'polygon';
+  id?: string;
+  points: number[];
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeDashArray?: number[];
+  strokeCap?: StrokeCap;
+  strokeJoin?: StrokeJoin;
+  /** 顶点倒圆角平滑半径 */
+  cornerRadius?: number;
   opacity?: number;
 }
 
@@ -111,6 +158,7 @@ export interface PathPrimitive {
   id?: string;
   d: string;
   fill?: string;
+  fillOpacity?: number;
   fillRule?: PathFillRule;
   stroke?: string;
   strokeWidth?: number;
@@ -151,11 +199,51 @@ export interface ImagePrimitive {
   opacity?: number;
 }
 
+/** 复合图元组 (支持局部坐标系嵌套与整体透明度，无自身外观) */
+export interface GroupPrimitive {
+  kind: 'group';
+  id?: string;
+  x?: number;
+  y?: number;
+  rotation?: number;
+  opacity?: number;
+  children: CanvasPrimitive[];
+}
+
+/** 盒模型内容容器图元 (拥有自身矩形外观、尺寸、圆角与溢出裁剪，对标 LeaferJS Box 与 Figma Frame) */
+export interface BoxPrimitive {
+  kind: 'box';
+  id?: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fill?: string;
+  fillOpacity?: number;
+  stroke?: string;
+  strokeWidth?: number;
+  strokeDashArray?: number[];
+  strokeCap?: StrokeCap;
+  strokeJoin?: StrokeJoin;
+  strokeAlign?: StrokeAlign;
+  /** 圆角半径：当 overflow 为 'hidden' 时连同圆角内胆一同裁剪 */
+  radius?: CornerRadius;
+  /** 容器内容溢出控制：'visible' (默认溢出可见) | 'hidden' (超出矩形/圆角区域自动裁切) */
+  overflow?: OverflowMode;
+  rotation?: number;
+  opacity?: number;
+  children: CanvasPrimitive[];
+}
+
 /** 跨引擎通用基础图元联合类型 */
 export type CanvasPrimitive =
   | RectPrimitive
   | TextPrimitive
   | CirclePrimitive
+  | EllipsePrimitive
+  | PolygonPrimitive
   | PathPrimitive
   | LinePrimitive
-  | ImagePrimitive;
+  | ImagePrimitive
+  | GroupPrimitive
+  | BoxPrimitive;

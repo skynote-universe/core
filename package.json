@@ -8,7 +8,8 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "exports": {
     ".": {
@@ -30,6 +31,22 @@
     "./state": {
       "types": "./src/state/index.ts",
       "import": "./src/state/index.ts"
+    },
+    "./registry": {
+      "types": "./src/registry/index.ts",
+      "import": "./src/registry/index.ts"
+    },
+    "./spatial": {
+      "types": "./src/spatial/index.ts",
+      "import": "./src/spatial/index.ts"
+    },
+    "./input": {
+      "types": "./src/input/index.ts",
+      "import": "./src/input/index.ts"
+    },
+    "./plugin": {
+      "types": "./src/plugin/index.ts",
+      "import": "./src/plugin/index.ts"
     }
   },
   "publishConfig": {

@@ -122,6 +122,20 @@ export class DocumentStore {
         };
     }
 
+    /**
+     * O(1) 瞬时查询单个节点实体 (只读引用)
+     */
+    getNode(id: string): Readonly<NodeEntity> | undefined {
+        return this.entityStore.getNode(id)?.entity;
+    }
+
+    /**
+     * O(1) 瞬时查询单个连线实体 (只读引用)
+     */
+    getConnector(id: string): Readonly<ConnectorEntity> | undefined {
+        return this.entityStore.getConnector(id)?.entity;
+    }
+
     // ================= 便捷语义操作辅助函数 =================
 
     /**

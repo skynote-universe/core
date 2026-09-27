@@ -13,4 +13,10 @@ export * from './protocols';
 export * from './utils';
 export * from './operation';
 export * from './state';
+export * from './registry';
+export * from './spatial';
+export * from './input';
+export * from './plugin';
+export * from './engine';
+
 

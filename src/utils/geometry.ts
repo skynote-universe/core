@@ -124,3 +124,75 @@ export function computeViewportToFitBounds(
     zoom
   };
 }
+
+/**
+ * 构造带有转弯圆角平滑过渡的折线 SVG 路径指令 (M ... L ... Q ...)
+ * 
+ * 设计考量 (Why):
+ * 1. 纯函数铁律：严格纯数学计算，零修改入参，支持正交路由、多段折线或用户手动拐点。
+ * 2. 动态自适应截断：圆角半径 r = min(cornerRadius, d1/2, d2/2)，防止超短线段发生圆角反向穿透畸变。
+ * 3. 刀锋锐利切线：通过二阶贝塞尔曲线以原拐点为控制手柄，完美契合切线连续性 (C1 连续)。
+ * 
+ * @param points 折线有序顶点集合 (至少 2 个点)
+ * @param cornerRadius 拐点最大圆角半径 (若 <= 0 则生成直角直线路径)
+ */
+export function buildRoundedPolylinePath(
+  points: readonly Point[],
+  cornerRadius = 0
+): string {
+  if (points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  if (points.length === 2 || cornerRadius <= 0) {
+    let path = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 1; i < points.length; i++) {
+      path += ` L ${points[i].x} ${points[i].y}`;
+    }
+    return path;
+  }
+
+  let path = `M ${points[0].x} ${points[0].y}`;
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+
+    const v1x = prev.x - curr.x;
+    const v1y = prev.y - curr.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+
+    const d1 = Math.sqrt(v1x * v1x + v1y * v1y);
+    const d2 = Math.sqrt(v2x * v2x + v2y * v2y);
+
+    // 若相邻点重合，退化为普通直线连接
+    if (d1 < 1e-4 || d2 < 1e-4) {
+      path += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    // 向量叉积：判定是否三点共线
+    const cross = v1x * v2y - v1y * v2x;
+    if (Math.abs(cross) < 1e-4) {
+      path += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    // 钳位最大圆角，防止相邻线段长度不足时发生互相侵入重叠
+    const r = Math.min(cornerRadius, d1 / 2, d2 / 2);
+
+    // 切入点与切出点
+    const c1x = curr.x + (v1x / d1) * r;
+    const c1y = curr.y + (v1y / d1) * r;
+    const c2x = curr.x + (v2x / d2) * r;
+    const c2y = curr.y + (v2y / d2) * r;
+
+    path += ` L ${c1x} ${c1y} Q ${curr.x} ${curr.y}, ${c2x} ${c2y}`;
+  }
+
+  const last = points[points.length - 1];
+  path += ` L ${last.x} ${last.y}`;
+
+  return path;
+}
+

@@ -11,6 +11,7 @@
 export interface CanvasKeyboardEvent {
   readonly key: string;
   readonly code: string;
+  readonly keyCode?: number;
   readonly shiftKey: boolean;
   readonly altKey: boolean;
   readonly ctrlKey: boolean;

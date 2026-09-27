@@ -11,13 +11,20 @@ import type { CanvasPointerEvent, CanvasWheelEvent } from './events.protocol';
 import type { NodeTypeDefinition } from './node-type.protocol';
 import type { InputScope } from './input-scope.protocol';
 import type { ArrowMarkerDefinition } from './arrow-marker.protocol';
-import type { CanvasDocumentView } from '../types/canvas';
+import type { ConnectorRouterDefinition } from './connector-router.protocol';
+import type { CanvasDocumentView, NodeEntity, ConnectorEntity } from '../types';
 import type { CommitOperationOptions } from '../types/operation';
 
 /** 暴露给插件消费的画布上下文 API */
 export interface CanvasPluginContext {
   /** 获取当前只读文档快照 */
   getDocument(): CanvasDocumentView;
+
+  /** O(1) 瞬时查询单个节点实体 (只读) */
+  getNode(id: string): Readonly<NodeEntity> | undefined;
+
+  /** O(1) 瞬时查询单个连线实体 (只读) */
+  getConnector(id: string): Readonly<ConnectorEntity> | undefined;
 
   /**
    * 提交原子事务变更
@@ -31,8 +38,19 @@ export interface CanvasPluginContext {
   /** 注册连线端点自定义箭头标记 */
   registerArrowMarker(definition: ArrowMarkerDefinition): void;
 
+  /** 注册连线寻路算法定义 */
+  registerConnectorRouter(definition: ConnectorRouterDefinition): void;
+
   /** 注册键盘快捷键作用域 */
   registerInputScope(scope: InputScope): () => void;
+
+  /** 注册指针与滚轮交互监听 (返回解绑注销函数，支持 priority 优先级排序) */
+  registerPointerHooks(hooks: {
+    onPointerDown?(e: CanvasPointerEvent): void;
+    onPointerMove?(e: CanvasPointerEvent): void;
+    onPointerUp?(e: CanvasPointerEvent): void;
+    onWheel?(e: CanvasWheelEvent): void;
+  }, priority?: number): () => void;
 }
 
 /**

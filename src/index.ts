@@ -11,3 +11,6 @@
 export * from './types';
 export * from './protocols';
 export * from './utils';
+export * from './operation';
+export * from './state';
+

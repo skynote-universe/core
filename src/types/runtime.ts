@@ -10,8 +10,8 @@
  */
 
 import type { Point } from './canvas';
-import type { NodeEntity } from './node';
-import type { ConnectorEntity } from './connector';
+import type { NodeEntity, NodeStyle } from './node';
+import type { ConnectorEntity, ConnectorStyle } from './connector';
 import type { RectBounds } from '../utils/geometry';
 
 /** 节点纯内存运行时元数据 */
@@ -32,7 +32,7 @@ export interface NodeRuntimeState {
  */
 export interface RuntimeNode<
   TData = Record<string, unknown>,
-  TStyle extends Record<string, unknown> = Record<string, unknown>
+  TStyle extends NodeStyle = NodeStyle
 > {
   /** 纯净的持久化实体模型 (单一事实源) */
   readonly entity: NodeEntity<TData, TStyle>;
@@ -76,7 +76,7 @@ export interface ConnectorRuntimeState {
  */
 export interface RuntimeConnector<
   TData = Record<string, unknown>,
-  TStyle extends Record<string, unknown> = Record<string, unknown>
+  TStyle extends ConnectorStyle = ConnectorStyle
 > {
   /** 纯净的持久化连线模型 (单一事实源) */
   readonly entity: ConnectorEntity<TData, TStyle>;

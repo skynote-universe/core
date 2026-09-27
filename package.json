@@ -7,6 +7,9 @@
   "sideEffects": false,
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
   "exports": {
     ".": {
       "types": "./src/index.ts",
@@ -19,6 +22,14 @@
     "./utils": {
       "types": "./src/utils/index.ts",
       "import": "./src/utils/index.ts"
+    },
+    "./operation": {
+      "types": "./src/operation/index.ts",
+      "import": "./src/operation/index.ts"
+    },
+    "./state": {
+      "types": "./src/state/index.ts",
+      "import": "./src/state/index.ts"
     }
   },
   "publishConfig": {

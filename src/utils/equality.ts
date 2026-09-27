@@ -7,6 +7,8 @@
  * 2. 脏检查加速：在 Patch 生成与 Diff 阶段，避免无变化的属性产生无意义的原子操作，节约 80% 的协同广播流量。
  */
 
+export const isEqual = areStructuredValuesEqual;
+
 export function areStructuredValuesEqual(
   left: unknown,
   right: unknown,

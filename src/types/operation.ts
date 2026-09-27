@@ -1,11 +1,16 @@
 /**
  * @file operation.ts
- * @description SkyNote 原子操作 (Patch)、事务提交管道与历史快照规范
+ * @description SkyNote 正交原子操作 (Patch)、事务提交管道与历史快照规范
  * 
  * 设计考量 (Why):
  * 1. 状态流转红线：严禁在外部就地对实体对象进行属性赋值（如 node.x = 100），所有改动必须通过 commitOperation() 提交。
- * 2. 协同 Undo 隔离：引入 origin 字段 ('local' | 'remote')，协同网络同步来的远端 Patch 不会污染本地 Undo 历史栈。
- * 3. 严格可逆性：每条原子 Patch 必须具备对偶的 inversePatch，保证撤销/重做可以在微秒级精准回滚。
+ * 2. 现代正交原子四元组：彻底消灭 RFC 6902 中 add/replace 的二义性，收敛为 'set' | 'unset' | 'splice' | 'text'。
+ *    - set:    属性赋值/更新 (存在则替换，不存在则新增；支持 merge: true 字典增量浅合并)
+ *    - unset:  属性/字段移除
+ *    - splice: 有序列表切片 (增删插，针对 Array)
+ *    - text:   文本差量 (Delta 级操作，防止多人协同打字冲刷)
+ * 3. 协同 Undo 隔离：引入 origin 字段 ('local' | 'remote')，协同网络同步来的远端 Patch 绝不污染本地 Undo 历史栈。
+ * 4. 严格对偶可逆性：每条原子 Patch 均具备精准的 inversePatch，实现微秒级瞬时回滚，杜绝深拷贝内存雪崩。
  */
 
 /** 操作发起来源分类 */
@@ -15,10 +20,9 @@ export type CanvasOperationSource = 'user' | 'system' | 'plugin' | 'collab';
 export type CanvasOperationOrigin = 'local' | 'remote';
 
 /**
- * 现代画布原子补丁操作动词 (对标 RFC 6902 + RFC 7396 + 集合切片)
- * 剔除死动词 'move'，由 'splice' 统一处理集合调序与增删
+ * 现代无限画布正交原子操作集
  */
-export type CanvasPatchOp = 'replace' | 'merge' | 'splice' | 'add' | 'remove' | 'test';
+export type CanvasPatchOp = 'set' | 'unset' | 'splice' | 'text';
 
 /**
  * 补丁寻址路径规范
@@ -27,27 +31,38 @@ export type CanvasPatchOp = 'replace' | 'merge' | 'splice' | 'add' | 'remove' | 
  */
 export type CanvasPatchPath = string | readonly (string | number)[];
 
-/** 1. 属性替换补丁 (最常用: 移动、改尺寸、改颜色) */
-export interface ReplacePatch<TValue = unknown> {
-  readonly op: 'replace';
+/**
+ * 1. 属性赋值与更新补丁 (最常用: 移动、改尺寸、改颜色、字典合并)
+ * 替代旧版 replace, add 以及 merge
+ */
+export interface SetPatch<TValue = unknown> {
+  readonly op: 'set';
   readonly path: CanvasPatchPath;
-  /** 替换后的新值 (必填，编译期防呆) */
+  /** 写入的新值 */
   readonly value: TValue;
-  /** 逆向回滚的旧值 (用于瞬时反向撤销) */
+  /**
+   * 是否采用字典增量浅合并 (默认 false 为直接覆盖赋值)
+   * 当 value 为普通键值对象且 merge 为 true 时，相当于 Object.assign 增量合并
+   */
+  readonly merge?: boolean;
+  /** 逆向回滚的旧值 (用于瞬时反向撤销，由内核自动推导或显式传入) */
   readonly oldValue?: TValue;
 }
 
-/** 2. 字典增量浅合并补丁 (高频样式、业务数据微调，防协同冲刷) */
-export interface MergePatch<TValue extends object = Record<string, unknown>> {
-  readonly op: 'merge';
+/**
+ * 2. 属性/键名移除补丁
+ * 对应 delete target[key]
+ */
+export interface UnsetPatch<TValue = unknown> {
+  readonly op: 'unset';
   readonly path: CanvasPatchPath;
-  /** 增量合并的字典对象 (必填) */
-  readonly value: TValue;
-  /** 逆向回滚的旧值字典 */
-  readonly oldValue?: Partial<TValue>;
+  /** 逆向回滚时的删除前旧值 */
+  readonly oldValue?: TValue;
 }
 
-/** 3. 数组/列表切片补丁 (图层调序、富文本段落增删) */
+/**
+ * 3. 数组/列表切片补丁 (图层调序、节点列表增删)
+ */
 export interface SplicePatch<TItem = unknown> {
   readonly op: 'splice';
   readonly path: CanvasPatchPath;
@@ -61,45 +76,40 @@ export interface SplicePatch<TItem = unknown> {
   readonly deletedItems?: readonly TItem[];
 }
 
-/** 4. 属性/实体新增补丁 */
-export interface AddPatch<TValue = unknown> {
-  readonly op: 'add';
-  readonly path: CanvasPatchPath;
-  /** 新增的值 (必填) */
-  readonly value: TValue;
-}
+/** 文本差量原子操作 (Delta Op) */
+export type TextDeltaOp =
+  | { readonly retain: number }
+  | { readonly insert: string; readonly attributes?: Record<string, unknown> }
+  | { readonly delete: number };
 
-/** 5. 属性/实体删除补丁 */
-export interface RemovePatch<TValue = unknown> {
-  readonly op: 'remove';
+/**
+ * 4. 文本局部差量补丁 (富文本与长文本局部协同切片)
+ * 字符级防冲突，解决多人协同打字冲刷
+ */
+export interface TextPatch {
+  readonly op: 'text';
   readonly path: CanvasPatchPath;
-  /** 逆向回滚时的删除前旧值 */
-  readonly oldValue?: TValue;
-}
-
-/** 6. 先决条件断言补丁 (协同冲突校验与乐观锁) */
-export interface TestPatch<TValue = unknown> {
-  readonly op: 'test';
-  readonly path: CanvasPatchPath;
-  /** 期望当前路径匹配的值 */
-  readonly value: TValue;
+  /** 正向 Delta 序列 */
+  readonly deltas: readonly TextDeltaOp[];
+  /** 反向回滚 Delta 序列 (由应用器推导生成) */
+  readonly inverseDeltas?: readonly TextDeltaOp[];
 }
 
 /**
  * 细粒度原子数据补丁 (CanvasPatch)
- * 智能可辨识联合类型 (Discriminated Union)：享受 IDE 精准代码补全与模式匹配自动类型收窄
+ * 智能可辨识联合类型 (Discriminated Union)
  */
-export type CanvasPatch =
-  | ReplacePatch
-  | MergePatch
-  | SplicePatch
-  | AddPatch
-  | RemovePatch
-  | TestPatch;
+export type CanvasPatch = SetPatch | UnsetPatch | SplicePatch | TextPatch;
+
+/** 事务前置先决条件守卫 (用于协同冲突检测与乐观锁) */
+export interface OperationGuard {
+  readonly path: CanvasPatchPath;
+  readonly expected: unknown;
+}
 
 /**
  * 事务操作记录 (CanvasOperationRecord)
- * 原子事务成功提交后生成的不可变凭据 (扁平无套娃，单一事实源)
+ * 原子事务成功提交后生成的不可变凭据
  */
 export interface CanvasOperationRecord<TPayload = unknown> {
   readonly id: string;
@@ -126,7 +136,6 @@ export interface CanvasOperationRecord<TPayload = unknown> {
 
 /**
  * commitOperation() 事务提交入参选项
- * 极简扁平入参，开发者调用零心理负担
  */
 export interface CommitOperationOptions<TPayload = unknown> {
   /** 变更语义说明 (如 "移动便签", "修改填充色") */
@@ -136,6 +145,9 @@ export interface CommitOperationOptions<TPayload = unknown> {
   patches: CanvasPatch[];
   /** 反向回滚补丁集 (选填，若未提供则由内核根据当前状态自动推导生成) */
   inversePatches?: CanvasPatch[];
+
+  /** 事务前置先决条件断言 (可选，断言失败则整批回滚) */
+  guard?: OperationGuard;
 
   /** 是否记录到撤销栈 (默认 true；连续拖拽中设为 false，松手提交最终态) */
   undoable?: boolean;
@@ -152,14 +164,12 @@ export interface CommitOperationOptions<TPayload = unknown> {
 
 /**
  * 历史撤销栈条目 (CanvasHistoryEntry)
- * 具有相同 groupId 的连续操作在进入历史栈时会被自动合并折叠为单一步骤
  */
 export interface CanvasHistoryEntry {
   readonly id: string;
   readonly label: string;
   readonly timestamp: number;
   readonly groupId?: string;
-  /** 经过对偶抵消、压缩合并后的最终原子补丁 */
   readonly patches: CanvasPatch[];
   readonly inversePatches: CanvasPatch[];
 }

@@ -1,0 +1,152 @@
+/**
+ * @file coordinator.test.ts
+ * @description 操作协调器、历史栈、groupId 折叠与 guard 先决条件守卫测试
+ */
+
+import { describe, it, expect } from 'vitest';
+import { OperationCoordinator } from '../src/operation/coordinator';
+
+describe('OperationCoordinator', () => {
+  it('提交操作并记录到撤销栈', () => {
+    const doc = { count: 0 };
+    const coordinator = new OperationCoordinator(doc);
+
+    expect(coordinator.canUndo).toBe(false);
+    expect(coordinator.canRedo).toBe(false);
+
+    coordinator.commitOperation({
+      label: '自增',
+      patches: [{ op: 'set', path: 'count', value: 1 }]
+    });
+
+    expect(doc.count).toBe(1);
+    expect(coordinator.canUndo).toBe(true);
+    expect(coordinator.canRedo).toBe(false);
+
+    // 撤销
+    const undoSuccess = coordinator.undo();
+    expect(undoSuccess).toBe(true);
+    expect(doc.count).toBe(0);
+    expect(coordinator.canUndo).toBe(false);
+    expect(coordinator.canRedo).toBe(true);
+
+    // 重做
+    const redoSuccess = coordinator.redo();
+    expect(redoSuccess).toBe(true);
+    expect(doc.count).toBe(1);
+    expect(coordinator.canUndo).toBe(true);
+    expect(coordinator.canRedo).toBe(false);
+  });
+
+  it('连续操作通过 groupId 智能折叠为单步撤销', () => {
+    const doc = { x: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    const groupId = 'drag_session_1';
+
+    // 模拟连续拖拽产生 3 帧移动
+    coordinator.commitOperation({
+      label: '拖拽移动',
+      groupId,
+      patches: [{ op: 'set', path: 'x', value: 10 }]
+    });
+    coordinator.commitOperation({
+      label: '拖拽移动',
+      groupId,
+      patches: [{ op: 'set', path: 'x', value: 20 }]
+    });
+    coordinator.commitOperation({
+      label: '拖拽移动',
+      groupId,
+      patches: [{ op: 'set', path: 'x', value: 50 }]
+    });
+
+    expect(doc.x).toBe(50);
+    // 历史栈中只有 1 个折叠后的 entry
+    expect(coordinator.getUndoEntries().length).toBe(1);
+
+    // 单次撤销即可直接倒退回拖拽前的原始状态 0
+    coordinator.undo();
+    expect(doc.x).toBe(0);
+
+    // 单次重做恢复为 50
+    coordinator.redo();
+    expect(doc.x).toBe(50);
+  });
+
+  it('guard 先决条件守卫：断言通过才允许提交，失败时拒绝提交', () => {
+    const doc = { version: 1, text: '旧内容' };
+    const coordinator = new OperationCoordinator(doc);
+
+    // 断言失败：期望 version 为 2，实际为 1
+    const failRecord = coordinator.commitOperation({
+      label: '乐观锁更新',
+      guard: { path: 'version', expected: 2 },
+      patches: [{ op: 'set', path: 'text', value: '新内容' }]
+    });
+
+    expect(failRecord).toBeNull();
+    expect(doc.text).toBe('旧内容');
+
+    // 断言成功：期望 version 为 1
+    const passRecord = coordinator.commitOperation({
+      label: '乐观锁更新成功',
+      guard: { path: 'version', expected: 1 },
+      patches: [
+        { op: 'set', path: 'text', value: '新内容' },
+        { op: 'set', path: 'version', value: 2 }
+      ]
+    });
+
+    expect(passRecord).not.toBeNull();
+    expect(doc.text).toBe('新内容');
+    expect(doc.version).toBe(2);
+  });
+
+  it('协同隔离：origin === "remote" 的操作不写入本地 Undo 栈', () => {
+    const doc = { title: '初始标题' };
+    const coordinator = new OperationCoordinator(doc);
+
+    // 接收来自协同网络的远端补丁
+    coordinator.commitOperation({
+      label: '远端协作者修改标题',
+      origin: 'remote',
+      patches: [{ op: 'set', path: 'title', value: '远端标题' }]
+    });
+
+    expect(doc.title).toBe('远端标题');
+    // 远端补丁不能被本地用户通过 Ctrl+Z 撤销污染
+    expect(coordinator.canUndo).toBe(false);
+  });
+
+  it('undoable === false 时不入历史栈', () => {
+    const doc = { zoom: 1 };
+    const coordinator = new OperationCoordinator(doc);
+
+    coordinator.commitOperation({
+      label: '视口缩放',
+      undoable: false,
+      patches: [{ op: 'set', path: 'zoom', value: 2 }]
+    });
+
+    expect(doc.zoom).toBe(2);
+    expect(coordinator.canUndo).toBe(false);
+  });
+
+  it('超出最大容量时丢弃最老的记录', () => {
+    const doc = { num: 0 };
+    const coordinator = new OperationCoordinator(doc, { maxHistorySize: 3 });
+
+    for (let i = 1; i <= 5; i++) {
+      coordinator.commitOperation({
+        label: `步长 ${i}`,
+        patches: [{ op: 'set', path: 'num', value: i }]
+      });
+    }
+
+    expect(coordinator.getUndoEntries().length).toBe(3);
+    const entries = coordinator.getUndoEntries();
+    expect(entries[0].label).toBe('步长 3');
+    expect(entries[1].label).toBe('步长 4');
+    expect(entries[2].label).toBe('步长 5');
+  });
+});

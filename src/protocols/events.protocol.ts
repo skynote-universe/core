@@ -118,7 +118,6 @@ export function createCanvasPointerEvent(
   options: CreateCanvasPointerEventOptions
 ): CanvasPointerEvent {
   let isClaimed = false;
-  let claimerId: string | undefined;
 
   const event: CanvasPointerEvent = {
     point: { ...options.point },
@@ -136,9 +135,8 @@ export function createCanvasPointerEvent(
     get isClaimed() {
       return isClaimed;
     },
-    claimPointer(id: string): void {
+    claimPointer(): void {
       isClaimed = true;
-      claimerId = id;
     },
     stopPropagation(): void {
       // 默认空实现，由 PointerDispatcher 分发时捕获并截断

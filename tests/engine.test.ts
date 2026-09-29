@@ -6,7 +6,6 @@
 import { describe, it, expect } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { RTreeSpatialIndex } from '../src/spatial/r-tree';
-import { SpatialGridIndex } from '../src/spatial/spatial-grid-index';
 import { createSpatialIndex } from '../src/spatial';
 import { InputScopeManager } from '../src/input/input-scope-manager';
 import type { CanvasKeyboardEvent } from '../src/protocols/input-scope.protocol';

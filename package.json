@@ -10,7 +10,8 @@
   "scripts": {
     "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit",
-    "bench": "vitest run --dir bench"
+    "bench": "vitest run --dir bench",
+    "lint": "eslint ."
   },
   "exports": {
     ".": {

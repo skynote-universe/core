@@ -12,7 +12,8 @@ import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { NodeStyle } from '../types/node';
 
 export class NodeTypeRegistry {
-  private readonly definitions = new Map<string, NodeTypeDefinition<any, any>>();
+  /** 各节点类型的 TData / TStyle 互不相同，存储时擦除泛型，取出时由调用方按类型标识还原 */
+  private readonly definitions = new Map<string, NodeTypeDefinition<unknown, NodeStyle>>();
 
   /**
    * 注册节点类型定义
@@ -28,7 +29,7 @@ export class NodeTypeRegistry {
       console.warn(`[NodeTypeRegistry] 节点类型 "${definition.type}" 已存在，将被新定义覆盖`);
     }
 
-    this.definitions.set(definition.type, definition);
+    this.definitions.set(definition.type, definition as unknown as NodeTypeDefinition<unknown, NodeStyle>);
   }
 
   /**
@@ -44,7 +45,7 @@ export class NodeTypeRegistry {
   get<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle>(
     type: string
   ): NodeTypeDefinition<TData, TStyle> | undefined {
-    return this.definitions.get(type) as NodeTypeDefinition<TData, TStyle> | undefined;
+    return this.definitions.get(type) as unknown as NodeTypeDefinition<TData, TStyle> | undefined;
   }
 
   /**
@@ -58,7 +59,7 @@ export class NodeTypeRegistry {
    * 获取全部已注册节点类型列表
    */
   getAll(): readonly NodeTypeDefinition[] {
-    return Array.from(this.definitions.values());
+    return Array.from(this.definitions.values()) as unknown as NodeTypeDefinition[];
   }
 
   /**

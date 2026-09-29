@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { DocumentStore, createEmptyCanvasDocument } from '../src/state/document-store';
+import { DocumentStore } from '../src/state/document-store';
 import type { NodeEntity } from '../src/types/node';
 
 describe('DocumentStore & EntityStore', () => {

@@ -49,63 +49,18 @@ export class InputScopeManager {
   }
 
   /**
-   * 键盘按下事件统一分发处理
-   * @returns 是否已被某个作用域成功消费
+   * 分发按键按下事件
+   * @returns 是否被某个作用域消费 (返回 true 或调用 stopPropagation)
    */
   dispatchKeyDown(e: CanvasKeyboardEvent): boolean {
-    // 守卫 1：输入法组合输入期间 (isComposing 或 Windows 组合键码 229)，绝对严禁触发任何快捷键打断用户打字
-    if (e.isComposing || e.keyCode === 229) {
-      return false;
-    }
-
-    let stopped = false;
-    // 包装 stopPropagation 侦听
-    const originalStop = e.stopPropagation.bind(e);
-    (e as { stopPropagation: () => void }).stopPropagation = () => {
-      stopped = true;
-      originalStop();
-    };
-
-    // 自顶向下依序遍历优先级最高的活跃作用域
-    for (let i = 0; i < this.activeScopes.length; i++) {
-      const scope = this.activeScopes[i];
-      if (scope.onKeyDown) {
-        const handled = scope.onKeyDown(e);
-        if (handled === true || stopped) {
-          return true;
-        }
-      }
-    }
-
-    return false;
+    return this.dispatch(e, (scope) => scope.onKeyDown);
   }
 
   /**
-   * 键盘弹起事件统一分发处理
+   * 分发按键抬起事件
    */
   dispatchKeyUp(e: CanvasKeyboardEvent): boolean {
-    if (e.isComposing || e.keyCode === 229) {
-      return false;
-    }
-
-    let stopped = false;
-    const originalStop = e.stopPropagation.bind(e);
-    (e as { stopPropagation: () => void }).stopPropagation = () => {
-      stopped = true;
-      originalStop();
-    };
-
-    for (let i = 0; i < this.activeScopes.length; i++) {
-      const scope = this.activeScopes[i];
-      if (scope.onKeyUp) {
-        const handled = scope.onKeyUp(e);
-        if (handled === true || stopped) {
-          return true;
-        }
-      }
-    }
-
-    return false;
+    return this.dispatch(e, (scope) => scope.onKeyUp);
   }
 
   /**
@@ -114,6 +69,40 @@ export class InputScopeManager {
   clear(): void {
     this.scopes.clear();
     this.activeScopes = [];
+  }
+
+  /**
+   * 自顶向下依序交给优先级最高的活跃作用域，任一作用域消费即停止
+   * 以原事件为原型包装以拦截 stopPropagation，不改写宿主传入的事件对象
+   */
+  private dispatch(
+    event: CanvasKeyboardEvent,
+    pickHandler: (scope: InputScope) => ((e: CanvasKeyboardEvent) => boolean | void) | undefined
+  ): boolean {
+    // IME Guard：输入法组合输入期间 (isComposing 或 Windows 组合键码 229) 绝不触发快捷键打断打字
+    if (event.isComposing || event.keyCode === 229) {
+      return false;
+    }
+
+    let stopped = false;
+    const wrapped: CanvasKeyboardEvent = Object.create(event, {
+      stopPropagation: {
+        value: () => {
+          stopped = true;
+          event.stopPropagation();
+        }
+      }
+    });
+
+    const scopes = this.activeScopes;
+    for (let i = 0; i < scopes.length; i++) {
+      const handler = pickHandler(scopes[i]);
+      if (!handler) continue;
+      if (handler.call(scopes[i], wrapped) === true || stopped) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private rebuildActiveScopes(): void {

@@ -62,6 +62,8 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   private derivation: PatchDerivation<TDoc> | null = null;
   /** 栈顶分组条目的增量压缩状态：同组后续操作只处理新增补丁 */
   private groupCompaction: { entryId: string; forward: OverwriteCompactor; inverse: OverwriteCompactor } | null = null;
+  /** 进行中的批处理：期间的可撤销本地事务以同一分组并入一个撤销条目 */
+  private activeBatch: { groupId: string; label: string | undefined } | null = null;
 
   constructor(targetDoc: TDoc, options?: OperationCoordinatorOptions) {
     this.targetDoc = targetDoc;
@@ -84,6 +86,29 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   }
 
   /**
+   * 批处理：fn 内提交的可撤销本地事务合并为一步撤销，嵌套调用并入最外层
+   * 每次提交仍即时生效并广播，后续语义操作能读到前序结果 (如先建节点再连线)；
+   * fn 抛错时撤回本批已记录的改动再抛出，不留下半个批次
+   */
+  batch<T>(fn: () => T, label?: string): T {
+    if (this.activeBatch) return fn();
+    const batch = { groupId: generateId('batch'), label };
+    this.activeBatch = batch;
+    try {
+      return fn();
+    } catch (err) {
+      if (this.undoStack.at(-1)?.groupId === batch.groupId && this.undo()) {
+        // 回滚不是用户的撤销，不应留下可重做的条目
+        this.redoStack.pop();
+        this.notifyHistoryChanged();
+      }
+      throw err;
+    } finally {
+      this.activeBatch = null;
+    }
+  }
+
+  /**
    * 提交原子事务操作
    * 所有对文档状态的增删改查必须经由此通道
    */
@@ -94,7 +119,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
 
     const origin = options.origin ?? 'local';
     const source = options.source ?? 'user';
-    const label = options.label ?? '修改画布';
+    const label = this.activeBatch?.label ?? options.label ?? '修改画布';
     const undoable = options.undoable ?? true;
 
     // 先决条件守卫校验
@@ -142,7 +167,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       origin,
       source,
       undoable,
-      groupId: options.groupId,
+      groupId: this.activeBatch?.groupId ?? options.groupId,
       patches: finalPatches,
       inversePatches: finalInversePatches,
       payload: options.payload

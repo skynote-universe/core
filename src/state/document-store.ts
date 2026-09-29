@@ -176,6 +176,14 @@ export class DocumentStore {
     return this.coordinator.commitOperation(options);
   }
 
+  /**
+   * 将多个语义操作合并为一步撤销 (如新建节点并连线、粘贴一组实体)
+   * 期间每次提交即时生效；fn 抛错时本批改动整体撤回
+   */
+  batch<T>(fn: () => T, label?: string): T {
+    return this.coordinator.batch(fn, label);
+  }
+
   /** 撤销一步操作 */
   undo(): boolean {
     return this.coordinator.undo();

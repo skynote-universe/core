@@ -17,7 +17,7 @@ import { getPlainText } from '../types/text';
 import type { TextPrimitive } from '../protocols/primitives.protocol';
 import type { TextPadding } from '../types/style';
 import type { CanvasPatch } from '../types/operation';
-import type { NodeTypeDefinition, TextBlockMetrics } from '../protocols/node-type.protocol';
+import type { NodeTextSlotDefinition, NodeTypeDefinition, TextBlockMetrics } from '../protocols/node-type.protocol';
 import type { TextMeasurer } from '../protocols/text-measurer.protocol';
 import type { NodeTypeRegistry } from '../registry/node-type-registry';
 import { normalizePatchPath } from '../operation/patch-path';
@@ -27,14 +27,15 @@ const LAYOUT_TRIGGER_FIELDS: ReadonlySet<string | number> = new Set(['textBlocks
 /** 尺寸比较容差：浮点测量抖动不产生无意义的尺寸补丁 */
 const SIZE_EPSILON = 0.5;
 
-interface ResolvedPadding {
+export interface ResolvedPadding {
   top: number;
   right: number;
   bottom: number;
   left: number;
 }
 
-function resolvePadding(padding: TextPadding | undefined): ResolvedPadding {
+/** 文本内边距展开为四边 (单值或 [上, 右, 下, 左]，与 CSS 简写规则一致) */
+export function resolveTextPadding(padding: TextPadding | undefined): ResolvedPadding {
   if (padding === undefined) return { top: 0, right: 0, bottom: 0, left: 0 };
   if (typeof padding === 'number') return { top: padding, right: padding, bottom: padding, left: padding };
   const [top, right = top, bottom = top, left = right] = padding;
@@ -44,12 +45,12 @@ function resolvePadding(padding: TextPadding | undefined): ResolvedPadding {
 /**
  * 文本块 → 文本图元的唯一映射
  * 节点 compose() 绘制文字与测量器测量文字必须共用此函数，保证测得的尺寸与实际绘制一致
- * @param box 图元位置；width 缺省表示不折行 (auto-width)
+ * @param box 图元位置；width 缺省表示不折行 (auto-width)，height 缺省为内容自然高度 (测量时必须缺省)
  */
 export function createTextBlockPrimitive(
   block: Readonly<TextBlock>,
   style: Readonly<NodeTextStyle>,
-  box: { x: number; y: number; width?: number }
+  box: { x: number; y: number; width?: number; height?: number }
 ): TextPrimitive {
   return {
     kind: 'text',
@@ -57,6 +58,7 @@ export function createTextBlockPrimitive(
     x: box.x,
     y: box.y,
     width: box.width,
+    height: box.height,
     text: getPlainText(block as TextBlock),
     fill: style.color,
     fontSize: style.fontSize,
@@ -72,6 +74,25 @@ export function createTextBlockPrimitive(
     textDecoration: style.textDecoration,
     textWrap: style.textWrap
   };
+}
+
+function findTextSlot(
+  block: Readonly<TextBlock>,
+  definition: NodeTypeDefinition | undefined
+): NodeTextSlotDefinition | undefined {
+  return block.slot !== undefined ? definition?.slots?.find((slot) => slot.slot === block.slot) : undefined;
+}
+
+/**
+ * 文本块的最终样式：插槽默认样式 < 节点 textStyle < 文本块 style
+ * 节点 compose() 绘制与测量器测量必须用同一份解析结果，否则量出的尺寸与画面不一致
+ */
+export function resolveTextBlockStyle(
+  node: Readonly<NodeEntity>,
+  block: Readonly<TextBlock>,
+  definition: NodeTypeDefinition | undefined
+): NodeTextStyle {
+  return { ...findTextSlot(block, definition)?.defaultStyle, ...node.textStyle, ...block.style };
 }
 
 /**
@@ -118,10 +139,10 @@ export function computeTextLayout(
 
   for (let i = 0; i < blocks.length; i++) {
     const block = blocks[i];
-    const slot = block.slot !== undefined ? definition?.slots?.find((s) => s.slot === block.slot) : undefined;
-    const style: NodeTextStyle = { ...slot?.defaultStyle, ...node.textStyle, ...block.style };
+    const slot = findTextSlot(block, definition);
+    const style = resolveTextBlockStyle(node, block, definition);
     const sizing = block.sizing ?? slot?.sizing ?? defaultSizing;
-    const padding = resolvePadding(style.padding);
+    const padding = resolveTextPadding(style.padding);
     const maxWidth =
       sizing === 'auto-width'
         ? undefined

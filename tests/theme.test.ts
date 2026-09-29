@@ -28,18 +28,21 @@ describe('颜色工具', () => {
 });
 
 describe('deriveCanvasTheme', () => {
-  it('由种子色推导语义色，明暗主题共享同一套规则', () => {
+  it('由种子色推导语义色：深色底使用更大的混合比例，保证节点与底色有可见的层次', () => {
     const light = deriveCanvasTheme({ seed: LIGHT_CANVAS_THEME_SEED });
     const dark = deriveCanvasTheme({ seed: DARK_CANVAS_THEME_SEED });
 
     expect(light.textColor).toBe(LIGHT_CANVAS_THEME_SEED.foreground);
     expect(light.selectionStroke).toBe(LIGHT_CANVAS_THEME_SEED.accent);
-    // 描边介于底色与前景之间，深色主题下同样成立
+    // 描边介于底色与前景之间
     expect(light.nodeStroke).toBe(
       mixHexColors(LIGHT_CANVAS_THEME_SEED.background, LIGHT_CANVAS_THEME_SEED.foreground, 0.22)
     );
     expect(dark.nodeStroke).toBe(
-      mixHexColors(DARK_CANVAS_THEME_SEED.background, DARK_CANVAS_THEME_SEED.foreground, 0.22)
+      mixHexColors(DARK_CANVAS_THEME_SEED.background, DARK_CANVAS_THEME_SEED.foreground, 0.34)
+    );
+    expect(dark.nodeFill).toBe(
+      mixHexColors(DARK_CANVAS_THEME_SEED.background, DARK_CANVAS_THEME_SEED.foreground, 0.08)
     );
     expect(Object.isFrozen(light)).toBe(true);
   });

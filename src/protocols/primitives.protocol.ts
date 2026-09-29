@@ -86,6 +86,8 @@ export interface TextPrimitive {
   lineHeight?: LineHeight;
   letterSpacing?: number;
   width?: number;
+  /** 文本框高度：配合 verticalAlign 垂直对齐，配合 textOverflow 截断超出的行；缺省为内容自然高度 */
+  height?: number;
   fill?: string;
   textAlign?: TextAlign;
   verticalAlign?: VerticalAlign;

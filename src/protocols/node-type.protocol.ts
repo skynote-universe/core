@@ -76,12 +76,14 @@ export interface NodeTypeDefinition<
 
   /**
    * 节点的几何外框自适应策略 (默认为 'fixed')
+   * 【尚未实现】依赖文本测量管线 (TextMeasurer)，落地前内核不会读取该字段。
    */
   readonly sizingPolicy?: NodeSizingPolicy;
 
   /**
    * 静态文本插槽规则集合 (Blueprint)
    * 声明节点拥有哪些语义文本槽位及其是否撑开容器，纯静态配置，不入持久化文档。
+   * 【尚未实现】依赖文本测量管线，落地前内核不会读取该字段。
    */
   readonly slots?: NodeTextSlotDefinition[];
 
@@ -90,6 +92,7 @@ export interface NodeTypeDefinition<
    * 当内部任何文本块发生测量尺寸变动时，内核会调用此函数，由节点自己精准决定外框宽高！
    * @param node 当前节点
    * @param textMetrics 每一个 slot 文本块的实际测量包围盒映射
+   * 【尚未实现】依赖文本测量管线，落地前内核不会调用该函数。
    */
   computeBounds?: (
     node: NodeEntity<TData, TStyle>,
@@ -109,10 +112,11 @@ export interface NodeTypeDefinition<
    * 针对富交互 Web 组件 (如 Monaco Editor, ECharts, 视频播放器)。
    * 遵守平台中立红线：容器使用 unknown 类型，严禁直接引入原生 HTMLElement。
    * 返回清理解绑函数。
+   * 【尚未实现】渲染器暂未提供 DOM 浮层挂载点，落地前不会调用该函数。
    */
   mountDOM?: (node: NodeEntity<TData, TStyle>, container: unknown) => () => void;
 
-  /** 控制手柄列表提供器 (选填) */
+  /** 控制手柄列表提供器 (选填) 【尚未实现】交互插件落地前不会调用该函数 */
   getHandles?: (node: NodeEntity<TData, TStyle>) => NodeControlHandle[];
 }
 

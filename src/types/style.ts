@@ -71,5 +71,11 @@ export type PathFillRule = 'nonzero' | 'evenodd';
 /** 容器与文本内边距规范：支持统一单值，或四边独立设定 [上, 右, 下, 左] */
 export type TextPadding = number | [number, number, number, number];
 
+/**
+ * 行高：数字表示字号的倍数 (如 1.5，改字号时行高自动跟随)，`'24px'` 形式的字符串表示像素值
+ * 与 CSS 无单位 line-height 与像素写法一致
+ */
+export type LineHeight = number | `${number}px`;
+
 /** 容器图元溢出裁剪模式 */
 export type OverflowMode = 'visible' | 'hidden';

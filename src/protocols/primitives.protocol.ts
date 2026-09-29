@@ -23,6 +23,7 @@ import type {
   TextWrap,
   ImageFit,
   PathFillRule,
+  LineHeight,
   OverflowMode
 } from '../types';
 
@@ -90,7 +91,8 @@ export interface TextPrimitive {
   fontFamily?: string;
   fontWeight?: FontWeight;
   fontStyle?: FontStyle;
-  lineHeight?: number;
+  /** 数字为字号倍数，'24px' 为像素 */
+  lineHeight?: LineHeight;
   letterSpacing?: number;
   width?: number;
   fill?: string;

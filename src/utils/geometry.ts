@@ -197,17 +197,84 @@ export function buildRoundedPolylinePath(
 }
 
 
+/** 参与旋转几何计算的节点字段 (rotation 单位为度，绕节点中心旋转；x / y / width / height 描述未旋转的框) */
+export interface RotatableBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation?: number;
+}
+
 /**
- * 求解节点在世界坐标系中的轴对齐包围盒
- * 暂不计入 rotation：旋转中心约定尚未在协议层确定，确定后在此统一扩展为旋转外接矩形
+ * 把节点局部坐标 (相对未旋转框左上角) 变换为世界坐标：绕节点中心旋转 rotation 度
  */
-export function computeNodeBounds(node: { x: number; y: number; width: number; height: number }): RectBounds {
+export function nodeLocalToWorld(node: RotatableBox, localX: number, localY: number): Point {
+  const angle = node.rotation ?? 0;
+  if (angle === 0) return { x: node.x + localX, y: node.y + localY };
+
+  const rad = (angle * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = localX - node.width / 2;
+  const dy = localY - node.height / 2;
   return {
-    left: node.x,
-    top: node.y,
-    right: node.x + node.width,
-    bottom: node.y + node.height,
-    width: node.width,
-    height: node.height
+    x: node.x + node.width / 2 + dx * cos - dy * sin,
+    y: node.y + node.height / 2 + dx * sin + dy * cos
   };
+}
+
+/**
+ * 求解节点在世界坐标系中的轴对齐包围盒：旋转节点取四角旋转后的外接矩形
+ */
+export function computeNodeBounds(node: RotatableBox): RectBounds {
+  if (!node.rotation) {
+    return {
+      left: node.x,
+      top: node.y,
+      right: node.x + node.width,
+      bottom: node.y + node.height,
+      width: node.width,
+      height: node.height
+    };
+  }
+
+  const corners = [
+    nodeLocalToWorld(node, 0, 0),
+    nodeLocalToWorld(node, node.width, 0),
+    nodeLocalToWorld(node, node.width, node.height),
+    nodeLocalToWorld(node, 0, node.height)
+  ];
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (let i = 0; i < corners.length; i++) {
+    left = Math.min(left, corners[i].x);
+    top = Math.min(top, corners[i].y);
+    right = Math.max(right, corners[i].x);
+    bottom = Math.max(bottom, corners[i].y);
+  }
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+/**
+ * 点是否落在节点 (含旋转) 的矩形框内：把点反向旋转回节点局部坐标后判断
+ * 空间索引只按外接矩形粗筛，旋转节点外接矩形的四个空角需要此函数精判
+ */
+export function isPointInNode(point: Point, node: RotatableBox): boolean {
+  let x = point.x;
+  let y = point.y;
+  if (node.rotation) {
+    const rad = (-node.rotation * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = node.x + node.width / 2;
+    const cy = node.y + node.height / 2;
+    const dx = point.x - cx;
+    const dy = point.y - cy;
+    x = cx + dx * cos - dy * sin;
+    y = cy + dx * sin + dy * cos;
+  }
+  return x >= node.x && x <= node.x + node.width && y >= node.y && y <= node.y + node.height;
 }

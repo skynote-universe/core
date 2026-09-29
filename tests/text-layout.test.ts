@@ -8,6 +8,7 @@ import { SkyNoteEngine } from '../src/engine';
 import { createTextBlockPrimitive } from '../src/layout/text-layout';
 import { createSimpleTextBlock } from '../src/types/text';
 import type { NodeEntity } from '../src/types/node';
+import type { NodeTextStyle } from '../src/types/text';
 import type { TextMeasurer, TextMeasureRequest } from '../src/protocols/text-measurer.protocol';
 import type { NodeTypeDefinition } from '../src/protocols/node-type.protocol';
 
@@ -186,6 +187,13 @@ describe('文本驱动的自动尺寸', () => {
     const block = { id: 't1', runs: [{ text: 'Sky' }, { text: 'Note' }] };
     const primitive = createTextBlockPrimitive(block, { fontSize: 18, color: '$ink', textAlign: 'center' }, { x: 4, y: 6, width: 120 });
     expect(primitive).toMatchObject({ kind: 'text', id: 't1', x: 4, y: 6, width: 120, text: 'SkyNote', fontSize: 18, fill: '$ink', textAlign: 'center' });
+  });
+
+  it('lineHeight 类型约束：数字为字号倍数，像素须写成带 px 后缀的字符串', () => {
+    const styles: NodeTextStyle[] = [{ lineHeight: 1.5 }, { lineHeight: '24px' }];
+    // @ts-expect-error 仅支持 px 单位字符串
+    const invalid: NodeTextStyle = { lineHeight: '1.5em' };
+    expect([...styles, invalid]).toHaveLength(3);
   });
 });
 

@@ -19,7 +19,8 @@ import type {
   TextDecoration,
   TextDecorationLine,
   TextWrap,
-  TextPadding
+  TextPadding,
+  LineHeight
 } from './style';
 
 /** 行内富文本分段样式 (单一事实源) */
@@ -30,7 +31,7 @@ export interface RichTextRunStyle {
   fontWeight?: FontWeight;
   fontStyle?: FontStyle;
   fontFamily?: string;
-  lineHeight?: number;
+  lineHeight?: LineHeight;
   letterSpacing?: number;
   textDecoration?: TextDecoration;
   textAlign?: TextAlign;
@@ -54,7 +55,7 @@ export interface NodeTextStyle {
   fontWeight?: FontWeight;
   fontStyle?: FontStyle;
   fontFamily?: string;
-  lineHeight?: number;
+  lineHeight?: LineHeight;
   letterSpacing?: number;
   textAlign?: TextAlign;
   verticalAlign?: VerticalAlign;

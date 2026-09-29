@@ -289,7 +289,7 @@ describe('DocumentStore & EntityStore', () => {
     expect(store.entityStore.getNode('node_1')!.runtime.geomVersion).toBeGreaterThan(before);
   });
 
-  it('本地操作自动更新 doc.meta.updatedAt', async () => {
+  it('提交不改写 meta.updatedAt，由宿主以非撤销的系统事务写入保存时间', async () => {
     const store = new DocumentStore();
     const initialUpdatedAt = store.getView().meta.updatedAt;
 
@@ -308,7 +308,20 @@ describe('DocumentStore & EntityStore', () => {
       zIndex: 1,
       locked: false
     });
-    expect(store.getView().meta.updatedAt).toBeGreaterThan(initialUpdatedAt);
+    expect(store.getView().meta.updatedAt).toBe(initialUpdatedAt);
+
+    const savedAt = Date.now();
+    store.commit({
+      label: '保存',
+      source: 'system',
+      undoable: false,
+      patches: [{ op: 'set', path: ['meta', 'updatedAt'], value: savedAt }]
+    });
+    expect(store.getView().meta.updatedAt).toBe(savedAt);
+
+    // 撤销的是添加节点，保存时间不回滚
+    store.undo();
+    expect(store.getView().meta.updatedAt).toBe(savedAt);
   });
 });
 

@@ -24,6 +24,10 @@ export type CanvasContentType = 'node' | 'connector';
 export interface CanvasMeta {
   version: number;
   createdAt: number;
+  /**
+   * 最后保存时间：由宿主持久化层在保存时以非撤销的系统事务写入，内核不在每次提交时改写。
+   * 否则撤销会把时间戳回滚成旧值，协同中每个操作都会争抢同一字段
+   */
   updatedAt: number;
   tags?: string[];
   title?: string;

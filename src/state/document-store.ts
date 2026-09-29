@@ -334,11 +334,6 @@ export class DocumentStore {
      * 统一处理补丁提交后的双版本号、实体增量同步，并产出结构化变更集
      */
     private handleOperationCommitted(record: CanvasOperationRecord, doc: CanvasDocument): void {
-        // 本地操作自动刷新文档最后更新时间戳
-        if (record.origin === "local") {
-            doc.meta.updatedAt = record.timestamp;
-        }
-
         const nodeChanges = createEntityChanges();
         const connectorChanges = createEntityChanges();
         let fullSync = false;

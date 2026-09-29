@@ -274,26 +274,51 @@ export function nodeLocalToWorld(worldMatrix: Matrix2D, localX: number, localY: 
   return applyMatrix(worldMatrix, localX, localY);
 }
 
-/** 节点在世界坐标系中的轴对齐包围盒：四角经世界矩阵变换后的外接矩形 */
-export function computeNodeWorldBounds(size: { width: number; height: number }, worldMatrix: Matrix2D): RectBounds {
-  const m = worldMatrix;
-  if (m.b === 0 && m.c === 0) {
+/** 包围盒经矩阵变换后的轴对齐外接矩形 (四角变换后取极值；无旋转时只做平移) */
+export function transformBounds(bounds: RectBounds, m: Matrix2D): RectBounds {
+  if (m.b === 0 && m.c === 0 && m.a === 1 && m.d === 1) {
     return {
-      left: m.e,
-      top: m.f,
-      right: m.e + size.width,
-      bottom: m.f + size.height,
-      width: size.width,
-      height: size.height
+      left: bounds.left + m.e,
+      top: bounds.top + m.f,
+      right: bounds.right + m.e,
+      bottom: bounds.bottom + m.f,
+      width: bounds.width,
+      height: bounds.height
     };
   }
-  const xs = [m.e, m.a * size.width + m.e, m.c * size.height + m.e, m.a * size.width + m.c * size.height + m.e];
-  const ys = [m.f, m.b * size.width + m.f, m.d * size.height + m.f, m.b * size.width + m.d * size.height + m.f];
-  const left = Math.min(xs[0], xs[1], xs[2], xs[3]);
-  const top = Math.min(ys[0], ys[1], ys[2], ys[3]);
-  const right = Math.max(xs[0], xs[1], xs[2], xs[3]);
-  const bottom = Math.max(ys[0], ys[1], ys[2], ys[3]);
+  const { left: l, top: t, right: r, bottom: b } = bounds;
+  const x1 = m.a * l + m.c * t;
+  const x2 = m.a * r + m.c * t;
+  const x3 = m.a * l + m.c * b;
+  const x4 = m.a * r + m.c * b;
+  const y1 = m.b * l + m.d * t;
+  const y2 = m.b * r + m.d * t;
+  const y3 = m.b * l + m.d * b;
+  const y4 = m.b * r + m.d * b;
+  const left = Math.min(x1, x2, x3, x4) + m.e;
+  const top = Math.min(y1, y2, y3, y4) + m.f;
+  const right = Math.max(x1, x2, x3, x4) + m.e;
+  const bottom = Math.max(y1, y2, y3, y4) + m.f;
   return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+/** 两个包围盒的并集 */
+export function unionBounds(a: RectBounds, b: RectBounds): RectBounds {
+  const left = Math.min(a.left, b.left);
+  const top = Math.min(a.top, b.top);
+  const right = Math.max(a.right, b.right);
+  const bottom = Math.max(a.bottom, b.bottom);
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+/** 节点自身框在其局部坐标系中的包围盒 */
+export function nodeLocalBox(size: { width: number; height: number }): RectBounds {
+  return { left: 0, top: 0, right: size.width, bottom: size.height, width: size.width, height: size.height };
+}
+
+/** 节点在世界坐标系中的轴对齐包围盒：四角经世界矩阵变换后的外接矩形 */
+export function computeNodeWorldBounds(size: { width: number; height: number }, worldMatrix: Matrix2D): RectBounds {
+  return transformBounds(nodeLocalBox(size), worldMatrix);
 }
 
 /**

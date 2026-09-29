@@ -10,6 +10,7 @@ import { SpatialGridIndex, type SpatialGridIndexOptions } from './spatial-grid-i
 export * from './spatial-index';
 export * from './r-tree';
 export * from './spatial-grid-index';
+export * from './scene-spatial-index';
 
 /**
  * 空间拓扑索引工厂函数

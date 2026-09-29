@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { DocumentStore } from '../src/state/document-store';
+import { createSpatialIndex } from '../src/spatial';
 import type { DocumentChangeSet } from '../src/types/change-set';
 import type { NodeEntity } from '../src/types/node';
 import type { ConnectorEntity } from '../src/types/connector';
@@ -264,13 +265,23 @@ describe('DocumentChangeSet 归类', () => {
 
 describe('引擎增量维护空间索引', () => {
   it('视口、选区与样式变更不触达空间索引；移动只更新变更节点', () => {
-    const engine = new SkyNoteEngine();
+    const updateSpy = vi.fn();
+    const engine = new SkyNoteEngine({
+      createNodeSpatialIndex: () => {
+        const index = createSpatialIndex('rtree');
+        const update = index.update.bind(index);
+        index.update = (id, bounds) => {
+          updateSpy(id, bounds);
+          update(id, bounds);
+        };
+        return index;
+      }
+    });
     const store = engine.documentStore;
     for (let i = 0; i < 100; i++) {
       store.addNode(makeNode(`n${i}`, i * 20));
     }
-
-    const updateSpy = vi.spyOn(engine.spatialIndex, 'update');
+    updateSpy.mockClear();
     engine.session.setViewport({ x: 10 });
     engine.session.setSelection({ nodeIds: ['n1'] });
     store.updateNode('n1', { style: { fill: 'red' } });

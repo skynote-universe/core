@@ -29,7 +29,13 @@ import { SessionStore } from './state/session-store';
 import { NodeTypeRegistry } from './registry/node-type-registry';
 import { ArrowMarkerRegistry } from './registry/arrow-marker-registry';
 import { ConnectorRouterRegistry } from './registry/connector-router-registry';
-import { type SpatialIndex, type SpatialIndexEntry, createSpatialIndex } from './spatial';
+import {
+  type NodeSpatialQuery,
+  type SpatialIndex,
+  type SpatialIndexEntry,
+  SceneSpatialIndex,
+  createSpatialIndex
+} from './spatial';
 import { InputScopeManager } from './input/input-scope-manager';
 import { PointerDispatcher } from './input/pointer-dispatcher';
 import { PluginManager } from './plugin/plugin-manager';
@@ -44,8 +50,10 @@ export interface SkyNoteEngineOptions {
   theme?: CanvasThemeConfig;
   /** 文本测量器 (由渲染适配层提供，如 createLeaferTextMeasurer)，缺省时不做文本驱动的自动尺寸 */
   textMeasurer?: TextMeasurer;
-  /** 自定义节点空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
-  spatialIndex?: SpatialIndex;
+  /**
+   * 节点空间索引工厂 (默认 R-Tree)：节点索引按容器分层 (ADR-114)，每个容器各建一个实例
+   */
+  createNodeSpatialIndex?: () => SpatialIndex;
   /** 自定义连线空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
   connectorSpatialIndex?: SpatialIndex;
 }
@@ -58,12 +66,14 @@ export class SkyNoteEngine {
   readonly nodeTypes: NodeTypeRegistry;
   readonly arrowMarkers: ArrowMarkerRegistry;
   readonly routers: ConnectorRouterRegistry;
-  readonly spatialIndex: SpatialIndex;
+  /** 节点空间检索 (分层索引，由引擎按变更集维护) */
+  readonly spatialIndex: NodeSpatialQuery;
   readonly connectorSpatialIndex: SpatialIndex;
   readonly inputScopes: InputScopeManager;
   readonly pointer: PointerDispatcher;
   readonly plugins: PluginManager;
 
+  private readonly nodeSpatialIndex: SceneSpatialIndex;
   private readonly unsubscribeDocument: () => void;
   private readonly unsubscribeRouters: () => void;
   /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
@@ -80,7 +90,11 @@ export class SkyNoteEngine {
     this.nodeTypes = new NodeTypeRegistry();
     this.arrowMarkers = new ArrowMarkerRegistry();
     this.routers = new ConnectorRouterRegistry();
-    this.spatialIndex = options?.spatialIndex ?? createSpatialIndex('rtree');
+    this.nodeSpatialIndex = new SceneSpatialIndex(
+      this.entityStore,
+      options?.createNodeSpatialIndex ?? (() => createSpatialIndex('rtree'))
+    );
+    this.spatialIndex = this.nodeSpatialIndex;
     this.connectorSpatialIndex = options?.connectorSpatialIndex ?? createSpatialIndex('rtree');
     this.inputScopes = new InputScopeManager();
     this.pointer = new PointerDispatcher();
@@ -95,11 +109,7 @@ export class SkyNoteEngine {
       pointerDispatcher: this.pointer
     });
 
-    this.spatialIndex.load(
-      this.entityStore
-        .getAllNodes()
-        .map((runtimeNode) => [runtimeNode.entity.id, this.getNodeWorldBounds(runtimeNode.entity.id)!] as const)
-    );
+    this.nodeSpatialIndex.rebuild();
     this.updateConnectorRoutes(
       this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id)
     );
@@ -148,7 +158,7 @@ export class SkyNoteEngine {
     this.routes.clear();
     this.plugins.destroy();
     this.pointer.clear();
-    this.spatialIndex.clear();
+    this.nodeSpatialIndex.clear();
     this.connectorSpatialIndex.clear();
     this.inputScopes.clear();
     this.nodeTypes.clear();
@@ -161,15 +171,8 @@ export class SkyNoteEngine {
    * 按变更集增量维护空间索引：只触达本次提交涉及的实体，由索引实现自行决定逐条插入还是整体重建
    */
   private syncSpatialIndexes(changes: DocumentChangeSet): void {
-    for (const id of changes.nodes.removed) {
-      this.spatialIndex.remove(id);
-    }
-    // 按世界几何更新：容器移动时后代没有补丁，但世界包围盒随之改变
-    const nodeEntries: SpatialIndexEntry[] = [];
-    for (const id of changes.nodes.worldGeometry) {
-      nodeEntries.push([id, this.getNodeWorldBounds(id)!]);
-    }
-    this.spatialIndex.load(nodeEntries);
+    // 分层索引：容器移动只更新容器自身的条目，后代无需任何处理
+    this.nodeSpatialIndex.applyChanges(changes.nodes);
 
     for (const id of changes.connectors.removed) {
       this.connectorSpatialIndex.remove(id);

@@ -29,6 +29,8 @@ export interface NodeChanges extends EntityChanges {
    * 空间索引与连线路由消费本集合；嵌套渲染的场景树中后代随父图元自动移动，渲染层只需 geometry。
    */
   readonly worldGeometry: ReadonlySet<string>;
+  /** parentId 被字段级补丁修改的节点 (整体替换的节点已计入 geometry) */
+  readonly reparented: ReadonlySet<string>;
 }
 
 /** 单次提交的完整增量变更集 */

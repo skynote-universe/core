@@ -644,7 +644,12 @@ export class DocumentStore {
       for (const descendantId of store.collectDescendantIds(id)) worldGeometry.add(descendantId);
     };
     for (const id of nodeChanges.geometry) invalidateSubtree(id);
-    for (const id of reparentedNodeIds) invalidateSubtree(id);
+    const reparented = new Set<string>();
+    for (const id of reparentedNodeIds) {
+      if (!store.hasNode(id)) continue;
+      reparented.add(id);
+      invalidateSubtree(id);
+    }
     for (const id of nodeChanges.removed) {
       for (const childId of store.getChildIds(id)) invalidateSubtree(childId);
     }
@@ -661,7 +666,7 @@ export class DocumentStore {
     }
 
     const changes: DocumentChangeSet = {
-      nodes: { ...nodeChanges, worldGeometry },
+      nodes: { ...nodeChanges, worldGeometry, reparented },
       connectors: connectorChanges,
       orderChanged
     };

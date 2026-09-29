@@ -56,21 +56,31 @@ describe('RTreeSpatialIndex (默认底层层次包围盒索引)', () => {
 
 describe('SpatialIndex 抽象接口与底层随意热插拔', () => {
   it('上层 SkyNoteEngine 调用完全不变，底层可随意切换算法', () => {
-    // 默认使用 R-Tree
-    const engineWithRTree = new SkyNoteEngine({
-      spatialIndex: createSpatialIndex('rtree')
-    });
-    // 热插拔使用网格哈希
+    // 默认使用 R-Tree；分层索引的每个容器都由工厂创建，可热插拔为网格哈希
+    const engineWithRTree = new SkyNoteEngine({ createNodeSpatialIndex: () => createSpatialIndex('rtree') });
     const engineWithGrid = new SkyNoteEngine({
-      spatialIndex: createSpatialIndex('grid', { cellSize: 256 })
+      createNodeSpatialIndex: () => createSpatialIndex('grid', { cellSize: 256 })
     });
 
-    // 上层调用 API 100% 保持完全一致！
-    engineWithRTree.spatialIndex.update('n1', { left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 });
-    engineWithGrid.spatialIndex.update('n1', { left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 });
-
-    expect(engineWithRTree.spatialIndex.hitTest({ x: 50, y: 50 })).toEqual(['n1']);
-    expect(engineWithGrid.spatialIndex.hitTest({ x: 50, y: 50 })).toEqual(['n1']);
+    for (const engine of [engineWithRTree, engineWithGrid]) {
+      const node = {
+        id: 'n1',
+        type: 'node',
+        nodeType: 'rect',
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+        rotation: 0,
+        zIndex: 'a0',
+        locked: false
+      } as const;
+      engine.documentStore.addNode({ ...node });
+      engine.documentStore.addNode({ ...node, id: 'child', x: 10, y: 10, width: 20, height: 20, parentId: 'n1' });
+      // 上层调用 API 完全一致
+      expect([...engine.spatialIndex.hitTest({ x: 50, y: 50 })]).toEqual(['n1']);
+      expect([...engine.spatialIndex.hitTest({ x: 15, y: 15 })].sort()).toEqual(['child', 'n1']);
+    }
   });
 });
 

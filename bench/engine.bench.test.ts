@@ -126,8 +126,8 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     }
     const median = [...frames].sort((a, b) => a - b)[30];
     console.info(`[bench] 拖动含 2000 子节点的容器: 中位 ${median.toFixed(1)}ms / 帧，每帧 ${patchCount} 条补丁`);
-    // 事务、撤销与协同只有容器自身 2 条补丁；开销集中在后代世界包围盒与空间索引的更新
+    // 事务、撤销与协同只有容器自身 2 条补丁；分层空间索引只更新容器一个条目，实测约 0.2ms (扁平索引约 4.5ms)
     expect(patchCount).toBe(2);
-    expect(median).toBeLessThan(40);
+    expect(median).toBeLessThan(3);
   });
 });

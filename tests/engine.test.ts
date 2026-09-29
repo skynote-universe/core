@@ -217,7 +217,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     expect(hits).toContain('plugin_node_1');
 
     // 移动节点
-    engine.documentStore.moveNode('plugin_node_1', { x: 300, y: 300 });
+    engine.documentStore.moveNodes(['plugin_node_1'], { x: 300, y: 300 });
     // 原位置不再命中
     expect(engine.spatialIndex.hitTest({ x: 250, y: 240 })).not.toContain('plugin_node_1');
     // 新位置 [500, 500] 命中

@@ -39,8 +39,8 @@ function createLargeEngine(): SkyNoteEngine {
 }
 
 function measure(label: string, run: (i: number) => void): number {
-  // 预热，排除 JIT 编译抖动
-  for (let i = 0; i < 20; i++) run(i);
+  // 充分预热，让新增的代码路径完成优化编译后再计时，排除 JIT 抖动
+  for (let i = 0; i < 300; i++) run(i);
   const start = performance.now();
   for (let i = 0; i < ITERATIONS; i++) run(i);
   const perCommit = (performance.now() - start) / ITERATIONS;
@@ -54,7 +54,7 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
 
   it('拖拽单节点 (groupId 折叠)', () => {
     expect(
-      measure('拖拽单节点', () => store.moveNode('n100', { x: 1 }, { groupId: 'drag' }))
+      measure('拖拽单节点', () => store.moveNodes(['n100'], { x: 1 }, { groupId: 'drag' }))
     ).toBeLessThan(BUDGET_MS_PER_COMMIT);
   });
 
@@ -63,4 +63,19 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
       measure('修改单节点样式', (i) => store.updateNode('n100', { style: { fill: String(i) } }))
     ).toBeLessThan(BUDGET_MS_PER_COMMIT);
   });
+
+  it('多选拖拽 2000 个节点 (同组折叠 60 帧)', () => {
+    const ids = Array.from({ length: 2000 }, (_, i) => `n${i}`);
+    const frames: number[] = [];
+    for (let f = 0; f < 60; f++) {
+      const start = performance.now();
+      store.moveNodes(ids, { x: 1, y: 1 }, { groupId: 'multi-drag' });
+      frames.push(performance.now() - start);
+    }
+    const median = [...frames].sort((a, b) => a - b)[30];
+    console.info(`[bench] 多选拖拽 2000 节点: 中位 ${median.toFixed(1)}ms / 帧`);
+    // 实测约 8ms；撤销压缩或空间索引若退化为平方级，此处会达到数百毫秒
+    expect(median).toBeLessThan(40);
+  });
 });
+

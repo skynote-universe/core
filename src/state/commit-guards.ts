@@ -15,28 +15,60 @@ import type { CanvasPatch } from '../types/operation';
 import { normalizePatchPath } from '../operation/patch-path';
 import { isValidFractionalIndex } from '../utils/fractional-index';
 
-const INLINE_MEDIA_URL = /^(?:data|blob):/i;
-
 /**
- * 查找值中内联的媒体地址，返回其所在路径描述；不存在返回 null
+ * 只匹配真实的内联媒体地址，避免误伤以 "Data:" 开头的普通文字：
+ * data:<type>/<subtype>[;参数],<数据> 与 blob:<来源>/<id> (来源为 http(s)、file 或 null)
  */
-export function findInlineMediaUrl(value: unknown, path = ''): string | null {
-  if (typeof value === 'string') {
-    return INLINE_MEDIA_URL.test(value) ? path || '(根值)' : null;
-  }
+const INLINE_MEDIA_URL = /^(?:data:[\w.+-]+\/[\w.+-]+(?:;[^,]*)?,|blob:(?:https?:\/\/|file:|null\/))/i;
+
+/** 深度遍历查找内联媒体，只在命中时回溯拼出所在路径 (未命中时零字符串分配) */
+function findInlineMediaSegments(value: unknown): (string | number)[] | null {
+  if (typeof value === 'string') return INLINE_MEDIA_URL.test(value) ? [] : null;
   if (value === null || typeof value !== 'object') return null;
 
   if (Array.isArray(value)) {
     for (let i = 0; i < value.length; i++) {
-      const found = findInlineMediaUrl(value[i], `${path}[${i}]`);
-      if (found) return found;
+      const found = findInlineMediaSegments(value[i]);
+      if (found) {
+        found.unshift(i);
+        return found;
+      }
     }
     return null;
   }
 
   const record = value as Record<string, unknown>;
-  for (const key of Object.keys(record)) {
-    const found = findInlineMediaUrl(record[key], path ? `${path}.${key}` : key);
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    const found = findInlineMediaSegments(record[key]);
+    if (found) {
+      found.unshift(key);
+      return found;
+    }
+  }
+  return null;
+}
+
+/**
+ * 查找值中内联的媒体地址，返回其所在路径描述；不存在返回 null
+ */
+export function findInlineMediaUrl(value: unknown, basePath: readonly (string | number)[] = []): string | null {
+  const found = findInlineMediaSegments(value);
+  if (!found) return null;
+  const segments = [...basePath, ...found];
+  return segments.length > 0 ? segments.join('.') : '(根值)';
+}
+
+/**
+ * 查找补丁写入值中的内联媒体地址：只扫描 set 的值与 splice 插入项，跳过路径；
+ * text 补丁是用户输入的文字差量，不做媒体判定
+ */
+export function findInlineMediaInPatches(patches: readonly CanvasPatch[]): string | null {
+  for (let i = 0; i < patches.length; i++) {
+    const patch = patches[i];
+    const value = patch.op === 'set' ? patch.value : patch.op === 'splice' ? patch.items : undefined;
+    if (value === undefined) continue;
+    const found = findInlineMediaUrl(value, normalizePatchPath(patch.path));
     if (found) return found;
   }
   return null;

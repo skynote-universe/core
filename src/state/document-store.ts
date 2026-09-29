@@ -20,7 +20,7 @@ import { EntityStore } from "./entity-store";
 import { OperationCoordinator } from "../operation/coordinator";
 import { normalizePatchPath } from "../operation/patch-path";
 import { clonePlainData } from "../utils/clone";
-import { findInlineMediaUrl, findParentCycle, findInvalidZIndex } from "./commit-guards";
+import { findInlineMediaUrl, findInlineMediaInPatches, findParentCycle, findInvalidZIndex } from "./commit-guards";
 import {
     computeLayerOrder,
     deriveLayerOrderPatches,
@@ -158,7 +158,7 @@ export class DocumentStore {
      * 先经结构性守卫 (零 Base64、容器无环)，违规时整个事务拒绝执行并返回 null
      */
     commit(options: CommitOperationOptions): CanvasOperationRecord | null {
-        const inlineMedia = findInlineMediaUrl(options.patches);
+        const inlineMedia = findInlineMediaInPatches(options.patches);
         if (inlineMedia) {
             console.error(`[DocumentStore] 事务被拒绝：${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`);
             return null;
@@ -231,42 +231,76 @@ export class DocumentStore {
     }
 
     /**
-     * 移除节点：同一事务内级联删除全部后代节点 (容器语义) 与这些节点上的依附连线，撤销时整体恢复
+     * 过滤出「祖先不在集合中」的节点：容器的移动与删除已连带处理后代，
+     * 否则同时选中容器与其子节点时，子节点会被重复移动 (连带一次 + 自身一次)
+     */
+    private collectTopmost(nodeIds: Iterable<string>): string[] {
+        const { nodes } = this.document.content;
+        const selected = new Set<string>();
+        for (const id of nodeIds) {
+            if (Object.hasOwn(nodes, id)) selected.add(id);
+        }
+        const topmost: string[] = [];
+        for (const id of selected) {
+            let parentId = nodes[id].parentId;
+            let covered = false;
+            while (parentId !== undefined && Object.hasOwn(nodes, parentId)) {
+                if (selected.has(parentId)) {
+                    covered = true;
+                    break;
+                }
+                parentId = nodes[parentId].parentId;
+            }
+            if (!covered) topmost.push(id);
+        }
+        return topmost;
+    }
+
+    /**
+     * 删除节点 (支持多选)：同一事务内级联删除全部后代 (容器语义) 与这些节点上的依附连线，撤销一步整体恢复
      * 选区中的失效项由引擎在收到变更集后统一剔除，本地删除与远端删除走同一条路径
      */
-    removeNode(nodeId: string, options?: { undoable?: boolean; label?: string }): CanvasOperationRecord | null {
-        if (!Object.hasOwn(this.document.content.nodes, nodeId)) return null;
+    removeNodes(nodeIds: Iterable<string>, options?: { undoable?: boolean; label?: string }): CanvasOperationRecord | null {
+        const removed = new Set<string>();
+        for (const id of this.collectTopmost(nodeIds)) {
+            removed.add(id);
+            for (const descendantId of this.entityStore.collectDescendantIds(id)) removed.add(descendantId);
+        }
+        if (removed.size === 0) return null;
 
-        const nodeIds = [nodeId, ...this.entityStore.collectDescendantIds(nodeId)];
         const connectorIds = new Set<string>();
         const patches: CanvasPatch[] = [];
-        for (const id of nodeIds) {
+        for (const id of removed) {
             patches.push({ op: "unset", path: ["content", "nodes", id] });
-            for (const connectorId of this.entityStore.getConnectorIdsOfNode(id)) {
-                connectorIds.add(connectorId);
-            }
+            for (const connectorId of this.entityStore.getConnectorIdsOfNode(id)) connectorIds.add(connectorId);
         }
         for (const connectorId of connectorIds) {
             patches.push({ op: "unset", path: ["content", "connectors", connectorId] });
         }
 
-        return this.commit({
-            label: options?.label ?? "删除节点",
-            undoable: options?.undoable ?? true,
-            patches,
-        });
+        return this.commit({ label: options?.label ?? "删除节点", undoable: options?.undoable ?? true, patches });
     }
 
     /**
-     * 移动节点：坐标均为世界坐标，容器移动时在同一事务内连带平移全部后代 (支持高频拖拽通过 groupId 折叠)
+     * 移动节点 (支持多选)：坐标均为世界坐标，容器移动时在同一事务内连带平移全部后代，每个节点只移动一次
+     * 高频拖拽通过 groupId 折叠为一步撤销
      */
-    moveNode(nodeId: string, delta: { x?: number; y?: number }, options?: { undoable?: boolean; groupId?: string; label?: string }): CanvasOperationRecord | null {
-        if (!Object.hasOwn(this.document.content.nodes, nodeId)) return null;
+    moveNodes(
+        nodeIds: Iterable<string>,
+        delta: { x?: number; y?: number },
+        options?: { undoable?: boolean; groupId?: string; label?: string }
+    ): CanvasOperationRecord | null {
         if (!delta.x && !delta.y) return null;
-
         const { nodes } = this.document.content;
+        const moved = new Set<string>();
+        for (const id of this.collectTopmost(nodeIds)) {
+            moved.add(id);
+            for (const descendantId of this.entityStore.collectDescendantIds(id)) moved.add(descendantId);
+        }
+        if (moved.size === 0) return null;
+
         const patches: CanvasPatch[] = [];
-        for (const id of [nodeId, ...this.entityStore.collectDescendantIds(nodeId)]) {
+        for (const id of moved) {
             if (delta.x) patches.push({ op: "set", path: ["content", "nodes", id, "x"], value: nodes[id].x + delta.x });
             if (delta.y) patches.push({ op: "set", path: ["content", "nodes", id, "y"], value: nodes[id].y + delta.y });
         }

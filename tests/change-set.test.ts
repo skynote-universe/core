@@ -68,7 +68,7 @@ describe('数据一致性底线', () => {
   it('远端删除后本地撤销冲突：条目作废、历史状态广播，文档不被污染', () => {
     const store = new DocumentStore();
     store.addNode(makeNode('b'));
-    store.moveNode('b', { x: 100 });
+    store.moveNodes(['b'], { x: 100 });
     store.commit({ origin: 'remote', patches: [{ op: 'unset', path: ['content', 'nodes', 'b'] }] });
 
     const historyStates: boolean[] = [];
@@ -99,7 +99,7 @@ describe('数据一致性底线', () => {
     store.addNode(makeNode('a'));
     const addEntry = store.coordinator.getUndoEntries()[0];
 
-    store.moveNode('a', { x: 50 });
+    store.moveNodes(['a'], { x: 50 });
     store.updateNode('a', { style: { fill: 'red' } });
 
     const recorded = (addEntry.patches[0] as { value: NodeEntity }).value;
@@ -151,7 +151,7 @@ describe('数据一致性底线', () => {
     store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
     engine.session.setSelection({ nodeIds: ['a', 'b'], connectorIds: ['c1'] });
 
-    store.removeNode('a');
+    store.removeNodes(['a']);
     const view = engine.getView();
     expect(Object.keys(view.content.connectors)).toEqual([]);
     expect([...engine.session.selectedNodeIds]).toEqual(['b']);
@@ -188,7 +188,7 @@ describe('DocumentChangeSet 归类', () => {
     store.addNode(makeNode('a'));
     const changes = captureChanges(store);
 
-    store.moveNode('a', { x: 5 });
+    store.moveNodes(['a'], { x: 5 });
     store.updateNode('a', { style: { fill: 'red' } });
     store.updateNode('a', { zIndex: 'a3' });
 
@@ -210,7 +210,7 @@ describe('DocumentChangeSet 归类', () => {
 
     store.addNode(makeNode('a'));
     store.commit({ patches: [{ op: 'set', path: ['content', 'nodes', 'a'], value: makeNode('a', 50) }] });
-    store.removeNode('a');
+    store.removeNodes(['a']);
 
     const [added, replaced, removed] = changes;
     expect([...added.nodes.added]).toEqual(['a']);
@@ -248,7 +248,7 @@ describe('DocumentChangeSet 归类', () => {
     store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
     const changes = captureChanges(store);
 
-    store.moveNode('b', { x: 10 });
+    store.moveNodes(['b'], { x: 10 });
     expect([...changes[0].connectors.geometry]).toEqual(['c1']);
 
     store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1', 'to', 'nodeId'], value: 'c' }] });
@@ -272,7 +272,7 @@ describe('引擎增量维护空间索引', () => {
     store.updateNode('n1', { style: { fill: 'red' } });
     expect(updateSpy).not.toHaveBeenCalled();
 
-    store.moveNode('n5', { x: 1 });
+    store.moveNodes(['n5'], { x: 1 });
     expect(updateSpy).toHaveBeenCalledTimes(1);
     expect(updateSpy.mock.calls[0][0]).toBe('n5');
   });
@@ -287,7 +287,7 @@ describe('引擎增量维护空间索引', () => {
     // 包围盒取真实路由：直线路由连接两端节点中心 (5 → 105)
     expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(105);
     const routeBefore = engine.getConnectorRoute('c1');
-    store.moveNode('b', { x: 400 });
+    store.moveNodes(['b'], { x: 400 });
     expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(505);
     // 路由整体替换，下游按引用即可判定失效
     expect(engine.getConnectorRoute('c1')).not.toBe(routeBefore);
@@ -305,7 +305,7 @@ describe('引擎增量维护空间索引', () => {
     store.updateNode('a', { style: { fill: 'red' } });
     expect(engine.getConnectorRoute('c1')).toBe(route);
 
-    store.removeNode('a');
+    store.removeNodes(['a']);
     expect(engine.getConnectorRoute('c1')).toBeUndefined();
     expect(engine.connectorSpatialIndex.size).toBe(0);
   });

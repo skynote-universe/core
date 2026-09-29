@@ -22,64 +22,11 @@ import type {
   CanvasPatch
 } from '../types/operation';
 import { applyPatches } from './patch-applier';
-import { getValueByPath, normalizePatchPath } from './patch-path';
+import { getValueByPath } from './patch-path';
+import { OverwriteCompactor } from './overwrite-compactor';
 import { isEqual } from '../utils/equality';
 import { generateId } from '../utils/id';
 import { clonePlainData } from '../utils/clone';
-
-/** 整值覆盖补丁：非 merge 的 set 与 unset，执行结果只取决于自身，与该路径此前的值无关 */
-function isOverwritePatch(patch: CanvasPatch): boolean {
-  return (patch.op === 'set' && !patch.merge) || patch.op === 'unset';
-}
-
-/** 两条路径是否互为祖先/后代或完全相同 */
-function arePathsRelated(a: readonly (string | number)[], b: readonly (string | number)[]): boolean {
-  const length = Math.min(a.length, b.length);
-  for (let i = 0; i < length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
-/**
- * 压缩同一路径上的连续整值覆盖
- * 两次覆盖之间若有祖先/后代路径的补丁介入（如先改 style.fill 再整体覆盖 style），保守地不做压缩
- * @param keep 'last' 用于正向补丁 (最终值生效)；'first' 用于逆向补丁 (倒序回放时最早的旧值最后生效)
- */
-function compactOverwrites(patches: readonly CanvasPatch[], keep: 'first' | 'last'): CanvasPatch[] {
-  const segmentsList = patches.map((patch) => normalizePatchPath(patch.path));
-  const dropped = new Set<number>();
-  /** 路径键 -> 当前可被合并的覆盖补丁下标 */
-  const candidates = new Map<string, number>();
-
-  for (let i = 0; i < patches.length; i++) {
-    const segments = segmentsList[i];
-    const key = segments.join('\u0000');
-    const previous = isOverwritePatch(patches[i]) ? candidates.get(key) : undefined;
-
-    // 任何补丁都会让与之相关、但路径不完全相同的候选失效
-    for (const [candidateKey, index] of candidates) {
-      if (candidateKey !== key && arePathsRelated(segmentsList[index], segments)) {
-        candidates.delete(candidateKey);
-      }
-    }
-
-    if (previous === undefined) {
-      if (isOverwritePatch(patches[i])) candidates.set(key, i);
-      else candidates.delete(key);
-      continue;
-    }
-
-    if (keep === 'last') {
-      dropped.add(previous);
-      candidates.set(key, i);
-    } else {
-      dropped.add(i);
-    }
-  }
-
-  return dropped.size === 0 ? [...patches] : patches.filter((_, i) => !dropped.has(i));
-}
 
 /**
  * 派生补丁函数：接收已应用原补丁的文档与本次原补丁，返回需要追加到同一事务的补丁
@@ -113,6 +60,8 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   private isApplyingHistory = false;
 
   private derivation: PatchDerivation<TDoc> | null = null;
+  /** 栈顶分组条目的增量压缩状态：同组后续操作只处理新增补丁 */
+  private groupCompaction: { entryId: string; forward: OverwriteCompactor; inverse: OverwriteCompactor } | null = null;
 
   constructor(targetDoc: TDoc, options?: OperationCoordinatorOptions) {
     this.targetDoc = targetDoc;
@@ -313,6 +262,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     }
     this.undoStack.length = 0;
     this.redoStack.length = 0;
+    this.groupCompaction = null;
     this.notifyHistoryChanged();
   }
 
@@ -352,14 +302,24 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
 
     // 连续操作折叠逻辑：同一 groupId 的连续操作合并为单一条目
     if (record.groupId && lastEntry && lastEntry.groupId === record.groupId) {
+      let state = this.groupCompaction;
+      if (!state || state.entryId !== lastEntry.id) {
+        state = { entryId: lastEntry.id, forward: new OverwriteCompactor('last'), inverse: new OverwriteCompactor('first') };
+        state.forward.push(lastEntry.patches);
+        state.inverse.push(lastEntry.inversePatches);
+        this.groupCompaction = state;
+      }
+      state.forward.push(record.patches);
+      state.inverse.push(record.inversePatches);
+
       const mergedEntry: CanvasHistoryEntry = {
         id: lastEntry.id,
         label: record.label || lastEntry.label,
         timestamp: record.timestamp,
         groupId: record.groupId,
         // 正向补丁依次累积，逆向补丁保持自然时间序（undo 时整体倒序执行）
-        patches: compactOverwrites([...lastEntry.patches, ...record.patches], 'last'),
-        inversePatches: compactOverwrites([...lastEntry.inversePatches, ...record.inversePatches], 'first')
+        patches: state.forward.toArray(),
+        inversePatches: state.inverse.toArray()
       };
 
       this.undoStack[this.undoStack.length - 1] = mergedEntry;

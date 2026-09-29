@@ -34,6 +34,22 @@ describe('零 Base64 守卫', () => {
     expect(store.updateNode('a', { data: { assetId: 'asset_1' } })).not.toBeNull();
   });
 
+  it('不误伤普通文字：以 "Data:" / "blob:" 开头的文本与文字编辑差量均放行', () => {
+    const store = new DocumentStore();
+    const note = {
+      ...makeNode('note', 0),
+      textBlocks: [{ id: 't', runs: [{ text: 'Data: Q3 营收增长 12%' }, { text: 'blob: 待办' }] }]
+    };
+    expect(store.addNode(note)).not.toBeNull();
+    expect(
+      store.commit({
+        patches: [{ op: 'text', path: ['content', 'nodes', 'note', 'textBlocks', 0, 'runs', 0, 'text'], deltas: [{ insert: 'data:image/png;base64,AAAA ' }] }]
+      })
+    ).not.toBeNull();
+    // blob: 后跟非来源格式的文字同样放行，真实 blob 地址才拒绝
+    expect(store.updateNode('note', { data: { src: 'blob:https://app.example/123' } })).toBeNull();
+  });
+
   it('导入含内联媒体的文档时直接抛错', () => {
     const doc = createEmptyCanvasDocument();
     doc.content.nodes.a = { ...makeNode('a', 0), data: { src: 'data:image/png;base64,AAAA' } };
@@ -84,7 +100,7 @@ describe('容器语义', () => {
     store.addNode(makeNode('badge', 25, 'card'));
     store.addNode(makeNode('outside', 500));
 
-    store.moveNode('frame', { x: 100 });
+    store.moveNodes(['frame'], { x: 100 });
     const nodes = engine.getView().content.nodes;
     expect([nodes.frame.x, nodes.card.x, nodes.badge.x, nodes.outside.x]).toEqual([100, 120, 125, 500]);
     // 空间索引同步更新了后代
@@ -110,7 +126,7 @@ describe('容器语义', () => {
       ]
     });
 
-    store.removeNode('frame');
+    store.removeNodes(['frame']);
     const { nodes, connectors } = store.getView().content;
     expect(Object.keys(nodes)).toEqual(['outside']);
     expect(Object.keys(connectors)).toEqual([]);
@@ -120,4 +136,36 @@ describe('容器语义', () => {
     expect(store.entityStore.collectDescendantIds('frame').sort()).toEqual(['badge', 'card']);
     expect(Object.keys(store.getView().content.connectors)).toEqual(['c1']);
   });
+
+  it('多选移动：同时选中容器与其子节点时每个节点只移动一次，一步撤销', () => {
+    const store = new DocumentStore();
+    store.addNode(makeNode('frame', 0));
+    store.addNode(makeNode('card', 20, 'frame'));
+    store.addNode(makeNode('solo', 500));
+
+    store.moveNodes(['card', 'frame', 'solo'], { x: 100 });
+    const nodes = store.getView().content.nodes;
+    expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([100, 120, 600]);
+    expect(store.coordinator.getUndoEntries()).toHaveLength(4);
+
+    store.undo();
+    expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([0, 20, 500]);
+  });
+
+  it('多选删除：一个事务一步撤销，已被容器覆盖的子节点不重复处理', () => {
+    const store = new DocumentStore();
+    store.addNode(makeNode('frame', 0));
+    store.addNode(makeNode('card', 20, 'frame'));
+    store.addNode(makeNode('a', 300));
+    store.addNode(makeNode('b', 400));
+    const depth = store.coordinator.getUndoEntries().length;
+
+    store.removeNodes(['card', 'frame', 'a', 'missing']);
+    expect(Object.keys(store.getView().content.nodes)).toEqual(['b']);
+    expect(store.coordinator.getUndoEntries()).toHaveLength(depth + 1);
+
+    store.undo();
+    expect(Object.keys(store.getView().content.nodes).sort()).toEqual(['a', 'b', 'card', 'frame']);
+  });
 });
+

@@ -472,12 +472,39 @@ export class RTreeSpatialIndex implements SpatialIndex {
     }
   }
 
+  /**
+   * 自下而上刷新包围盒：原地求极值，仅在包围盒确实变化时才分配新对象；
+   * 祖先包围盒未变即停止上溯 (小步拖拽绝大多数停在叶子层)。
+   * 起始节点可能已被调用方预先写入新包围盒，因此无论其是否变化都至少上溯到父节点。
+   */
   private recalculateBoundsUpwards(node: RTreeNode): void {
-    let curr: RTreeNode | undefined = node;
-    while (curr) {
-      curr.bounds = computeChildrenBounds(curr.children);
+    this.refreshBounds(node);
+    let curr = node.parent;
+    while (curr && this.refreshBounds(curr)) {
       curr = curr.parent;
     }
+  }
+
+  /** 按子项重算节点包围盒，返回是否发生变化 */
+  private refreshBounds(node: RTreeNode): boolean {
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    const children = node.children;
+    for (let i = 0; i < children.length; i++) {
+      const b = children[i].bounds;
+      if (b.left < left) left = b.left;
+      if (b.top < top) top = b.top;
+      if (b.right > right) right = b.right;
+      if (b.bottom > bottom) bottom = b.bottom;
+    }
+    const current = node.bounds;
+    if (current.left === left && current.top === top && current.right === right && current.bottom === bottom) {
+      return false;
+    }
+    node.bounds = { left, top, right, bottom, width: right - left, height: bottom - top };
+    return true;
   }
 
   private searchNode(node: RTreeNode, query: RectBounds, result: string[]): void {

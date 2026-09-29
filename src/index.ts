@@ -18,6 +18,7 @@ export * from './spatial';
 export * from './input';
 export * from './plugin';
 export * from './routing/connector-route';
+export * from './layout/text-layout';
 export * from './engine';
 
 

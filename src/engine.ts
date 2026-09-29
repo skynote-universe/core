@@ -3,13 +3,15 @@
  * @description SkyNote 平台中立核心引擎门面 (SkyNoteEngine)
  * 
  * 设计考量 (Why):
- * 1. 唯一门面，统筹枢纽：将 DocumentStore、EntityStore、NodeTypeRegistry、SpatialGridIndex、
- *    InputScopeManager、PluginManager 强力组装为一体。
+ * 1. 唯一门面，统筹枢纽：将 DocumentStore、EntityStore、NodeTypeRegistry、SpatialIndex、
+ *    InputScopeManager、PluginManager 与本地会话状态组装为一体。
  * 2. 空间拓扑与状态树自联动：消费 DocumentChangeSet 增量维护节点与连线两套空间索引，
  *    每次提交只触达变更实体，与画布总规模无关；渲染器与选框无需手动同步索引。
+ * 3. 严格遵循四大红线：全文 0 DOM / 0 Canvas 依赖，纯内存图灵完备，可无缝运行于浏览器、Web Worker 或 Node.js。
  * 4. 连线路由统一求解：几何失效的连线在此求解路由并缓存，连线空间索引取真实路由包围盒；
  *    渲染器、导出与插件经 getConnectorRoute 共享结果。路由器晚于文档注册时自动重算对应类型的连线。
- * 3. 严格遵循四大红线：全文 0 DOM / 0 Canvas 依赖，纯内存图灵完备，可无缝运行于浏览器、Web Worker 或 Node.js。
+ * 5. 文本驱动的自动尺寸：注入 TextMeasurer 后，本地事务中的文本/宽度变更在同一事务内派生节点尺寸补丁，
+ *    撤销文字修改时尺寸一并回退；未注入测量器时节点尺寸完全由用户与插件决定。
  */
 
 import type { CanvasDocument, CanvasDocumentView, ViewportState } from './types/canvas';
@@ -18,6 +20,9 @@ import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
 import { computeNodeBounds } from './utils/geometry';
 import { computeConnectorRoute } from './routing/connector-route';
+import type { TextMeasurer } from './protocols/text-measurer.protocol';
+import type { CanvasOperationRecord } from './types/operation';
+import { collectTextLayoutTargets, deriveTextLayoutPatches } from './layout/text-layout';
 import { DocumentStore, createEmptyCanvasDocument } from './state/document-store';
 import type { EntityReader } from './state/entity-store';
 import { SessionStore } from './state/session-store';
@@ -37,6 +42,8 @@ export interface SkyNoteEngineOptions {
   initialViewport?: Partial<ViewportState>;
   /** 画布主题 (默认浅色预设)，运行时通过 engine.session.setTheme() 显式切换 */
   theme?: CanvasThemeConfig;
+  /** 文本测量器 (由渲染适配层提供，如 createLeaferTextMeasurer)，缺省时不做文本驱动的自动尺寸 */
+  textMeasurer?: TextMeasurer;
   /** 自定义节点空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
   spatialIndex?: SpatialIndex;
   /** 自定义连线空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
@@ -61,6 +68,7 @@ export class SkyNoteEngine {
   private readonly unsubscribeRouters: () => void;
   /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
   private readonly routes = new Map<string, ComputedRoute>();
+  private textMeasurer: TextMeasurer | null = null;
   private isDestroyed = false;
 
   constructor(options?: SkyNoteEngineOptions) {
@@ -98,6 +106,8 @@ export class SkyNoteEngine {
       this.syncSpatialIndexes(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
     });
+    this.setTextMeasurer(options?.textMeasurer ?? null);
+
     this.unsubscribeRouters = this.routers.onChange((routerId) => {
       const affected = this.entityStore
         .getAllConnectors()
@@ -163,6 +173,29 @@ export class SkyNoteEngine {
     }
     // 依附节点移动引发的路由失效已由 DocumentStore 并入 connectors.geometry
     this.updateConnectorRoutes(changes.connectors.geometry);
+  }
+
+  /**
+   * 注入或移除文本测量器：注入后本地事务中的文本与宽度变更会在同一事务内派生节点尺寸
+   */
+  setTextMeasurer(measurer: TextMeasurer | null): void {
+    this.textMeasurer = measurer;
+    this.documentStore.coordinator.setPatchDerivation(
+      measurer
+        ? (doc, patches) => deriveTextLayoutPatches(doc, collectTextLayoutTargets(patches), measurer, this.nodeTypes)
+        : null
+    );
+  }
+
+  /**
+   * 按当前测量器重新排版节点 (默认全部节点)，以非撤销的系统事务写回尺寸
+   * 用于 Web 字体加载完成、测量器替换等测量基准变化的时机
+   */
+  relayoutText(nodeIds?: Iterable<string>): CanvasOperationRecord | null {
+    if (!this.textMeasurer) return null;
+    const targets = nodeIds ?? this.entityStore.getAllNodes().map((runtimeNode) => runtimeNode.entity.id);
+    const patches = deriveTextLayoutPatches(this.getView() as CanvasDocument, targets, this.textMeasurer, this.nodeTypes);
+    return this.documentStore.commit({ label: '重新排版文本', source: 'system', undoable: false, patches });
   }
 
   /**

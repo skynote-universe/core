@@ -11,6 +11,8 @@
  * 5. 历史不可变：提交入口深拷贝补丁，调用方事后修改自己持有的补丁对象不会篡改撤销栈与广播出去的记录。
  * 6. 冲突即丢弃：撤销/重做若因远端并发改动而无法执行（如目标实体已被删除），该条目整体作废并通知历史栈变化，
  *    不做部分回放，保证每一步撤销都是完整的原子事务。
+ * 7. 事务内派生：可注册派生函数，在本地事务执行后基于新状态补充派生补丁 (如文本排版得出的尺寸)，
+ *    与原补丁合并为同一条记录，撤销时一并回退；远端事务不派生，以发送方结果为准，避免各端测量差异导致分歧。
  */
 
 import type {
@@ -79,6 +81,12 @@ function compactOverwrites(patches: readonly CanvasPatch[], keep: 'first' | 'las
   return dropped.size === 0 ? [...patches] : patches.filter((_, i) => !dropped.has(i));
 }
 
+/**
+ * 派生补丁函数：接收已应用原补丁的文档与本次原补丁，返回需要追加到同一事务的补丁
+ * 仅对本地事务调用；撤销/重做直接回放记录，不再派生
+ */
+export type PatchDerivation<TDoc> = (doc: TDoc, patches: readonly CanvasPatch[]) => CanvasPatch[];
+
 /** 操作提交事件回调 */
 export type OperationListener<TDoc = unknown> = (record: CanvasOperationRecord, doc: TDoc) => void;
 
@@ -104,9 +112,16 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   /** 标记当前是否正处于 undo/redo 执行期间，防止循环入栈 */
   private isApplyingHistory = false;
 
+  private derivation: PatchDerivation<TDoc> | null = null;
+
   constructor(targetDoc: TDoc, options?: OperationCoordinatorOptions) {
     this.targetDoc = targetDoc;
     this.maxHistorySize = options?.maxHistorySize ?? 100;
+  }
+
+  /** 注册或移除事务内派生函数 */
+  setPatchDerivation(derivation: PatchDerivation<TDoc> | null): void {
+    this.derivation = derivation;
   }
 
   /** 是否可撤销 */
@@ -152,9 +167,24 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     }
 
     // 优先使用显式传入的逆向补丁，未传入时使用应用器推导出的对偶补丁
-    const finalInversePatches = options.inversePatches
+    let finalPatches = patches;
+    let finalInversePatches = options.inversePatches
       ? clonePlainData(options.inversePatches)
       : applyResult.inversePatches;
+
+    if (origin === 'local' && this.derivation) {
+      const derived = clonePlainData(this.derivation(this.targetDoc, patches));
+      if (derived.length > 0) {
+        const derivedResult = applyPatches(this.targetDoc, derived);
+        if (!derivedResult.success) {
+          applyPatches(this.targetDoc, [...applyResult.inversePatches].reverse());
+          console.error('[OperationCoordinator] 派生补丁执行失败，整个事务已回滚:', derivedResult.error);
+          return null;
+        }
+        finalPatches = [...patches, ...derived];
+        finalInversePatches = [...finalInversePatches, ...derivedResult.inversePatches];
+      }
+    }
 
     const record: CanvasOperationRecord = {
       id: generateId('op'),
@@ -164,7 +194,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       source,
       undoable,
       groupId: options.groupId,
-      patches,
+      patches: finalPatches,
       inversePatches: finalInversePatches,
       payload: options.payload
     };

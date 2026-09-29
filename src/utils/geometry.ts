@@ -1,7 +1,7 @@
 /**
  * @file geometry.ts
  * @description 纯函数 2D 几何计算、包围盒求解与视口自适应算法
- * 
+ *
  * 设计考量 (Why):
  * 1. 纯函数铁律：所有几何函数严禁就地修改入参对象，必须计算并返回全新对象，确保撤销重做与并发计算无副作用。
  * 2. 跨平台纯数学：仅依赖基础数学运算符，零 DOM/Canvas 依赖，支持在 Node.js 和 Web Worker 中独立并行运行。
@@ -34,22 +34,12 @@ export function clamp(val: number, min: number, max: number): number {
 
 /** 点是否在矩形包围盒内 */
 export function isPointInBounds(point: Point, bounds: RectBounds): boolean {
-  return (
-    point.x >= bounds.left &&
-    point.x <= bounds.right &&
-    point.y >= bounds.top &&
-    point.y <= bounds.bottom
-  );
+  return point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom;
 }
 
 /** 两个矩形包围盒是否相交 (用于框选相交判定) */
 export function doBoundsIntersect(a: RectBounds, b: RectBounds): boolean {
-  return !(
-    a.right < b.left ||
-    a.left > b.right ||
-    a.bottom < b.top ||
-    a.top > b.bottom
-  );
+  return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
 }
 
 /**
@@ -90,17 +80,8 @@ export function computeBoundingBox(
 /**
  * 计算将指定包围盒完全容纳在当前视口中央的 ViewportState (缩放与平移)
  */
-export function computeViewportToFitBounds(
-  bounds: RectBounds,
-  options: FitViewportOptions
-): ViewportState | null {
-  const {
-    viewportWidth,
-    viewportHeight,
-    padding = 120,
-    minZoom = 0.1,
-    maxZoom = 2.0
-  } = options;
+export function computeViewportToFitBounds(bounds: RectBounds, options: FitViewportOptions): ViewportState | null {
+  const { viewportWidth, viewportHeight, padding = 120, minZoom = 0.1, maxZoom = 2.0 } = options;
 
   if (viewportWidth <= 0 || viewportHeight <= 0 || bounds.width <= 0 || bounds.height <= 0) {
     return null;
@@ -109,11 +90,7 @@ export function computeViewportToFitBounds(
   const availableWidth = Math.max(1, viewportWidth - padding * 2);
   const availableHeight = Math.max(1, viewportHeight - padding * 2);
 
-  const zoom = clamp(
-    Math.min(availableWidth / bounds.width, availableHeight / bounds.height),
-    minZoom,
-    maxZoom
-  );
+  const zoom = clamp(Math.min(availableWidth / bounds.width, availableHeight / bounds.height), minZoom, maxZoom);
 
   const centerX = bounds.left + bounds.width / 2;
   const centerY = bounds.top + bounds.height / 2;
@@ -127,19 +104,16 @@ export function computeViewportToFitBounds(
 
 /**
  * 构造带有转弯圆角平滑过渡的折线 SVG 路径指令 (M ... L ... Q ...)
- * 
+ *
  * 设计考量 (Why):
  * 1. 纯函数铁律：严格纯数学计算，零修改入参，支持正交路由、多段折线或用户手动拐点。
  * 2. 动态自适应截断：圆角半径 r = min(cornerRadius, d1/2, d2/2)，防止超短线段发生圆角反向穿透畸变。
  * 3. 刀锋锐利切线：通过二阶贝塞尔曲线以原拐点为控制手柄，完美契合切线连续性 (C1 连续)。
- * 
+ *
  * @param points 折线有序顶点集合 (至少 2 个点)
  * @param cornerRadius 拐点最大圆角半径 (若 <= 0 则生成直角直线路径)
  */
-export function buildRoundedPolylinePath(
-  points: readonly Point[],
-  cornerRadius = 0
-): string {
+export function buildRoundedPolylinePath(points: readonly Point[], cornerRadius = 0): string {
   if (points.length === 0) return '';
   if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
   if (points.length === 2 || cornerRadius <= 0) {
@@ -195,7 +169,6 @@ export function buildRoundedPolylinePath(
 
   return path;
 }
-
 
 /** 参与旋转几何计算的节点字段 (rotation 单位为度，绕节点中心旋转；x / y / width / height 描述未旋转的框) */
 export interface RotatableBox {

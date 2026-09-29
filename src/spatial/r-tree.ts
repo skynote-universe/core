@@ -14,11 +14,7 @@
  */
 
 import type { Point } from '../types/canvas';
-import {
-  type RectBounds,
-  doBoundsIntersect,
-  isPointInBounds
-} from '../utils/geometry';
+import { type RectBounds, doBoundsIntersect, isPointInBounds } from '../utils/geometry';
 import type { SpatialIndex, SpatialIndexEntry } from './spatial-index';
 
 interface RTreeEntry {
@@ -64,10 +60,7 @@ function computeChildrenBounds(children: readonly (RTreeNode | RTreeEntry)[]): R
 
 function containsBounds(outer: RectBounds, inner: RectBounds): boolean {
   return (
-    inner.left >= outer.left &&
-    inner.top >= outer.top &&
-    inner.right <= outer.right &&
-    inner.bottom <= outer.bottom
+    inner.left >= outer.left && inner.top >= outer.top && inner.right <= outer.right && inner.bottom <= outer.bottom
   );
 }
 

@@ -1,7 +1,7 @@
 /**
  * @file engine.ts
  * @description SkyNote 平台中立核心引擎门面 (SkyNoteEngine)
- * 
+ *
  * 设计考量 (Why):
  * 1. 唯一门面，统筹枢纽：将 DocumentStore、EntityStore、NodeTypeRegistry、SpatialIndex、
  *    InputScopeManager、PluginManager 与本地会话状态组装为一体。
@@ -96,9 +96,13 @@ export class SkyNoteEngine {
     });
 
     this.spatialIndex.load(
-      this.entityStore.getAllNodes().map((runtimeNode) => [runtimeNode.entity.id, computeNodeBounds(runtimeNode.entity)] as const)
+      this.entityStore
+        .getAllNodes()
+        .map((runtimeNode) => [runtimeNode.entity.id, computeNodeBounds(runtimeNode.entity)] as const)
     );
-    this.updateConnectorRoutes(this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id));
+    this.updateConnectorRoutes(
+      this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id)
+    );
 
     // 空间索引与选区都是文档的派生状态，由引擎统一维护一致性：
     // 实体删除（本地、远端或撤销）后选区不会残留指向不存在实体的 id
@@ -194,7 +198,12 @@ export class SkyNoteEngine {
   relayoutText(nodeIds?: Iterable<string>): CanvasOperationRecord | null {
     if (!this.textMeasurer) return null;
     const targets = nodeIds ?? this.entityStore.getAllNodes().map((runtimeNode) => runtimeNode.entity.id);
-    const patches = deriveTextLayoutPatches(this.getView() as CanvasDocument, targets, this.textMeasurer, this.nodeTypes);
+    const patches = deriveTextLayoutPatches(
+      this.getView() as CanvasDocument,
+      targets,
+      this.textMeasurer,
+      this.nodeTypes
+    );
     return this.documentStore.commit({ label: '重新排版文本', source: 'system', undoable: false, patches });
   }
 

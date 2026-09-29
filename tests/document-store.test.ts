@@ -324,4 +324,3 @@ describe('DocumentStore & EntityStore', () => {
     expect(store.getView().meta.updatedAt).toBe(savedAt);
   });
 });
-

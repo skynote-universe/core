@@ -1,7 +1,7 @@
 /**
  * @file runtime.ts
  * @description 纯内存运行时元数据与实例信封模型 (Runtime State & Envelopes)
- * 
+ *
  * 设计考量 (Why):
  * 1. 持久化与运行时物理分离：NodeEntity 与 ConnectorEntity 只包含 100% 存入 JSON 的业务数据；
  *    高频脏检查版本号 (geomVersion / dataVersion) 收敛于纯内存运行时包装中，彻底杜绝数据冗余与协同网络雪崩；
@@ -26,10 +26,7 @@ export interface NodeRuntimeState {
  * 运行时节点实例信封 (RuntimeNode)
  * 内核内存仓储 (EntityStore) 中的完整实体承载对象
  */
-export interface RuntimeNode<
-  TData = Record<string, unknown>,
-  TStyle extends NodeStyle = NodeStyle
-> {
+export interface RuntimeNode<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> {
   /** 纯净的持久化实体模型 (单一事实源) */
   readonly entity: NodeEntity<TData, TStyle>;
   /** 运行时专属可变状态 */
@@ -63,10 +60,7 @@ export interface ConnectorRuntimeState {
  * 运行时连线实例信封 (RuntimeConnector)
  * 内核内存仓储 (EntityStore) 中的完整连线承载对象
  */
-export interface RuntimeConnector<
-  TData = Record<string, unknown>,
-  TStyle extends ConnectorStyle = ConnectorStyle
-> {
+export interface RuntimeConnector<TData = Record<string, unknown>, TStyle extends ConnectorStyle = ConnectorStyle> {
   /** 纯净的持久化连线模型 (单一事实源) */
   readonly entity: ConnectorEntity<TData, TStyle>;
   /** 运行时专属可变状态 */

@@ -114,7 +114,11 @@ export function findParentCycle(doc: CanvasDocument, patches: readonly CanvasPat
   if (changes.size === 0) return null;
 
   const parentOf = (id: string): string | undefined =>
-    changes.has(id) ? changes.get(id) : Object.hasOwn(doc.content.nodes, id) ? doc.content.nodes[id].parentId : undefined;
+    changes.has(id)
+      ? changes.get(id)
+      : Object.hasOwn(doc.content.nodes, id)
+        ? doc.content.nodes[id].parentId
+        : undefined;
 
   for (const [id, parentId] of changes) {
     const visited = new Set<string>([id]);
@@ -138,7 +142,9 @@ export function findInvalidZIndex(patches: readonly CanvasPatch[]): string | nul
     if (entity === null || typeof entity !== 'object') return null;
     const record = entity as { zIndex?: unknown };
     if (!requirePresent && !('zIndex' in record)) return null;
-    return isValidFractionalIndex(record.zIndex) ? null : `${kind} ${id} 的 zIndex ${JSON.stringify(record.zIndex)} 不是合法的分数索引`;
+    return isValidFractionalIndex(record.zIndex)
+      ? null
+      : `${kind} ${id} 的 zIndex ${JSON.stringify(record.zIndex)} 不是合法的分数索引`;
   };
   const checkCollection = (kind: string, collection: unknown): string | null => {
     if (collection === null || typeof collection !== 'object') return null;

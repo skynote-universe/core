@@ -1,7 +1,7 @@
 /**
  * @file node-type-registry.ts
  * @description 节点类型注册表 (NodeTypeRegistry)
- * 
+ *
  * 设计考量 (Why):
  * 1. 节点与渲染器彻底解耦：渲染器通过 nodeType.compose(node) 获取声明式图元，
  *    通过此注册表实现动态即插即用，杜绝在内核或渲染器内硬编码 nodeType 判断。

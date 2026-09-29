@@ -1,7 +1,7 @@
 /**
  * @file canvas.ts
  * @description 顶层画布树结构 (CanvasDocument)、视口状态与元数据定义
- * 
+ *
  * 设计考量 (Why):
  * 1. 单一事实源：CanvasDocument 是状态树的顶层根节点，全量数据可纯净 JSON 序列化。
  * 2. 深度只读投影 (CanvasDocumentView)：对外暴露的实时视图在类型上强锁 readonly，防止外部代码意外 bypass 事务机制直接篡改数据。

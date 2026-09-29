@@ -1,16 +1,12 @@
 /**
  * @file spatial-grid-index.ts
  * @description 空间网格哈希索引实现 (SpatialGridIndex)
- * 
+ *
  * 实现统一 SpatialIndex 接口，专用于密集常规图元高频动态拖拽。
  */
 
 import type { Point } from '../types/canvas';
-import {
-  type RectBounds,
-  doBoundsIntersect,
-  isPointInBounds
-} from '../utils/geometry';
+import { type RectBounds, doBoundsIntersect, isPointInBounds } from '../utils/geometry';
 import type { SpatialIndex, SpatialIndexEntry } from './spatial-index';
 
 export interface SpatialGridIndexOptions {

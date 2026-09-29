@@ -1,7 +1,7 @@
 /**
  * @file coordinator.ts
  * @description 画布操作协调器与撤销/重做历史栈引擎
- * 
+ *
  * 设计考量 (Why):
  * 1. 状态流转红线 (AGENTS.md)：所有对画布文档的修改必须通过 commitOperation 统一提交。
  * 2. 撤销栈协同隔离：严格遵守 origin === 'local' 才准入撤销栈，远端协同同步来的 patch 绝不污染本地用户的 Undo 历史。
@@ -304,7 +304,11 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     if (record.groupId && lastEntry && lastEntry.groupId === record.groupId) {
       let state = this.groupCompaction;
       if (!state || state.entryId !== lastEntry.id) {
-        state = { entryId: lastEntry.id, forward: new OverwriteCompactor('last'), inverse: new OverwriteCompactor('first') };
+        state = {
+          entryId: lastEntry.id,
+          forward: new OverwriteCompactor('last'),
+          inverse: new OverwriteCompactor('first')
+        };
         state.forward.push(lastEntry.patches);
         state.inverse.push(lastEntry.inversePatches);
         this.groupCompaction = state;

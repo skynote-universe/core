@@ -86,7 +86,12 @@ export class SessionStore implements SessionController {
 
   setTheme(config: CanvasThemeConfig): void {
     this.themeState = deriveCanvasTheme(config);
-    this.notify({ viewportChanged: false, themeChanged: true, toggledNodeIds: EMPTY_ID_SET, toggledConnectorIds: EMPTY_ID_SET });
+    this.notify({
+      viewportChanged: false,
+      themeChanged: true,
+      toggledNodeIds: EMPTY_ID_SET,
+      toggledConnectorIds: EMPTY_ID_SET
+    });
   }
 
   get viewport(): Readonly<ViewportState> {
@@ -112,7 +117,12 @@ export class SessionStore implements SessionController {
 
     // 整体替换而非就地修改：持有旧引用的读者不会读到撕裂的中间态
     this.viewportState = next;
-    this.notify({ viewportChanged: true, themeChanged: false, toggledNodeIds: EMPTY_ID_SET, toggledConnectorIds: EMPTY_ID_SET });
+    this.notify({
+      viewportChanged: true,
+      themeChanged: false,
+      toggledNodeIds: EMPTY_ID_SET,
+      toggledConnectorIds: EMPTY_ID_SET
+    });
   }
 
   setSelection(selection: SelectionUpdate): void {

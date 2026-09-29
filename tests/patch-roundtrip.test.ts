@@ -50,7 +50,11 @@ function randomPatch(random: () => number, doc: Fixture): CanvasPatch {
 
   if (!existingId || roll < 0.15) {
     const id = pick(random, IDS);
-    return { op: 'set', path: ['nodes', id], value: { x: Math.round(random() * 100), label: 'new', style: {}, tags: [] } };
+    return {
+      op: 'set',
+      path: ['nodes', id],
+      value: { x: Math.round(random() * 100), label: 'new', style: {}, tags: [] }
+    };
   }
   if (roll < 0.25) {
     return { op: 'unset', path: ['nodes', existingId] };
@@ -71,7 +75,13 @@ function randomPatch(random: () => number, doc: Fixture): CanvasPatch {
     const tags = doc.nodes[existingId].tags;
     const index = Math.floor(random() * (tags.length + 1));
     const deleteCount = Math.floor(random() * (tags.length - index + 1));
-    return { op: 'splice', path: ['nodes', existingId, 'tags'], index, deleteCount, items: ['x', 'y'].slice(0, Math.floor(random() * 3)) };
+    return {
+      op: 'splice',
+      path: ['nodes', existingId, 'tags'],
+      index,
+      deleteCount,
+      items: ['x', 'y'].slice(0, Math.floor(random() * 3))
+    };
   }
   const label = doc.nodes[existingId].label;
   const retain = Math.floor(random() * (label.length + 1));
@@ -136,4 +146,3 @@ describe('补丁往返性质', () => {
     }
   });
 });
-

@@ -9,7 +9,19 @@ import { DocumentStore, createEmptyCanvasDocument } from '../src/state/document-
 import type { NodeEntity } from '../src/types/node';
 
 function makeNode(id: string, x: number, parentId?: string): NodeEntity {
-  return { id, type: 'node', nodeType: 'rect', x, y: 0, width: 10, height: 10, rotation: 0, zIndex: 'a0', locked: false, parentId };
+  return {
+    id,
+    type: 'node',
+    nodeType: 'rect',
+    x,
+    y: 0,
+    width: 10,
+    height: 10,
+    rotation: 0,
+    zIndex: 'a0',
+    locked: false,
+    parentId
+  };
 }
 
 beforeEach(() => {
@@ -24,9 +36,7 @@ describe('零 Base64 守卫', () => {
     const store = new DocumentStore();
     store.addNode(makeNode('a', 0));
 
-    expect(
-      store.updateNode('a', { data: { cover: { src: 'data:image/png;base64,iVBORw0KGgo=' } } })
-    ).toBeNull();
+    expect(store.updateNode('a', { data: { cover: { src: 'data:image/png;base64,iVBORw0KGgo=' } } })).toBeNull();
     expect(store.addNode({ ...makeNode('b', 0), data: { src: 'blob:https://app/123' } })).toBeNull();
     expect(store.getNode('a')?.data).toBeUndefined();
     expect(Object.hasOwn(store.getView().content.nodes, 'b')).toBe(false);
@@ -43,7 +53,13 @@ describe('零 Base64 守卫', () => {
     expect(store.addNode(note)).not.toBeNull();
     expect(
       store.commit({
-        patches: [{ op: 'text', path: ['content', 'nodes', 'note', 'textBlocks', 0, 'runs', 0, 'text'], deltas: [{ insert: 'data:image/png;base64,AAAA ' }] }]
+        patches: [
+          {
+            op: 'text',
+            path: ['content', 'nodes', 'note', 'textBlocks', 0, 'runs', 0, 'text'],
+            deltas: [{ insert: 'data:image/png;base64,AAAA ' }]
+          }
+        ]
       })
     ).not.toBeNull();
     // blob: 后跟非来源格式的文字同样放行，真实 blob 地址才拒绝
@@ -121,7 +137,15 @@ describe('容器语义', () => {
         {
           op: 'set',
           path: ['content', 'connectors', 'c1'],
-          value: { id: 'c1', type: 'connector', connectorType: 'straight', from: { nodeId: 'badge' }, to: { nodeId: 'outside' }, zIndex: 'a0', locked: false }
+          value: {
+            id: 'c1',
+            type: 'connector',
+            connectorType: 'straight',
+            from: { nodeId: 'badge' },
+            to: { nodeId: 'outside' },
+            zIndex: 'a0',
+            locked: false
+          }
         }
       ]
     });
@@ -168,4 +192,3 @@ describe('容器语义', () => {
     expect(Object.keys(store.getView().content.nodes).sort()).toEqual(['a', 'b', 'card', 'frame']);
   });
 });
-

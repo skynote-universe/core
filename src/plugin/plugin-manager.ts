@@ -1,7 +1,7 @@
 /**
  * @file plugin-manager.ts
  * @description 插件生命周期与受控沙盒管理器 (PluginManager)
- * 
+ *
  * 设计考量 (Why):
  * 1. 严格落实单一职责原则 (SRP)：高频指针与手势交互已彻底抽离归位于 PointerDispatcher。
  *    PluginManager 纯粹聚焦于插件的安装、上下文注入 (PluginContext)、依赖解耦与彻底销毁。

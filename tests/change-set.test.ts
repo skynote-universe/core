@@ -148,7 +148,9 @@ describe('数据一致性底线', () => {
     const store = engine.documentStore;
     store.addNode(makeNode('a'));
     store.addNode(makeNode('b', 100));
-    store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
+    store.commit({
+      patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }]
+    });
     engine.session.setSelection({ nodeIds: ['a', 'b'], connectorIds: ['c1'] });
 
     store.removeNodes(['a']);
@@ -245,7 +247,9 @@ describe('DocumentChangeSet 归类', () => {
     store.addNode(makeNode('a'));
     store.addNode(makeNode('b', 100));
     store.addNode(makeNode('c', 200));
-    store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
+    store.commit({
+      patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }]
+    });
     const changes = captureChanges(store);
 
     store.moveNodes(['b'], { x: 10 });
@@ -282,7 +286,9 @@ describe('引擎增量维护空间索引', () => {
     const store = engine.documentStore;
     store.addNode(makeNode('a'));
     store.addNode(makeNode('b', 100));
-    store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
+    store.commit({
+      patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }]
+    });
 
     // 包围盒取真实路由：直线路由连接两端节点中心 (5 → 105)
     expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(105);
@@ -299,7 +305,9 @@ describe('引擎增量维护空间索引', () => {
     const store = engine.documentStore;
     store.addNode(makeNode('a'));
     store.addNode(makeNode('b', 100));
-    store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
+    store.commit({
+      patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }]
+    });
     const route = engine.getConnectorRoute('c1');
 
     store.updateNode('a', { style: { fill: 'red' } });
@@ -317,7 +325,11 @@ describe('引擎增量维护空间索引', () => {
     store.addNode(makeNode('b', 100));
     store.commit({
       patches: [
-        { op: 'set', path: ['content', 'connectors', 'c1'], value: { ...makeConnector('c1', 'a', 'b'), connectorType: 'detour' } }
+        {
+          op: 'set',
+          path: ['content', 'connectors', 'c1'],
+          value: { ...makeConnector('c1', 'a', 'b'), connectorType: 'detour' }
+        }
       ]
     });
     // 未注册时回退直线

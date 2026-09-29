@@ -16,14 +16,7 @@
  *    让迟到的冲突补丁显式失败并整批回滚，而不是静默写出残缺数据。
  */
 
-import type {
-  CanvasPatch,
-  SetPatch,
-  UnsetPatch,
-  SplicePatch,
-  TextPatch,
-  TextDeltaOp
-} from '../types/operation';
+import type { CanvasPatch, SetPatch, UnsetPatch, SplicePatch, TextPatch, TextDeltaOp } from '../types/operation';
 import { resolvePathForWrite, normalizePatchPath } from './patch-path';
 import { clonePlainData, DANGEROUS_KEYS } from '../utils/clone';
 
@@ -170,11 +163,7 @@ function applySplicePatch(root: unknown, patch: SplicePatch): PatchApplyResult {
   if (!Array.isArray(targetArray)) {
     return fail(`目标不是数组: ${JSON.stringify(patch.path)}`);
   }
-  if (
-    patch.index < 0 ||
-    patch.deleteCount < 0 ||
-    patch.index + patch.deleteCount > targetArray.length
-  ) {
+  if (patch.index < 0 || patch.deleteCount < 0 || patch.index + patch.deleteCount > targetArray.length) {
     return fail(`切片越界: ${JSON.stringify(patch.path)} index=${patch.index} deleteCount=${patch.deleteCount}`);
   }
 

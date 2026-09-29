@@ -35,8 +35,12 @@ describe('deriveCanvasTheme', () => {
     expect(light.textColor).toBe(LIGHT_CANVAS_THEME_SEED.foreground);
     expect(light.selectionStroke).toBe(LIGHT_CANVAS_THEME_SEED.accent);
     // 描边介于底色与前景之间，深色主题下同样成立
-    expect(light.nodeStroke).toBe(mixHexColors(LIGHT_CANVAS_THEME_SEED.background, LIGHT_CANVAS_THEME_SEED.foreground, 0.22));
-    expect(dark.nodeStroke).toBe(mixHexColors(DARK_CANVAS_THEME_SEED.background, DARK_CANVAS_THEME_SEED.foreground, 0.22));
+    expect(light.nodeStroke).toBe(
+      mixHexColors(LIGHT_CANVAS_THEME_SEED.background, LIGHT_CANVAS_THEME_SEED.foreground, 0.22)
+    );
+    expect(dark.nodeStroke).toBe(
+      mixHexColors(DARK_CANVAS_THEME_SEED.background, DARK_CANVAS_THEME_SEED.foreground, 0.22)
+    );
     expect(Object.isFrozen(light)).toBe(true);
   });
 
@@ -51,9 +55,9 @@ describe('deriveCanvasTheme', () => {
 
   it('非法颜色配置立即抛错', () => {
     expect(() => deriveCanvasTheme({ seed: { ...LIGHT_CANVAS_THEME_SEED, accent: 'blue' } })).toThrow(/accent/);
-    expect(() =>
-      deriveCanvasTheme({ seed: { ...LIGHT_CANVAS_THEME_SEED, palette: { yellow: 'nope' } } })
-    ).toThrow(/palette\.yellow/);
+    expect(() => deriveCanvasTheme({ seed: { ...LIGHT_CANVAS_THEME_SEED, palette: { yellow: 'nope' } } })).toThrow(
+      /palette\.yellow/
+    );
   });
 });
 

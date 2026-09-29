@@ -1,7 +1,7 @@
 /**
  * @file node-type.protocol.ts
  * @description 统一节点类型规范与 defineNodeType 注册协议
- * 
+ *
  * 设计考量 (Why):
  * 1. 渐进式渲染阶梯：普通节点实现 compose() 即可享受跨引擎绘制；富文本/视频实现 mountDOM() 作为逃生舱。
  * 2. 尺寸所有权与复合排版：支持 sizingPolicy 声明外框自适应策略，并通过 computeBounds 求解复杂零件与多插槽文本联动。
@@ -23,8 +23,8 @@ export interface NodeComposeContext {
 
 /** 节点外框尺寸驱动策略 */
 export type NodeSizingPolicy =
-  | 'fixed'           // 宽高全由用户拖拽决定，内容不撑开外框 (如几何矩形、圆)
-  | 'height-driven'   // 宽度固定，高度由内容自适应向下撑高 (如便签卡片、长段落卡片)
+  | 'fixed' // 宽高全由用户拖拽决定，内容不撑开外框 (如几何矩形、圆)
+  | 'height-driven' // 宽度固定，高度由内容自适应向下撑高 (如便签卡片、长段落卡片)
   | 'content-driven'; // 宽高双向由内容自动撑大 (如思维导图气泡、自由文本)
 
 /** 节点文本插槽静态规则契约 (代码级 Blueprint，绝不污染持久化文档) */
@@ -61,10 +61,7 @@ export interface NodeControlHandle {
 /**
  * 节点类型定义契约
  */
-export interface NodeTypeDefinition<
-  TData = Record<string, unknown>,
-  TStyle extends NodeStyle = NodeStyle
-> {
+export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> {
   /** 节点全局唯一类型标识，例如 'free-text', 'card', 'custom:sticker' */
   readonly type: string;
   /** UI 呈现名称 */
@@ -123,9 +120,8 @@ export interface NodeTypeDefinition<
 /**
  * 辅助构造函数：为插件开发者提供类型推导友好的节点类型定义工具
  */
-export function defineNodeType<
-  TData = Record<string, unknown>,
-  TStyle extends NodeStyle = NodeStyle
->(definition: NodeTypeDefinition<TData, TStyle>): NodeTypeDefinition<TData, TStyle> {
+export function defineNodeType<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle>(
+  definition: NodeTypeDefinition<TData, TStyle>
+): NodeTypeDefinition<TData, TStyle> {
   return definition;
 }

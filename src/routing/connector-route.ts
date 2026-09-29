@@ -47,8 +47,14 @@ export function computeConnectorRoute(
   resolveNode: (nodeId: string) => Readonly<NodeEntity> | undefined,
   routers: ConnectorRouterRegistry
 ): ComputedRoute | null {
-  const start = resolveConnectorEndpoint(connector.from, connector.from.nodeId ? resolveNode(connector.from.nodeId) : undefined);
-  const end = resolveConnectorEndpoint(connector.to, connector.to.nodeId ? resolveNode(connector.to.nodeId) : undefined);
+  const start = resolveConnectorEndpoint(
+    connector.from,
+    connector.from.nodeId ? resolveNode(connector.from.nodeId) : undefined
+  );
+  const end = resolveConnectorEndpoint(
+    connector.to,
+    connector.to.nodeId ? resolveNode(connector.to.nodeId) : undefined
+  );
   if (!start || !end) return null;
 
   const result = routers.get(connector.connectorType).route({

@@ -196,4 +196,3 @@ describe('OperationCoordinator', () => {
     expect(doc.style).toEqual({ fill: 'e', stroke: 'z' });
   });
 });
-

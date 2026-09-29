@@ -40,7 +40,9 @@ export function parseHexColor(value: string): RgbaColor | null {
 /** 格式化为 #rrggbb，透明度不足 1 时输出 #rrggbbaa */
 export function formatHexColor(color: RgbaColor): string {
   const channel = (value: number): string =>
-    Math.round(Math.min(255, Math.max(0, value))).toString(16).padStart(2, '0');
+    Math.round(Math.min(255, Math.max(0, value)))
+      .toString(16)
+      .padStart(2, '0');
   const alpha = color.a < 1 ? channel(color.a * 255) : '';
   return `#${channel(color.r)}${channel(color.g)}${channel(color.b)}${alpha}`.toUpperCase();
 }

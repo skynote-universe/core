@@ -1,7 +1,7 @@
 /**
  * @file input-scope-manager.ts
  * @description ADR-005 焦点栈与键盘快捷键优先级调度器 (InputScopeManager)
- * 
+ *
  * 设计考量 (Why):
  * 1. 键盘严禁私自 window.keydown (AGENTS.md 铁律)：所有快捷键必须注册到此焦点栈统一调度。
  * 2. 输入法组合态守卫 (IME Guard)：在中文/日文拼音打字期间 (e.isComposing === true)，严禁触发任何快捷键打断输入！
@@ -106,8 +106,6 @@ export class InputScopeManager {
   }
 
   private rebuildActiveScopes(): void {
-    this.activeScopes = Array.from(this.scopes.values()).sort(
-      (a, b) => b.priority - a.priority
-    );
+    this.activeScopes = Array.from(this.scopes.values()).sort((a, b) => b.priority - a.priority);
   }
 }

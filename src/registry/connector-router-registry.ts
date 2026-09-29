@@ -1,7 +1,7 @@
 /**
  * @file connector-router-registry.ts
  * @description 连线寻路算法注册表 (ConnectorRouterRegistry)
- * 
+ *
  * 设计考量 (Why):
  * 1. 策略模式解耦：将各种寻路算法（直线、正交、贝塞尔、思维导图曲线）收敛为统一注册表，
  *    渲染器和连线交互仅需 routerRegistry.get(type).route(input) 即可，无任何硬编码 if/else。
@@ -62,20 +62,28 @@ export class CurvedRouter extends ConnectorRouter {
     // 控制点延伸距离，正比于两点距离但设置下限
     const offset = Math.max(dist * this.defaultCurviness, 20);
 
-    const getDirectionOffset = (dir: ConnectorDirection | undefined, defaultDir: 'x' | 'y'): { ox: number; oy: number } => {
+    const getDirectionOffset = (
+      dir: ConnectorDirection | undefined,
+      defaultDir: 'x' | 'y'
+    ): { ox: number; oy: number } => {
       if (dir === 'top') return { ox: 0, oy: -offset };
       if (dir === 'bottom') return { ox: 0, oy: offset };
       if (dir === 'left') return { ox: -offset, oy: 0 };
       if (dir === 'right') return { ox: offset, oy: 0 };
       // 无朝向时根据端点主轴方向默认沿 X 轴延伸
-      return defaultDir === 'x' ? { ox: offset * Math.sign(dx || 1), oy: 0 } : { ox: 0, oy: offset * Math.sign(dy || 1) };
+      return defaultDir === 'x'
+        ? { ox: offset * Math.sign(dx || 1), oy: 0 }
+        : { ox: 0, oy: offset * Math.sign(dy || 1) };
     };
 
     const startOff = getDirectionOffset(startDirection, Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y');
     const endOff = getDirectionOffset(endDirection, Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y');
 
     const cp1: Point = { x: startPoint.x + startOff.ox, y: startPoint.y + startOff.oy };
-    const cp2: Point = { x: endPoint.x + (endDirection ? endOff.ox : -endOff.ox), y: endPoint.y + (endDirection ? endOff.oy : -endOff.oy) };
+    const cp2: Point = {
+      x: endPoint.x + (endDirection ? endOff.ox : -endOff.ox),
+      y: endPoint.y + (endDirection ? endOff.oy : -endOff.oy)
+    };
 
     const pathData = `M ${startPoint.x} ${startPoint.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${endPoint.x} ${endPoint.y}`;
 

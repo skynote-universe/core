@@ -1,7 +1,7 @@
 /**
  * @file operation.ts
  * @description SkyNote 正交原子操作 (Patch)、事务提交管道与历史快照规范
- * 
+ *
  * 设计考量 (Why):
  * 1. 状态流转红线：严禁在外部就地对实体对象进行属性赋值（如 node.x = 100），所有改动必须通过 commitOperation() 提交。
  * 2. 现代正交原子四元组：彻底消灭 RFC 6902 中 add/replace 的二义性，收敛为 'set' | 'unset' | 'splice' | 'text'。

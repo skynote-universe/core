@@ -1,7 +1,7 @@
 /**
  * @file patch-path.ts
  * @description 补丁寻址路径解析与对象定位器
- * 
+ *
  * 设计考量 (Why):
  * 1. 防原型链污染 (AGENTS.md 铁律)：严格过滤 `__proto__`、`prototype`、`constructor`，防止外部不安全数据注入。
  * 2. 零冗余解析：对数组形式的分段路径直接消费，点号分割路径快速分词，兼顾 API 易用性与微秒级高频执行性能。
@@ -9,7 +9,6 @@
 
 import type { CanvasPatchPath } from '../types/operation';
 import { DANGEROUS_KEYS } from '../utils/clone';
-
 
 /** 路径分词微缓存 (上限 512，避免无界膨胀) */
 const MAX_PATH_CACHE_SIZE = 512;

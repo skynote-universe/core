@@ -53,15 +53,15 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
   const store = engine.documentStore;
 
   it('拖拽单节点 (groupId 折叠)', () => {
-    expect(
-      measure('拖拽单节点', () => store.moveNodes(['n100'], { x: 1 }, { groupId: 'drag' }))
-    ).toBeLessThan(BUDGET_MS_PER_COMMIT);
+    expect(measure('拖拽单节点', () => store.moveNodes(['n100'], { x: 1 }, { groupId: 'drag' }))).toBeLessThan(
+      BUDGET_MS_PER_COMMIT
+    );
   });
 
   it('修改单节点样式', () => {
-    expect(
-      measure('修改单节点样式', (i) => store.updateNode('n100', { style: { fill: String(i) } }))
-    ).toBeLessThan(BUDGET_MS_PER_COMMIT);
+    expect(measure('修改单节点样式', (i) => store.updateNode('n100', { style: { fill: String(i) } }))).toBeLessThan(
+      BUDGET_MS_PER_COMMIT
+    );
   });
 
   it('多选拖拽 2000 个节点 (同组折叠 60 帧)', () => {
@@ -78,4 +78,3 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     expect(median).toBeLessThan(40);
   });
 });
-

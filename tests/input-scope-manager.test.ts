@@ -30,8 +30,21 @@ describe('InputScopeManager', () => {
   it('stopPropagation 截断低优先级作用域并透传给原事件，且不改写宿主事件对象', () => {
     const manager = new InputScopeManager();
     const log: string[] = [];
-    manager.pushScope({ id: 'top', priority: 10, onKeyDown: (e) => { log.push('top'); e.stopPropagation(); } });
-    manager.pushScope({ id: 'bottom', priority: 0, onKeyDown: () => { log.push('bottom'); } });
+    manager.pushScope({
+      id: 'top',
+      priority: 10,
+      onKeyDown: (e) => {
+        log.push('top');
+        e.stopPropagation();
+      }
+    });
+    manager.pushScope({
+      id: 'bottom',
+      priority: 0,
+      onKeyDown: () => {
+        log.push('bottom');
+      }
+    });
 
     const event = createKeyEvent();
     const originalStop = event.stopPropagation;
@@ -45,8 +58,20 @@ describe('InputScopeManager', () => {
   it('未被消费时依次传递，返回 false 交由宿主保留默认行为', () => {
     const manager = new InputScopeManager();
     const log: string[] = [];
-    manager.pushScope({ id: 'a', priority: 1, onKeyUp: () => { log.push('a'); } });
-    manager.pushScope({ id: 'b', priority: 0, onKeyUp: () => { log.push('b'); } });
+    manager.pushScope({
+      id: 'a',
+      priority: 1,
+      onKeyUp: () => {
+        log.push('a');
+      }
+    });
+    manager.pushScope({
+      id: 'b',
+      priority: 0,
+      onKeyUp: () => {
+        log.push('b');
+      }
+    });
 
     expect(manager.dispatchKeyUp(createKeyEvent())).toBe(false);
     expect(log).toEqual(['a', 'b']);
@@ -55,7 +80,14 @@ describe('InputScopeManager', () => {
   it('输入法组合输入期间不触发任何作用域', () => {
     const manager = new InputScopeManager();
     let called = false;
-    manager.pushScope({ id: 'global', priority: 0, onKeyDown: () => { called = true; return true; } });
+    manager.pushScope({
+      id: 'global',
+      priority: 0,
+      onKeyDown: () => {
+        called = true;
+        return true;
+      }
+    });
 
     expect(manager.dispatchKeyDown(createKeyEvent({ isComposing: true }))).toBe(false);
     expect(manager.dispatchKeyDown(createKeyEvent({ keyCode: 229 }))).toBe(false);

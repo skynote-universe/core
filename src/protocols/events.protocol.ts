@@ -1,7 +1,7 @@
 /**
  * @file events.protocol.ts
  * @description 宿主无关归一化虚拟事件规范
- * 
+ *
  * 设计考量 (Why):
  * 1. 平台中立红线：插件严禁感知原生 clientX/Y，事件直接派发已解算完成的世界逻辑坐标 point。
  * 2. 交互绝对零耦合 (Pointer Claiming)：通过 claimPointer() 实现独占指针会话，单元格或导图节点认领后，外部通用拖拽/框选自动短路放弃，无需跨插件探测状态。
@@ -87,9 +87,7 @@ export interface CreateCanvasWheelEventOptions {
 /**
  * 平台中立虚拟滚轮事件工厂函数
  */
-export function createCanvasWheelEvent(
-  options: CreateCanvasWheelEventOptions
-): CanvasWheelEvent {
+export function createCanvasWheelEvent(options: CreateCanvasWheelEventOptions): CanvasWheelEvent {
   return {
     centerPoint: { ...options.centerPoint },
     deltaPan: options.deltaPan ? { ...options.deltaPan } : { x: 0, y: 0 },
@@ -114,9 +112,7 @@ export interface CreateCanvasPointerEventOptions {
  * 平台中立虚拟指针事件工厂函数
  * 提供给渲染适配层 (如 renderer-leafer) 或测试环境一键构造归一化事件
  */
-export function createCanvasPointerEvent(
-  options: CreateCanvasPointerEventOptions
-): CanvasPointerEvent {
+export function createCanvasPointerEvent(options: CreateCanvasPointerEventOptions): CanvasPointerEvent {
   let isClaimed = false;
 
   const event: CanvasPointerEvent = {
@@ -145,4 +141,3 @@ export function createCanvasPointerEvent(
 
   return event;
 }
-

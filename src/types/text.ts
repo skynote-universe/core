@@ -1,7 +1,7 @@
 /**
  * @file text.ts
  * @description 统一富文本数据模型与排版规范
- * 
+ *
  * 设计考量 (Why):
  * 1. 彻底消灭文本双轨制：废除旧版中并存的 value: string 与 runs: RichTextRun[]。
  *    单一事实源铁律：纯文本本质上就是仅含 1 个无修饰 run 的特例。
@@ -70,8 +70,8 @@ export interface NodeTextStyle {
 /** 文本排版尺寸自适应策略 (对标 Figma 标准排版三态) */
 export type TextSizingMode =
   | 'auto-height' // 固定宽度，自动折行，高度向下自动随文字行数撑开 (最常用的便签卡片、正文段落)
-  | 'auto-width'  // 宽度随文字延伸不主动折行，单行/双向自适应 (适合短标题、按钮标签)
-  | 'fixed';      // 宽高完全固定锁死，超出部分截断
+  | 'auto-width' // 宽度随文字延伸不主动折行，单行/双向自适应 (适合短标题、按钮标签)
+  | 'fixed'; // 宽高完全固定锁死，超出部分截断
 
 /**
  * 统一文本块实体 (TextBlock)
@@ -119,7 +119,7 @@ export interface SimpleTextBlockOptions {
  */
 export function getPlainText(block: TextBlock): string {
   if (!block.runs || block.runs.length === 0) return '';
-  return block.runs.map(run => run.text).join('');
+  return block.runs.map((run) => run.text).join('');
 }
 
 /**
@@ -133,11 +133,7 @@ export function isSimpleText(block: TextBlock): boolean {
  * 纯函数：便捷构建单段纯文本块
  * 让上层开发者无需手写 runs 数组，兼顾开发爽快度
  */
-export function createSimpleTextBlock(
-  id: string,
-  text: string,
-  options?: SimpleTextBlockOptions
-): TextBlock {
+export function createSimpleTextBlock(id: string, text: string, options?: SimpleTextBlockOptions): TextBlock {
   return {
     id,
     slot: options?.slot,
@@ -150,10 +146,7 @@ export function createSimpleTextBlock(
 /**
  * 纯函数：判断文本装饰线是否包含指定样式 (零正则开销，极速 O(1) ~ O(n) 判断)
  */
-export function hasTextDecoration(
-  decoration: TextDecoration | undefined,
-  target: TextDecorationLine
-): boolean {
+export function hasTextDecoration(decoration: TextDecoration | undefined, target: TextDecorationLine): boolean {
   if (!decoration || decoration === 'none') return false;
   return Array.isArray(decoration) ? decoration.includes(target) : decoration === target;
 }
@@ -179,7 +172,7 @@ export function removeTextDecoration(
 ): TextDecorationLine[] | 'none' {
   if (!current || current === 'none') return 'none';
   const list = Array.isArray(current) ? current : [current];
-  const filtered = list.filter(item => item !== target);
+  const filtered = list.filter((item) => item !== target);
   return filtered.length > 0 ? filtered : 'none';
 }
 

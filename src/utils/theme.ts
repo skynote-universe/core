@@ -73,7 +73,11 @@ export function deriveCanvasTheme(config: CanvasThemeConfig): CanvasTheme {
 /**
  * 解析颜色取值：未设置取 fallback，`$名称` 从主题调色板查找 (查不到退回 fallback)，其余原样返回
  */
-export function resolveThemeColor(value: string | undefined, theme: CanvasTheme, fallback?: string): string | undefined {
+export function resolveThemeColor(
+  value: string | undefined,
+  theme: CanvasTheme,
+  fallback?: string
+): string | undefined {
   if (value === undefined) return fallback;
   if (value.startsWith('$')) return theme.palette[value.slice(1)] ?? fallback;
   return value;

@@ -1,7 +1,7 @@
 /**
  * @file plugin.protocol.ts
  * @description SkyNote 插件生命周期与宿主装配契约
- * 
+ *
  * 设计考量 (Why):
  * 1. 插件绝对零感知：严禁在插件内通过探针引用其他插件的私有状态。
  * 2. 纯净生命周期：通过 install() 与 unmount() 完成监听挂载与彻底释放，杜绝内存静默泄露。
@@ -60,12 +60,15 @@ export interface CanvasPluginContext {
   registerInputScope(scope: InputScope): () => void;
 
   /** 注册指针与滚轮交互监听 (返回解绑注销函数，支持 priority 优先级排序) */
-  registerPointerHooks(hooks: {
-    onPointerDown?(e: CanvasPointerEvent): void;
-    onPointerMove?(e: CanvasPointerEvent): void;
-    onPointerUp?(e: CanvasPointerEvent): void;
-    onWheel?(e: CanvasWheelEvent): void;
-  }, priority?: number): () => void;
+  registerPointerHooks(
+    hooks: {
+      onPointerDown?(e: CanvasPointerEvent): void;
+      onPointerMove?(e: CanvasPointerEvent): void;
+      onPointerUp?(e: CanvasPointerEvent): void;
+      onWheel?(e: CanvasWheelEvent): void;
+    },
+    priority?: number
+  ): () => void;
 }
 
 /**

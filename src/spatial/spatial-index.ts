@@ -1,7 +1,7 @@
 /**
  * @file spatial-index.ts
  * @description 空间拓扑索引标准接口与通用定义
- * 
+ *
  * 设计考量 (Why):
  * 1. 依赖倒置原则 (DIP)：上层 (SkyNoteEngine、渲染器、选框) 仅面向 SpatialIndex 抽象接口编程，
  *    彻底与底层具体算法解耦。

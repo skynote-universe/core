@@ -1,7 +1,7 @@
 /**
  * @file primitives.protocol.ts
  * @description 声明式跨引擎中间图元协议 (Canvas Primitive IR)
- * 
+ *
  * 设计考量 (Why):
  * 1. 跨渲染器统一语言：定义纯 JSON 描述的基础图元（矩形、文本、圆、路径）。
  * 2. 第三方插件免适配：插件开发者只需实现 nodeType.compose(node)，即可自动在 LeaferJS、PixiJS、WebGPU 或 SVG 导出器中绘制，无需针对每个引擎写原生代码。
@@ -48,16 +48,7 @@ export type {
 
 /** 基础图元类型辨识符 */
 export type CanvasPrimitiveKind =
-  | 'rect'
-  | 'text'
-  | 'circle'
-  | 'ellipse'
-  | 'polygon'
-  | 'path'
-  | 'line'
-  | 'image'
-  | 'group'
-  | 'box';
+  'rect' | 'text' | 'circle' | 'ellipse' | 'polygon' | 'path' | 'line' | 'image' | 'group' | 'box';
 
 /** 矩形图元 */
 export interface RectPrimitive {

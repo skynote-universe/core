@@ -240,11 +240,14 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       version: '1.0.0',
       install: (ctx) => {
         // 使用 ctx.registerPointerHooks 注册高优先级监听
-        ctx.registerPointerHooks({
-          onPointerDown: () => {
-            eventSequence.push('handle');
-          }
-        }, 100);
+        ctx.registerPointerHooks(
+          {
+            onPointerDown: () => {
+              eventSequence.push('handle');
+            }
+          },
+          100
+        );
       }
     };
 
@@ -290,12 +293,15 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       name: '拦截插件',
       version: '1.0.0',
       install: (ctx) => {
-        ctx.registerPointerHooks({
-          onPointerDown: (e) => {
-            calls.push('interceptor');
-            e.stopPropagation();
-          }
-        }, 100);
+        ctx.registerPointerHooks(
+          {
+            onPointerDown: (e) => {
+              calls.push('interceptor');
+              e.stopPropagation();
+            }
+          },
+          100
+        );
       }
     });
 
@@ -305,11 +311,14 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       name: '画布背景插件',
       version: '1.0.0',
       install: (ctx) => {
-        ctx.registerPointerHooks({
-          onPointerDown: () => {
-            calls.push('canvas');
-          }
-        }, 0);
+        ctx.registerPointerHooks(
+          {
+            onPointerDown: () => {
+              calls.push('canvas');
+            }
+          },
+          0
+        );
       }
     });
 
@@ -404,7 +413,11 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
           id: 'mindmap:branch',
           label: '思维导图分支',
           route: (input) => ({
-            points: [input.startPoint, { x: (input.startPoint.x + input.endPoint.x) / 2, y: input.startPoint.y }, input.endPoint],
+            points: [
+              input.startPoint,
+              { x: (input.startPoint.x + input.endPoint.x) / 2, y: input.startPoint.y },
+              input.endPoint
+            ],
             pathData: `M ${input.startPoint.x} ${input.startPoint.y} Q ...`
           })
         });
@@ -440,12 +453,15 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       name: '局部滚动卡片',
       version: '1.0.0',
       install: (ctx) => {
-        ctx.registerPointerHooks({
-          onWheel: (e) => {
-            calls.push('card-scroll');
-            e.stopPropagation?.(); // 阻止滚动穿透至画布全屏
-          }
-        }, 100);
+        ctx.registerPointerHooks(
+          {
+            onWheel: (e) => {
+              calls.push('card-scroll');
+              e.stopPropagation?.(); // 阻止滚动穿透至画布全屏
+            }
+          },
+          100
+        );
       }
     });
 
@@ -455,11 +471,14 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       name: '画布缩放平移',
       version: '1.0.0',
       install: (ctx) => {
-        ctx.registerPointerHooks({
-          onWheel: () => {
-            calls.push('canvas-zoom');
-          }
-        }, 0);
+        ctx.registerPointerHooks(
+          {
+            onWheel: () => {
+              calls.push('canvas-zoom');
+            }
+          },
+          0
+        );
       }
     });
 
@@ -511,4 +530,3 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     expect(foundInPlugin).toBe(true);
   });
 });
-

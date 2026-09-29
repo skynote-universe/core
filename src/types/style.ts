@@ -1,7 +1,7 @@
 /**
  * @file style.ts
  * @description 通用图形与排版样式基础枚举及值对象
- * 
+ *
  * 设计考量 (Why):
  * 1. 单一事实源：几何、边框、字体、排版与填充模式在实体层与协议层 100% 共享，消灭重复定义。
  * 2. 纯净跨端：纯数据与字面量联合类型，零 DOM / Canvas 依赖。
@@ -20,20 +20,7 @@ export type StrokeJoin = 'miter' | 'round' | 'bevel';
 export type StrokeAlign = 'center' | 'inside' | 'outside';
 
 /** 文本字重枚举 */
-export type FontWeight =
-  | 'normal'
-  | 'bold'
-  | 'lighter'
-  | 'bolder'
-  | 100
-  | 200
-  | 300
-  | 400
-  | 500
-  | 600
-  | 700
-  | 800
-  | 900;
+export type FontWeight = 'normal' | 'bold' | 'lighter' | 'bolder' | 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900;
 
 /** 字体倾斜样式 */
 export type FontStyle = 'normal' | 'italic' | 'oblique';
@@ -54,10 +41,7 @@ export type TextOverflow = 'clip' | 'ellipsis' | 'none';
 export type TextDecorationLine = 'underline' | 'line-through';
 
 /** 文本下划线/删除线装饰规范：支持单值基元、结构化多选数组、或无 */
-export type TextDecoration =
-  | 'none'
-  | TextDecorationLine
-  | TextDecorationLine[];
+export type TextDecoration = 'none' | TextDecorationLine | TextDecorationLine[];
 
 /** 文本折行与分词模式 */
 export type TextWrap = 'normal' | 'break-all' | 'break-word' | 'none';

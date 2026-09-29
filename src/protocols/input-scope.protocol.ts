@@ -1,7 +1,7 @@
 /**
  * @file input-scope.protocol.ts
  * @description ADR-005 输入焦点栈与键盘快捷键优先级协议
- * 
+ *
  * 设计考量 (Why):
  * 1. 键盘严禁私自 window.keydown：所有快捷键必须注册到 InputScope 统一调度。
  * 2. 输入法组合态守卫 (IME Guard)：在中文/日文拼音打字期间 (isComposing === true)，严禁触发任何画布快捷键。

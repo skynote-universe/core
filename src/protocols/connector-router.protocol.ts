@@ -1,7 +1,7 @@
 /**
  * @file connector-router.protocol.ts
  * @description 连线寻路算法定义契约与 defineConnectorRouter 注册协议
- * 
+ *
  * 设计考量 (Why):
  * 1. 算法与核心解耦：连线寻路具有高度多样性（直线、曼哈顿正交、A* 避障、贝塞尔平滑、思维导图分支），
  *    核心层不应写死实现，而是通过 ConnectorRouterRegistry 策略模式开放插拔。
@@ -81,8 +81,6 @@ export abstract class ConnectorRouter implements ConnectorRouterDefinition {
 /**
  * 辅助构造函数：为插件开发者提供类型推导友好的路由算法定义工具
  */
-export function defineConnectorRouter(
-  definition: ConnectorRouterDefinition
-): ConnectorRouterDefinition {
+export function defineConnectorRouter(definition: ConnectorRouterDefinition): ConnectorRouterDefinition {
   return definition;
 }

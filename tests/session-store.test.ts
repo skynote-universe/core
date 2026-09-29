@@ -10,7 +10,18 @@ import type { SkyNotePlugin, CanvasPluginContext } from '../src/protocols/plugin
 import type { NodeEntity } from '../src/types/node';
 
 function makeNode(id: string): NodeEntity {
-  return { id, type: 'node', nodeType: 'rect', x: 0, y: 0, width: 10, height: 10, rotation: 0, zIndex: 'a0', locked: false };
+  return {
+    id,
+    type: 'node',
+    nodeType: 'rect',
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    rotation: 0,
+    zIndex: 'a0',
+    locked: false
+  };
 }
 
 describe('SessionStore', () => {

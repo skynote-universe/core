@@ -101,7 +101,10 @@ describe('RTreeSpatialIndex 结构不变量', () => {
       if (step % 100 === 0) {
         assertInvariants(tree);
         const query = rect(random() * 4000, random() * 4000, 800, 600);
-        const expected = [...truth].filter(([, b]) => intersects(b, query)).map(([k]) => k).sort();
+        const expected = [...truth]
+          .filter(([, b]) => intersects(b, query))
+          .map(([k]) => k)
+          .sort();
         expect([...tree.search(query)].sort()).toEqual(expected);
       }
     }

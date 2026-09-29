@@ -37,11 +37,25 @@ describe('PointerDispatcher', () => {
     const log: string[] = [];
     let originStopped = false;
 
-    dispatcher.register('top', { onWheel: (e) => { log.push('top'); e.stopPropagation?.(); } }, 10);
+    dispatcher.register(
+      'top',
+      {
+        onWheel: (e) => {
+          log.push('top');
+          e.stopPropagation?.();
+        }
+      },
+      10
+    );
     dispatcher.register('bottom', { onWheel: () => log.push('bottom') }, 0);
 
     const wheel = createCanvasWheelEvent({ centerPoint: { x: 0, y: 0 }, deltaZoom: 0.1 });
-    dispatcher.dispatchWheel({ ...wheel, stopPropagation: () => { originStopped = true; } });
+    dispatcher.dispatchWheel({
+      ...wheel,
+      stopPropagation: () => {
+        originStopped = true;
+      }
+    });
 
     expect(log).toEqual(['top']);
     expect(originStopped).toBe(true);

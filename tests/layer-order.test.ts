@@ -9,7 +9,19 @@ import { sortSiblingsByLayer } from '../src/layout/layer-order';
 import type { NodeEntity } from '../src/types/node';
 
 function makeNode(id: string, zIndex: string, parentId?: string): NodeEntity {
-  return { id, type: 'node', nodeType: 'rect', x: 0, y: 0, width: 10, height: 10, rotation: 0, zIndex, locked: false, parentId };
+  return {
+    id,
+    type: 'node',
+    nodeType: 'rect',
+    x: 0,
+    y: 0,
+    width: 10,
+    height: 10,
+    rotation: 0,
+    zIndex,
+    locked: false,
+    parentId
+  };
 }
 
 /** 读取某容器内自下而上的顺序 */
@@ -22,7 +34,12 @@ function layerOrder(store: DocumentStore, parentId?: string): string[] {
 
 function createStore(): DocumentStore {
   const store = new DocumentStore();
-  for (const [id, key] of [['A', 'a0'], ['B', 'a1'], ['C', 'a2'], ['D', 'a3']]) {
+  for (const [id, key] of [
+    ['A', 'a0'],
+    ['B', 'a1'],
+    ['C', 'a2'],
+    ['D', 'a3']
+  ]) {
     store.addNode(makeNode(id, key));
   }
   return store;

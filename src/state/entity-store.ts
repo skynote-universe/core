@@ -16,12 +16,7 @@
 
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity } from '../types/connector';
-import type {
-  RuntimeNode,
-  RuntimeConnector,
-  RuntimeNodeView,
-  RuntimeConnectorView
-} from '../types/runtime';
+import type { RuntimeNode, RuntimeConnector, RuntimeNodeView, RuntimeConnectorView } from '../types/runtime';
 
 /** 实体运行时索引的只读视图 (对内核之外暴露的唯一形态) */
 export interface EntityReader {

@@ -1,7 +1,7 @@
 /**
  * @file host-bridge.protocol.ts
  * @description 抽象宿主网关契约 (IHostBridge)
- * 
+ *
  * 设计考量 (Why):
  * 1. 平台中立红线：核心引擎不直接操作 DOM 的 setPointerCapture 或 style.cursor。
  * 2. 宿主行为代理：由 Bridge 将抽象的光标枚举和指针锁代理至具体运行平台（Web、小程序或 Mock 容器）。

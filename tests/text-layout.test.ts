@@ -92,7 +92,13 @@ describe('文本驱动的自动尺寸', () => {
 
     store.commit({
       label: '编辑文本',
-      patches: [{ op: 'text', path: ['content', 'nodes', 's', 'textBlocks', 0, 'runs', 0, 'text'], deltas: [{ retain: 5 }, { insert: 'x'.repeat(20) }] }]
+      patches: [
+        {
+          op: 'text',
+          path: ['content', 'nodes', 's', 'textBlocks', 0, 'runs', 0, 'text'],
+          deltas: [{ retain: 5 }, { insert: 'x'.repeat(20) }]
+        }
+      ]
     });
     // 25 字 → 每行 8 字折 4 行 × 30 + padding 20
     expect(store.getNode('s')?.height).toBe(140);
@@ -185,8 +191,22 @@ describe('文本驱动的自动尺寸', () => {
 
   it('createTextBlockPrimitive 是文本块到图元的唯一映射：拼接富文本段落并携带块级样式', () => {
     const block = { id: 't1', runs: [{ text: 'Sky' }, { text: 'Note' }] };
-    const primitive = createTextBlockPrimitive(block, { fontSize: 18, color: '$ink', textAlign: 'center' }, { x: 4, y: 6, width: 120 });
-    expect(primitive).toMatchObject({ kind: 'text', id: 't1', x: 4, y: 6, width: 120, text: 'SkyNote', fontSize: 18, fill: '$ink', textAlign: 'center' });
+    const primitive = createTextBlockPrimitive(
+      block,
+      { fontSize: 18, color: '$ink', textAlign: 'center' },
+      { x: 4, y: 6, width: 120 }
+    );
+    expect(primitive).toMatchObject({
+      kind: 'text',
+      id: 't1',
+      x: 4,
+      y: 6,
+      width: 120,
+      text: 'SkyNote',
+      fontSize: 18,
+      fill: '$ink',
+      textAlign: 'center'
+    });
   });
 
   it('lineHeight 类型约束：数字为字号倍数，像素须写成带 px 后缀的字符串', () => {
@@ -196,4 +216,3 @@ describe('文本驱动的自动尺寸', () => {
     expect([...styles, invalid]).toHaveLength(3);
   });
 });
-

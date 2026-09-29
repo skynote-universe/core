@@ -20,6 +20,7 @@ import { EntityStore } from "./entity-store";
 import { OperationCoordinator } from "../operation/coordinator";
 import { normalizePatchPath } from "../operation/patch-path";
 import { clonePlainData } from "../utils/clone";
+import { findInlineMediaUrl, findParentCycle } from "./commit-guards";
 
 /** 创建纯净空文档初始数据 */
 export function createEmptyCanvasDocument(id = "doc_root", name = "未命名画布"): CanvasDocument {
@@ -95,6 +96,16 @@ export class DocumentStore {
     constructor(initialDoc?: CanvasDocument) {
         // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
         this.document = initialDoc ? clonePlainData(initialDoc) : createEmptyCanvasDocument();
+        const inlineMedia = findInlineMediaUrl(this.document);
+        if (inlineMedia) {
+            throw new Error(`[DocumentStore] 文档 ${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`);
+        }
+        const cycle = findParentCycle(createEmptyCanvasDocument(), [
+            { op: "set", path: ["content", "nodes"], value: this.document.content.nodes },
+        ]);
+        if (cycle) {
+            throw new Error(`[DocumentStore] 文档容器层级非法：${cycle}`);
+        }
         this.entityIndex = new EntityStore();
         this.entityStore = this.entityIndex;
         this.coordinator = new OperationCoordinator<CanvasDocument>(this.document);
@@ -130,8 +141,19 @@ export class DocumentStore {
 
     /**
      * 提交原子事务
+     * 先经结构性守卫 (零 Base64、容器无环)，违规时整个事务拒绝执行并返回 null
      */
     commit(options: CommitOperationOptions): CanvasOperationRecord | null {
+        const inlineMedia = findInlineMediaUrl(options.patches);
+        if (inlineMedia) {
+            console.error(`[DocumentStore] 事务被拒绝：${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`);
+            return null;
+        }
+        const cycle = findParentCycle(this.document, options.patches);
+        if (cycle) {
+            console.error(`[DocumentStore] 事务被拒绝：${cycle}`);
+            return null;
+        }
         return this.coordinator.commitOperation(options);
     }
 
@@ -190,14 +212,21 @@ export class DocumentStore {
     }
 
     /**
-     * 移除节点，并在同一事务内级联删除依附连线，撤销时整体恢复
+     * 移除节点：同一事务内级联删除全部后代节点 (容器语义) 与这些节点上的依附连线，撤销时整体恢复
      * 选区中的失效项由引擎在收到变更集后统一剔除，本地删除与远端删除走同一条路径
      */
     removeNode(nodeId: string, options?: { undoable?: boolean; label?: string }): CanvasOperationRecord | null {
         if (!Object.hasOwn(this.document.content.nodes, nodeId)) return null;
 
-        const patches: CanvasPatch[] = [{ op: "unset", path: ["content", "nodes", nodeId] }];
-        const connectorIds = this.entityStore.getConnectorIdsOfNode(nodeId);
+        const nodeIds = [nodeId, ...this.entityStore.collectDescendantIds(nodeId)];
+        const connectorIds = new Set<string>();
+        const patches: CanvasPatch[] = [];
+        for (const id of nodeIds) {
+            patches.push({ op: "unset", path: ["content", "nodes", id] });
+            for (const connectorId of this.entityStore.getConnectorIdsOfNode(id)) {
+                connectorIds.add(connectorId);
+            }
+        }
         for (const connectorId of connectorIds) {
             patches.push({ op: "unset", path: ["content", "connectors", connectorId] });
         }
@@ -210,30 +239,18 @@ export class DocumentStore {
     }
 
     /**
-     * 移动节点几何位置 (支持高频拖拽通过 groupId 折叠)
+     * 移动节点：坐标均为世界坐标，容器移动时在同一事务内连带平移全部后代 (支持高频拖拽通过 groupId 折叠)
      */
     moveNode(nodeId: string, delta: { x?: number; y?: number }, options?: { undoable?: boolean; groupId?: string; label?: string }): CanvasOperationRecord | null {
         if (!Object.hasOwn(this.document.content.nodes, nodeId)) return null;
+        if (!delta.x && !delta.y) return null;
 
-        const targetNode = this.document.content.nodes[nodeId];
+        const { nodes } = this.document.content;
         const patches: CanvasPatch[] = [];
-
-        if (delta.x !== undefined) {
-            patches.push({
-                op: "set",
-                path: ["content", "nodes", nodeId, "x"],
-                value: targetNode.x + delta.x,
-            });
+        for (const id of [nodeId, ...this.entityStore.collectDescendantIds(nodeId)]) {
+            if (delta.x) patches.push({ op: "set", path: ["content", "nodes", id, "x"], value: nodes[id].x + delta.x });
+            if (delta.y) patches.push({ op: "set", path: ["content", "nodes", id, "y"], value: nodes[id].y + delta.y });
         }
-        if (delta.y !== undefined) {
-            patches.push({
-                op: "set",
-                path: ["content", "nodes", nodeId, "y"],
-                value: targetNode.y + delta.y,
-            });
-        }
-
-        if (patches.length === 0) return null;
 
         return this.commit({
             label: options?.label ?? "移动节点",
@@ -340,6 +357,7 @@ export class DocumentStore {
         let orderChanged = false;
 
         const syncNodeIds = new Set<string>();
+        const reparentedNodeIds = new Set<string>();
         const syncConnectorIds = new Set<string>();
         const nodeGeomIds = new Set<string>();
         const nodeDataIds = new Set<string>();
@@ -382,6 +400,7 @@ export class DocumentStore {
                     (isNode ? nodeDataIds : connectorDataIds).add(id);
                 }
                 if (orderFields.has(field)) orderChanged = true;
+                if (isNode && field === "parentId") reparentedNodeIds.add(id);
             }
         }
 
@@ -402,6 +421,10 @@ export class DocumentStore {
         for (const id of syncConnectorIds) {
             const result = store.syncConnector(id, Object.hasOwn(connectors, id) ? connectors[id] : undefined);
             if (recordSyncResult(connectorChanges, id, result)) orderChanged = true;
+        }
+
+        for (const id of reparentedNodeIds) {
+            store.reindexNodeParent(id);
         }
 
         // 事务内单次统一递增版本号；同一事务先改字段再删除实体时，已删除的实体不再计入变更

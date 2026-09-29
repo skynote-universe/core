@@ -9,6 +9,7 @@
  * 3. 内存与持久化彻底解耦：仅持久化 NodeEntity/ConnectorEntity，运行时元数据 (computedRoute、包围盒)
  *    收敛于此纯内存信封，GC 友好。
  * 4. 节点-连线邻接索引：节点移动/删除时 O(度数) 定位依附连线，避免每帧全量扫描连线。
+ * 6. 容器父子索引：级联移动与级联删除按子树规模定位后代，不扫描全部节点。
  * 5. 读写分离：写入方法只供 DocumentStore 在事务提交后调用；引擎、渲染器与插件只拿到 EntityReader，
  *    类型层面既无法调用 sync/notify 让索引与文档失配，也无法就地改写实体字段绕过事务。
  */
@@ -37,6 +38,10 @@ export interface EntityReader {
   hasConnector(id: string): boolean;
   /** 端点绑定在指定节点上的全部连线 id */
   getConnectorIdsOfNode(nodeId: string): ReadonlySet<string>;
+  /** 直接子节点 id */
+  getChildIds(parentId: string): ReadonlySet<string>;
+  /** 全部后代节点 id (广度优先，自带防环) */
+  collectDescendantIds(nodeId: string): string[];
 }
 
 /** 单个实体与持久化文档对齐后的结果 */
@@ -49,6 +54,10 @@ export class EntityStore implements EntityReader {
   private readonly connectors = new Map<string, RuntimeConnector>();
   /** nodeId -> 依附其上的连线 id 集合 */
   private readonly nodeConnectors = new Map<string, Set<string>>();
+  /** parentId -> 直接子节点 id 集合 */
+  private readonly nodeChildren = new Map<string, Set<string>>();
+  /** nodeId -> 已登记进父子索引的 parentId (就地修改 parentId 后据此解除旧关联) */
+  private readonly nodeParents = new Map<string, string>();
   /** connectorId -> 已登记进邻接索引的两端节点 id (就地修改端点后据此解除旧关联) */
   private readonly connectorEndpoints = new Map<string, readonly (string | undefined)[]>();
   /**
@@ -100,6 +109,30 @@ export class EntityStore implements EntityReader {
     return this.nodeConnectors.get(nodeId) ?? EMPTY_ID_SET;
   }
 
+  getChildIds(parentId: string): ReadonlySet<string> {
+    return this.nodeChildren.get(parentId) ?? EMPTY_ID_SET;
+  }
+
+  collectDescendantIds(nodeId: string): string[] {
+    const result: string[] = [];
+    const visited = new Set<string>([nodeId]);
+    const queue = [nodeId];
+    for (let i = 0; i < queue.length; i++) {
+      for (const childId of this.getChildIds(queue[i])) {
+        if (visited.has(childId)) continue;
+        visited.add(childId);
+        result.push(childId);
+        queue.push(childId);
+      }
+    }
+    return result;
+  }
+
+  /** parentId 被字段级补丁就地修改后，刷新父子索引 */
+  reindexNodeParent(id: string): void {
+    this.indexNodeParent(id, this.nodes.get(id)?.entity);
+  }
+
   /**
    * 将节点运行时信封与文档中的实体对齐
    * 字段级补丁就地修改实体，引用不变即 unchanged；引用变化说明实体被整体替换，几何与数据一并失效
@@ -110,6 +143,7 @@ export class EntityStore implements EntityReader {
     if (!entity) {
       if (!existing) return 'unchanged';
       this.nodes.delete(id);
+      this.indexNodeParent(id, undefined);
       return 'removed';
     }
 
@@ -118,10 +152,12 @@ export class EntityStore implements EntityReader {
         entity,
         runtime: { geomVersion: ++this.versionClock, dataVersion: ++this.versionClock }
       });
+      this.indexNodeParent(id, entity);
       return 'added';
     }
 
     if (existing.entity === entity) return 'unchanged';
+    this.indexNodeParent(id, entity);
     (existing as { entity: NodeEntity }).entity = entity;
     existing.runtime.geomVersion = ++this.versionClock;
     existing.runtime.dataVersion = ++this.versionClock;
@@ -224,6 +260,30 @@ export class EntityStore implements EntityReader {
     this.connectors.clear();
     this.nodeConnectors.clear();
     this.connectorEndpoints.clear();
+    this.nodeChildren.clear();
+    this.nodeParents.clear();
+  }
+
+  private indexNodeParent(id: string, entity: NodeEntity | undefined): void {
+    const previous = this.nodeParents.get(id);
+    const next = entity?.parentId;
+    if (previous === next) return;
+
+    if (previous !== undefined) {
+      const siblings = this.nodeChildren.get(previous);
+      siblings?.delete(id);
+      if (siblings?.size === 0) this.nodeChildren.delete(previous);
+      this.nodeParents.delete(id);
+    }
+    if (next !== undefined) {
+      this.nodeParents.set(id, next);
+      let children = this.nodeChildren.get(next);
+      if (!children) {
+        children = new Set();
+        this.nodeChildren.set(next, children);
+      }
+      children.add(id);
+    }
   }
 
   private indexConnectorEndpoints(connectorId: string, entity: ConnectorEntity | undefined): void {

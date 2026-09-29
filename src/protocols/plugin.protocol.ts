@@ -13,7 +13,9 @@ import type { InputScope } from './input-scope.protocol';
 import type { ArrowMarkerDefinition } from './arrow-marker.protocol';
 import type { ConnectorRouterDefinition } from './connector-router.protocol';
 import type { CanvasDocumentView, NodeEntity, ConnectorEntity } from '../types';
-import type { CommitOperationOptions } from '../types/operation';
+import type { CommitOperationOptions, CanvasOperationRecord } from '../types/operation';
+import type { DocumentChangeSet } from '../types/change-set';
+import type { SessionController, SessionChange } from '../state/session-store';
 
 /** 暴露给插件消费的画布上下文 API */
 export interface CanvasPluginContext {
@@ -29,8 +31,21 @@ export interface CanvasPluginContext {
   /**
    * 提交原子事务变更
    * 状态流转唯一合法入口，严禁直接篡改实体对象
+   * 返回 null 表示守卫校验失败或补丁冲突（如目标实体已被删除），事务已整体回滚
    */
-  commitOperation<TPayload>(options: CommitOperationOptions<TPayload>): void;
+  commitOperation<TPayload>(options: CommitOperationOptions<TPayload>): CanvasOperationRecord | null;
+
+  /** 本地会话状态 (视口与选区)：不进入文档、不入撤销栈、不参与协同 */
+  readonly session: SessionController;
+
+  /**
+   * 订阅文档增量变更集 (插件卸载时自动解绑)
+   * 仅做单向通知：监听中严禁同步提交新事务引发级联
+   */
+  onDocumentChange(listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void): () => void;
+
+  /** 订阅视口与选区变化 (插件卸载时自动解绑) */
+  onSessionChange(listener: (change: SessionChange) => void): () => void;
 
   /** 注册自定义图元节点定义 */
   registerNodeType(definition: NodeTypeDefinition): void;

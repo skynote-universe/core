@@ -61,83 +61,19 @@ export class PointerDispatcher {
   // ================= 虚拟指针事件分发 =================
 
   dispatchPointerDown(e: CanvasPointerEvent): void {
-    let stopped = false;
-    const originStop = e.stopPropagation.bind(e);
-    const wrapped: CanvasPointerEvent = {
-      ...e,
-      stopPropagation: () => {
-        stopped = true;
-        originStop();
-      }
-    };
-
-    for (let i = 0; i < this.sortedEntries.length; i++) {
-      if (stopped) break;
-      const { hooks } = this.sortedEntries[i];
-      if (hooks.onPointerDown) {
-        hooks.onPointerDown(wrapped);
-      }
-    }
+    this.dispatch(e, (hooks) => hooks.onPointerDown);
   }
 
   dispatchPointerMove(e: CanvasPointerEvent): void {
-    let stopped = false;
-    const originStop = e.stopPropagation.bind(e);
-    const wrapped: CanvasPointerEvent = {
-      ...e,
-      stopPropagation: () => {
-        stopped = true;
-        originStop();
-      }
-    };
-
-    for (let i = 0; i < this.sortedEntries.length; i++) {
-      if (stopped) break;
-      const { hooks } = this.sortedEntries[i];
-      if (hooks.onPointerMove) {
-        hooks.onPointerMove(wrapped);
-      }
-    }
+    this.dispatch(e, (hooks) => hooks.onPointerMove);
   }
 
   dispatchPointerUp(e: CanvasPointerEvent): void {
-    let stopped = false;
-    const originStop = e.stopPropagation.bind(e);
-    const wrapped: CanvasPointerEvent = {
-      ...e,
-      stopPropagation: () => {
-        stopped = true;
-        originStop();
-      }
-    };
-
-    for (let i = 0; i < this.sortedEntries.length; i++) {
-      if (stopped) break;
-      const { hooks } = this.sortedEntries[i];
-      if (hooks.onPointerUp) {
-        hooks.onPointerUp(wrapped);
-      }
-    }
+    this.dispatch(e, (hooks) => hooks.onPointerUp);
   }
 
   dispatchWheel(e: CanvasWheelEvent): void {
-    let stopped = false;
-    const originStop = e.stopPropagation?.bind(e);
-    const wrapped: CanvasWheelEvent = {
-      ...e,
-      stopPropagation: () => {
-        stopped = true;
-        originStop?.();
-      }
-    };
-
-    for (let i = 0; i < this.sortedEntries.length; i++) {
-      if (stopped) break;
-      const { hooks } = this.sortedEntries[i];
-      if (hooks.onWheel) {
-        hooks.onWheel(wrapped);
-      }
-    }
+    this.dispatch(e, (hooks) => hooks.onWheel);
   }
 
   /**
@@ -150,6 +86,32 @@ export class PointerDispatcher {
 
   get size(): number {
     return this.entries.size;
+  }
+
+  /**
+   * 按优先级从高到低分发，任一监听者调用 stopPropagation 即截断后续分发
+   * 以原事件为原型包装而非对象展开：展开会把 isClaimed 访问器求值成固定快照，
+   * 导致高优先级插件 claimPointer 后，低优先级的框选/拖拽读到的仍是 false
+   */
+  private dispatch<TEvent extends { stopPropagation?(): void }>(
+    event: TEvent,
+    pickHandler: (hooks: PointerHooks) => ((e: TEvent) => void) | undefined
+  ): void {
+    let stopped = false;
+    const wrapped: TEvent = Object.create(event, {
+      stopPropagation: {
+        value: () => {
+          stopped = true;
+          event.stopPropagation?.();
+        }
+      }
+    });
+
+    const entries = this.sortedEntries;
+    for (let i = 0; i < entries.length && !stopped; i++) {
+      const { hooks } = entries[i];
+      pickHandler(hooks)?.call(hooks, wrapped);
+    }
   }
 
   private rebuildSortedEntries(): void {

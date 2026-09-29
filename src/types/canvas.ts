@@ -29,23 +29,24 @@ export interface CanvasMeta {
   title?: string;
 }
 
-/** 视口变换状态（平移与缩放） */
+/**
+ * 视口变换状态（平移与缩放）
+ * 属于本地会话状态 (SessionStore)，不进入 CanvasDocument
+ */
 export interface ViewportState {
   x: number;
   y: number;
   zoom: number;
 }
 
-/** 当前交互选中态 */
-export interface SelectionState {
-  nodeIds: string[];
-  connectorIds: string[];
-}
-
-/** 画布实体集合 */
+/**
+ * 画布实体集合
+ * 以 id 为键而非数组下标：补丁路径天然按 id 寻址（如 ["content", "nodes", id, "x"]），
+ * 远端插删不会让本地撤销栈中的补丁错位命中其他实体；层叠顺序统一由实体的 zIndex 决定。
+ */
 export interface CanvasContent {
-  nodes: NodeEntity[];
-  connectors: ConnectorEntity[];
+  nodes: Record<string, NodeEntity>;
+  connectors: Record<string, ConnectorEntity>;
 }
 
 /** 插件扩展专有资源（如全局配置、草稿索引） */
@@ -65,8 +66,6 @@ export interface CanvasDocument {
   id: string;
   name: string;
   meta: CanvasMeta;
-  viewport: ViewportState;
-  selection: SelectionState;
   content: CanvasContent;
   /** 媒体资产表 (以 assetId 建立轻量索引，零 Base64) */
   assets?: Record<string, CanvasAssetMeta>;
@@ -85,5 +84,5 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
 
 /** 文档零拷贝只读投影视图 */
 export type CanvasDocumentView = DeepReadonly<CanvasDocument>;
-export type NodeEntityView = CanvasDocumentView['content']['nodes'][number];
-export type ConnectorEntityView = CanvasDocumentView['content']['connectors'][number];
+export type NodeEntityView = CanvasDocumentView['content']['nodes'][string];
+export type ConnectorEntityView = CanvasDocumentView['content']['connectors'][string];

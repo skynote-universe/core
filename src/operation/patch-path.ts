@@ -8,9 +8,8 @@
  */
 
 import type { CanvasPatchPath } from '../types/operation';
+import { DANGEROUS_KEYS } from '../utils/clone';
 
-/** 不允许作为属性路径的危险标识符 */
-const DANGEROUS_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
 
 /** 路径分词微缓存 (上限 512，避免无界膨胀) */
 const MAX_PATH_CACHE_SIZE = 512;
@@ -93,13 +92,10 @@ export function getValueByPath(root: unknown, path: CanvasPatchPath): unknown {
 
 /**
  * 解析路径并返回目标属性的父级引用与键名，用于原子写入/修改
- * 若父层级不存在且 createIntermediate 为 true，则会根据后续段落自动补全中间对象或数组
+ * 中间层级必须真实存在（自有属性且为对象），绝不自动补建：
+ * 否则针对已删除实体的迟到补丁（远端并发修改、撤销旧操作）会凭空造出残缺实体。
  */
-export function resolvePathForWrite(
-  root: unknown,
-  path: CanvasPatchPath,
-  createIntermediate = false
-): PathResolution | null {
+export function resolvePathForWrite(root: unknown, path: CanvasPatchPath): PathResolution | null {
   const segments = normalizePatchPath(path);
   if (segments.length === 0 || root === null || typeof root !== 'object') {
     return null;
@@ -112,18 +108,14 @@ export function resolvePathForWrite(
     if (typeof key === 'string' && DANGEROUS_KEYS.has(key)) {
       return null;
     }
-
-    let next = curr[key];
-    if (next === null || typeof next !== 'object') {
-      if (!createIntermediate) {
-        return null;
-      }
-      // 如果下一级段落是数字，预先创建空数组，否则创建普通对象
-      const nextKey = segments[i + 1];
-      next = typeof nextKey === 'number' ? [] : {};
-      curr[key] = next;
+    if (!Object.hasOwn(curr, key)) {
+      return null;
     }
 
+    const next = curr[key];
+    if (next === null || typeof next !== 'object') {
+      return null;
+    }
     curr = next as Record<string | number, unknown>;
   }
 

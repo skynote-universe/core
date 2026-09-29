@@ -5,3 +5,4 @@
 
 export * from './entity-store';
 export * from './document-store';
+export * from './session-store';

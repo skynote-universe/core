@@ -44,15 +44,15 @@ describe('PatchApplier 正交原子操作', () => {
 
     expect(res.success).toBe(true);
     expect(target.style.fill).toBe('#ff0000');
-    expect(res.inversePatch).toEqual({
+    expect(res.inversePatches).toEqual([{
       op: 'set',
       path: 'style.fill',
       value: '#ffffff',
       oldValue: '#ff0000'
-    });
+    }]);
 
     // 执行逆向补丁应完美复原
-    const undoRes = applyPatch(target, res.inversePatch);
+    const undoRes = applyPatches(target, res.inversePatches);
     expect(undoRes.success).toBe(true);
     expect(target.style.fill).toBe('#ffffff');
   });
@@ -68,13 +68,13 @@ describe('PatchApplier 正交原子操作', () => {
     expect(res.success).toBe(true);
     expect(target.customTag).toBe('important');
     // 逆向补丁必须是 unset，确保撤销时彻底清理该 key
-    expect(res.inversePatch).toEqual({
+    expect(res.inversePatches).toEqual([{
       op: 'unset',
       path: 'customTag'
-    });
+    }]);
 
     // 撤销回滚
-    applyPatch(target, res.inversePatch);
+    applyPatches(target, res.inversePatches);
     expect(Object.prototype.hasOwnProperty.call(target, 'customTag')).toBe(false);
   });
 
@@ -96,17 +96,58 @@ describe('PatchApplier 正交原子操作', () => {
     expect(target.style.stroke).toBe('#222222');
 
     // 逆向补丁为带 merge: true 的旧值字典
-    expect(res.inversePatch).toEqual({
+    expect(res.inversePatches).toEqual([{
       op: 'set',
       path: 'style',
       merge: true,
       value: { fill: '#111111', strokeWidth: 1 }
-    });
+    }]);
 
     // 逆向回滚
-    applyPatch(target, res.inversePatch);
+    applyPatches(target, res.inversePatches);
     expect(target.style.fill).toBe('#111111');
     expect(target.style.strokeWidth).toBe(1);
+  });
+
+  it('set (merge: true): 撤销时移除合并新增的键', () => {
+    const target = { style: { fill: '#111111' } as Record<string, unknown> };
+
+    const res = applyPatch(target, {
+      op: 'set',
+      path: 'style',
+      merge: true,
+      value: { fill: '#333333', stroke: '#444444' }
+    });
+
+    expect(res.inversePatches).toEqual([
+      { op: 'set', path: 'style', merge: true, value: { fill: '#111111' } },
+      { op: 'unset', path: ['style', 'stroke'] }
+    ]);
+
+    applyPatches(target, [...res.inversePatches].reverse());
+    expect(target.style).toEqual({ fill: '#111111' });
+  });
+
+  it('set (merge: true): 目标字典不存在时逆向为 unset', () => {
+    const target: Record<string, unknown> = {};
+    const res = applyPatch(target, { op: 'set', path: 'style', merge: true, value: { fill: '#fff' } });
+
+    expect(target.style).toEqual({ fill: '#fff' });
+    expect(res.inversePatches).toEqual([{ op: 'unset', path: 'style' }]);
+  });
+
+  it('set (merge: true): 拒绝携带 __proto__ 键的合并值，防止原型链污染', () => {
+    const target = { style: {} as Record<string, unknown> };
+    const res = applyPatch(target, {
+      op: 'set',
+      path: 'style',
+      merge: true,
+      value: JSON.parse('{"__proto__":{"polluted":1},"fill":"#fff"}')
+    });
+
+    expect(res.success).toBe(false);
+    expect((target.style as { polluted?: number }).polluted).toBeUndefined();
+    expect(target.style).toEqual({});
   });
 
   it('unset: 移除属性并生成对偶 set 恢复补丁', () => {
@@ -118,14 +159,14 @@ describe('PatchApplier 正交原子操作', () => {
 
     expect(res.success).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(target, 'theme')).toBe(false);
-    expect(res.inversePatch).toEqual({
+    expect(res.inversePatches).toEqual([{
       op: 'set',
       path: 'theme',
       value: 'dark'
-    });
+    }]);
 
     // 逆向回滚
-    applyPatch(target, res.inversePatch);
+    applyPatches(target, res.inversePatches);
     expect(target.theme).toBe('dark');
   });
 
@@ -146,17 +187,17 @@ describe('PatchApplier 正交原子操作', () => {
     expect(target.items).toEqual([1, 2, 3, 4, 5]);
 
     // 逆向补丁应为在下标 2 处删除 2 个元素
-    expect(res.inversePatch).toEqual({
+    expect(res.inversePatches).toEqual([{
       op: 'splice',
       path: 'items',
       index: 2,
       deleteCount: 2,
       items: [],
       deletedItems: [3, 4]
-    });
+    }]);
 
     // 执行逆向补丁
-    applyPatch(target, res.inversePatch);
+    applyPatches(target, res.inversePatches);
     expect(target.items).toEqual([1, 2, 5]);
   });
 
@@ -172,14 +213,14 @@ describe('PatchApplier 正交原子操作', () => {
 
     expect(insertRes.success).toBe(true);
     expect(target.content).toBe('Hello Great World');
-    expect(insertRes.inversePatch).toEqual({
+    expect(insertRes.inversePatches).toEqual([{
       op: 'text',
       path: 'content',
       deltas: [{ retain: 5 }, { delete: 6 }]
-    });
+    }]);
 
     // 逆向回滚
-    applyPatch(target, insertRes.inversePatch);
+    applyPatches(target, insertRes.inversePatches);
     expect(target.content).toBe('Hello World');
 
     // 删除 " World" -> "Hello"
@@ -191,14 +232,14 @@ describe('PatchApplier 正交原子操作', () => {
 
     expect(deleteRes.success).toBe(true);
     expect(target.content).toBe('Hello');
-    expect(deleteRes.inversePatch).toEqual({
+    expect(deleteRes.inversePatches).toEqual([{
       op: 'text',
       path: 'content',
       deltas: [{ retain: 5 }, { insert: ' World' }]
-    });
+    }]);
 
     // 逆向回滚
-    applyPatch(target, deleteRes.inversePatch);
+    applyPatches(target, deleteRes.inversePatches);
     expect(target.content).toBe('Hello World');
   });
 

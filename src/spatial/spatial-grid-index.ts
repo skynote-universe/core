@@ -11,7 +11,7 @@ import {
   doBoundsIntersect,
   isPointInBounds
 } from '../utils/geometry';
-import type { SpatialIndex } from './spatial-index';
+import type { SpatialIndex, SpatialIndexEntry } from './spatial-index';
 
 export interface SpatialGridIndexOptions {
   /** 网格单元格标称边长 (像素，默认 512) */
@@ -49,6 +49,13 @@ export class SpatialGridIndex implements SpatialIndex {
 
     this.boundsMap.set(nodeId, bounds);
     this.insertIntoGrid(nodeId, bounds);
+  }
+
+  /** 网格哈希的逐条插入已是 O(覆盖格数)，无需整体重建 */
+  load(entries: Iterable<SpatialIndexEntry>): void {
+    for (const [id, bounds] of entries) {
+      this.update(id, bounds);
+    }
   }
 
   remove(nodeId: string): boolean {

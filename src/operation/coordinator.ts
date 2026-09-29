@@ -5,8 +5,12 @@
  * 设计考量 (Why):
  * 1. 状态流转红线 (AGENTS.md)：所有对画布文档的修改必须通过 commitOperation 统一提交。
  * 2. 撤销栈协同隔离：严格遵守 origin === 'local' 才准入撤销栈，远端协同同步来的 patch 绝不污染本地用户的 Undo 历史。
- * 3. 连续操作智能折叠 (Squashing)：支持连续拖拽/微调共用同一个 groupId，自动将其合并为单个历史步长，杜绝一次拖拽产生数百步撤销。
+ * 3. 连续操作智能折叠 (Squashing)：支持连续拖拽/微调共用同一个 groupId，自动将其合并为单个历史步长，杜绝一次拖拽产生数百步撤销；
+ *    合并时再对同一路径的整值覆盖做压缩（正向留最后一次、逆向留最早一次），一次拖拽无论多长都只保留常数条补丁。
  * 4. 极致性能与零套娃：纯扁平数组历史栈，定长截断防内存泄漏，事件通知精简直接。
+ * 5. 历史不可变：提交入口深拷贝补丁，调用方事后修改自己持有的补丁对象不会篡改撤销栈与广播出去的记录。
+ * 6. 冲突即丢弃：撤销/重做若因远端并发改动而无法执行（如目标实体已被删除），该条目整体作废并通知历史栈变化，
+ *    不做部分回放，保证每一步撤销都是完整的原子事务。
  */
 
 import type {
@@ -16,9 +20,64 @@ import type {
   CanvasPatch
 } from '../types/operation';
 import { applyPatches } from './patch-applier';
-import { getValueByPath } from './patch-path';
+import { getValueByPath, normalizePatchPath } from './patch-path';
 import { isEqual } from '../utils/equality';
 import { generateId } from '../utils/id';
+import { clonePlainData } from '../utils/clone';
+
+/** 整值覆盖补丁：非 merge 的 set 与 unset，执行结果只取决于自身，与该路径此前的值无关 */
+function isOverwritePatch(patch: CanvasPatch): boolean {
+  return (patch.op === 'set' && !patch.merge) || patch.op === 'unset';
+}
+
+/** 两条路径是否互为祖先/后代或完全相同 */
+function arePathsRelated(a: readonly (string | number)[], b: readonly (string | number)[]): boolean {
+  const length = Math.min(a.length, b.length);
+  for (let i = 0; i < length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * 压缩同一路径上的连续整值覆盖
+ * 两次覆盖之间若有祖先/后代路径的补丁介入（如先改 style.fill 再整体覆盖 style），保守地不做压缩
+ * @param keep 'last' 用于正向补丁 (最终值生效)；'first' 用于逆向补丁 (倒序回放时最早的旧值最后生效)
+ */
+function compactOverwrites(patches: readonly CanvasPatch[], keep: 'first' | 'last'): CanvasPatch[] {
+  const segmentsList = patches.map((patch) => normalizePatchPath(patch.path));
+  const dropped = new Set<number>();
+  /** 路径键 -> 当前可被合并的覆盖补丁下标 */
+  const candidates = new Map<string, number>();
+
+  for (let i = 0; i < patches.length; i++) {
+    const segments = segmentsList[i];
+    const key = segments.join('\u0000');
+    const previous = isOverwritePatch(patches[i]) ? candidates.get(key) : undefined;
+
+    // 任何补丁都会让与之相关、但路径不完全相同的候选失效
+    for (const [candidateKey, index] of candidates) {
+      if (candidateKey !== key && arePathsRelated(segmentsList[index], segments)) {
+        candidates.delete(candidateKey);
+      }
+    }
+
+    if (previous === undefined) {
+      if (isOverwritePatch(patches[i])) candidates.set(key, i);
+      else candidates.delete(key);
+      continue;
+    }
+
+    if (keep === 'last') {
+      dropped.add(previous);
+      candidates.set(key, i);
+    } else {
+      dropped.add(i);
+    }
+  }
+
+  return dropped.size === 0 ? [...patches] : patches.filter((_, i) => !dropped.has(i));
+}
 
 /** 操作提交事件回调 */
 export type OperationListener<TDoc = unknown> = (record: CanvasOperationRecord, doc: TDoc) => void;
@@ -85,15 +144,17 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       }
     }
 
-    // 应用补丁
-    const applyResult = applyPatches(this.targetDoc, options.patches);
+    const patches = clonePlainData(options.patches);
+    const applyResult = applyPatches(this.targetDoc, patches);
     if (!applyResult.success) {
       console.error('[OperationCoordinator] 补丁事务执行失败，已自动回滚:', applyResult.error);
       return null;
     }
 
     // 优先使用显式传入的逆向补丁，未传入时使用应用器推导出的对偶补丁
-    const finalInversePatches = options.inversePatches ?? applyResult.inversePatches;
+    const finalInversePatches = options.inversePatches
+      ? clonePlainData(options.inversePatches)
+      : applyResult.inversePatches;
 
     const record: CanvasOperationRecord = {
       id: generateId('op'),
@@ -103,7 +164,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       source,
       undoable,
       groupId: options.groupId,
-      patches: [...options.patches],
+      patches,
       inversePatches: finalInversePatches,
       payload: options.payload
     };
@@ -139,7 +200,8 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       const result = applyPatches(this.targetDoc, reversedInverse);
 
       if (!result.success) {
-        console.error('[OperationCoordinator] 撤销执行失败:', result.error);
+        console.error('[OperationCoordinator] 撤销冲突，已作废该历史条目:', result.error);
+        this.notifyHistoryChanged();
         return false;
       }
 
@@ -185,7 +247,8 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       const result = applyPatches(this.targetDoc, entry.patches);
 
       if (!result.success) {
-        console.error('[OperationCoordinator] 重做执行失败:', result.error);
+        console.error('[OperationCoordinator] 重做冲突，已作废该历史条目:', result.error);
+        this.notifyHistoryChanged();
         return false;
       }
 
@@ -264,10 +327,9 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
         label: record.label || lastEntry.label,
         timestamp: record.timestamp,
         groupId: record.groupId,
-        // 正向补丁依次累积
-        patches: [...lastEntry.patches, ...record.patches],
-        // 逆向补丁保持自然时间序（undo 时整体倒序执行）
-        inversePatches: [...lastEntry.inversePatches, ...record.inversePatches]
+        // 正向补丁依次累积，逆向补丁保持自然时间序（undo 时整体倒序执行）
+        patches: compactOverwrites([...lastEntry.patches, ...record.patches], 'last'),
+        inversePatches: compactOverwrites([...lastEntry.inversePatches, ...record.inversePatches], 'first')
       };
 
       this.undoStack[this.undoStack.length - 1] = mergedEntry;

@@ -14,9 +14,11 @@ import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { ArrowMarkerDefinition } from '../protocols/arrow-marker.protocol';
 import type { ConnectorRouterDefinition } from '../protocols/connector-router.protocol';
 import type { InputScope } from '../protocols/input-scope.protocol';
-import type { CommitOperationOptions } from '../types/operation';
+import type { CommitOperationOptions, CanvasOperationRecord } from '../types/operation';
 import type { CanvasDocumentView } from '../types/canvas';
 import type { DocumentStore } from '../state/document-store';
+import type { SessionStore, SessionChange } from '../state/session-store';
+import type { DocumentChangeSet } from '../types/change-set';
 import type { NodeTypeRegistry } from '../registry/node-type-registry';
 import type { ArrowMarkerRegistry } from '../registry/arrow-marker-registry';
 import type { ConnectorRouterRegistry } from '../registry/connector-router-registry';
@@ -25,6 +27,7 @@ import type { PointerDispatcher, PointerHooks } from '../input/pointer-dispatche
 
 export interface PluginManagerDependencies {
   documentStore: DocumentStore;
+  session: SessionStore;
   nodeTypeRegistry: NodeTypeRegistry;
   arrowMarkerRegistry: ArrowMarkerRegistry;
   connectorRouterRegistry: ConnectorRouterRegistry;
@@ -150,8 +153,21 @@ export class PluginManager {
       getConnector: (id: string) => {
         return this.deps.documentStore.getConnector(id);
       },
-      commitOperation: <TPayload>(options: CommitOperationOptions<TPayload>): void => {
-        this.deps.documentStore.commit(options);
+      commitOperation: <TPayload>(options: CommitOperationOptions<TPayload>): CanvasOperationRecord | null => {
+        return this.deps.documentStore.commit(options);
+      },
+      session: this.deps.session,
+      onDocumentChange: (
+        listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void
+      ): (() => void) => {
+        const unbind = this.deps.documentStore.subscribe((_view, record, changes) => listener(changes, record));
+        cleanupList.push(unbind);
+        return unbind;
+      },
+      onSessionChange: (listener: (change: SessionChange) => void): (() => void) => {
+        const unbind = this.deps.session.subscribe(listener);
+        cleanupList.push(unbind);
+        return unbind;
       },
       registerNodeType: (definition: NodeTypeDefinition): void => {
         this.deps.nodeTypeRegistry.register(definition);

@@ -83,3 +83,19 @@ export interface RuntimeConnector<
   /** 运行时专属可变状态 */
   readonly runtime: ConnectorRuntimeState;
 }
+
+/**
+ * 运行时节点只读视图
+ * 浅层 Readonly 足以在类型层面拦截 `node.x = 1` 这类绕过事务的就地赋值，
+ * 同时仍可直接传给接收 NodeEntity 的渲染与排版函数
+ */
+export interface RuntimeNodeView {
+  readonly entity: Readonly<NodeEntity>;
+  readonly runtime: Readonly<NodeRuntimeState>;
+}
+
+/** 运行时连线只读视图 */
+export interface RuntimeConnectorView {
+  readonly entity: Readonly<ConnectorEntity>;
+  readonly runtime: Readonly<ConnectorRuntimeState>;
+}

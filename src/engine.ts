@@ -5,18 +5,22 @@
  * 设计考量 (Why):
  * 1. 唯一门面，统筹枢纽：将 DocumentStore、EntityStore、NodeTypeRegistry、SpatialGridIndex、
  *    InputScopeManager、PluginManager 强力组装为一体。
- * 2. 空间拓扑与状态树自联动：当节点几何变更或增删时，引擎自动维护 SpatialGridIndex 包围盒，
- *    彻底消除渲染器与选框在上层手动同步索引的心智负担。
+ * 2. 空间拓扑与状态树自联动：消费 DocumentChangeSet 增量维护节点与连线两套空间索引，
+ *    每次提交只触达变更实体，与画布总规模无关；渲染器与选框无需手动同步索引。
  * 3. 严格遵循四大红线：全文 0 DOM / 0 Canvas 依赖，纯内存图灵完备，可无缝运行于浏览器、Web Worker 或 Node.js。
  */
 
-import type { CanvasDocument, CanvasDocumentView } from './types/canvas';
+import type { CanvasDocument, CanvasDocumentView, ViewportState } from './types/canvas';
+import type { DocumentChangeSet } from './types/change-set';
+import type { CanvasThemeConfig } from './types/theme';
+import { computeNodeBounds, computeConnectorBounds } from './utils/geometry';
 import { DocumentStore, createEmptyCanvasDocument } from './state/document-store';
-import { EntityStore } from './state/entity-store';
+import type { EntityReader } from './state/entity-store';
+import { SessionStore } from './state/session-store';
 import { NodeTypeRegistry } from './registry/node-type-registry';
 import { ArrowMarkerRegistry } from './registry/arrow-marker-registry';
 import { ConnectorRouterRegistry } from './registry/connector-router-registry';
-import { type SpatialIndex, createSpatialIndex } from './spatial';
+import { type SpatialIndex, type SpatialIndexEntry, createSpatialIndex } from './spatial';
 import { InputScopeManager } from './input/input-scope-manager';
 import { PointerDispatcher } from './input/pointer-dispatcher';
 import { PluginManager } from './plugin/plugin-manager';
@@ -25,23 +29,31 @@ import type { SkyNotePlugin } from './protocols/plugin.protocol';
 export interface SkyNoteEngineOptions {
   /** 初始画布文档 (默认创建空文档) */
   initialDoc?: CanvasDocument;
-  /** 自定义空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
+  /** 初始视口 (宿主可自行持久化上次浏览位置并在此恢复) */
+  initialViewport?: Partial<ViewportState>;
+  /** 画布主题 (默认浅色预设)，运行时通过 engine.session.setTheme() 显式切换 */
+  theme?: CanvasThemeConfig;
+  /** 自定义节点空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
   spatialIndex?: SpatialIndex;
+  /** 自定义连线空间拓扑索引实现 (默认采用 R-Tree 层次包围盒) */
+  connectorSpatialIndex?: SpatialIndex;
 }
 
 export class SkyNoteEngine {
   readonly documentStore: DocumentStore;
-  readonly entityStore: EntityStore;
+  readonly entityStore: EntityReader;
+  /** 本地会话状态：视口与选区 */
+  readonly session: SessionStore;
   readonly nodeTypes: NodeTypeRegistry;
   readonly arrowMarkers: ArrowMarkerRegistry;
   readonly routers: ConnectorRouterRegistry;
   readonly spatialIndex: SpatialIndex;
+  readonly connectorSpatialIndex: SpatialIndex;
   readonly inputScopes: InputScopeManager;
   readonly pointer: PointerDispatcher;
   readonly plugins: PluginManager;
 
-  /** 引擎已索引节点的几何版本号缓存 (Map<nodeId, geomVersion>，兼做 O(1) 差集索引) */
-  private readonly indexedGeomVersions = new Map<string, number>();
+  private readonly unsubscribeDocument: () => void;
   private isDestroyed = false;
 
   constructor(options?: SkyNoteEngineOptions) {
@@ -49,15 +61,18 @@ export class SkyNoteEngine {
 
     this.documentStore = new DocumentStore(doc);
     this.entityStore = this.documentStore.entityStore;
+    this.session = new SessionStore({ viewport: options?.initialViewport, theme: options?.theme });
     this.nodeTypes = new NodeTypeRegistry();
     this.arrowMarkers = new ArrowMarkerRegistry();
     this.routers = new ConnectorRouterRegistry();
     this.spatialIndex = options?.spatialIndex ?? createSpatialIndex('rtree');
+    this.connectorSpatialIndex = options?.connectorSpatialIndex ?? createSpatialIndex('rtree');
     this.inputScopes = new InputScopeManager();
     this.pointer = new PointerDispatcher();
 
     this.plugins = new PluginManager({
       documentStore: this.documentStore,
+      session: this.session,
       nodeTypeRegistry: this.nodeTypes,
       arrowMarkerRegistry: this.arrowMarkers,
       connectorRouterRegistry: this.routers,
@@ -65,13 +80,16 @@ export class SkyNoteEngine {
       pointerDispatcher: this.pointer
     });
 
-    // 初始同步空间索引
-    this.syncSpatialIndexFromView(this.documentStore.getView());
+    this.spatialIndex.load(
+      this.entityStore.getAllNodes().map((runtimeNode) => [runtimeNode.entity.id, computeNodeBounds(runtimeNode.entity)] as const)
+    );
+    this.loadConnectorBounds(this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id));
 
-    // 状态变更与空间索引自动联动
-    this.documentStore.subscribe((view) => {
-      if (this.isDestroyed) return;
-      this.syncSpatialIndexFromView(view);
+    // 空间索引与选区都是文档的派生状态，由引擎统一维护一致性：
+    // 实体删除（本地、远端或撤销）后选区不会残留指向不存在实体的 id
+    this.unsubscribeDocument = this.documentStore.subscribe((_view, _record, changes) => {
+      this.syncSpatialIndexes(changes);
+      this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
     });
   }
 
@@ -97,59 +115,52 @@ export class SkyNoteEngine {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
 
+    this.unsubscribeDocument();
     this.plugins.destroy();
     this.pointer.clear();
     this.spatialIndex.clear();
+    this.connectorSpatialIndex.clear();
     this.inputScopes.clear();
     this.nodeTypes.clear();
     this.arrowMarkers.clear();
     this.routers.clear();
-    this.indexedGeomVersions.clear();
     this.documentStore.clearHistory();
   }
 
   /**
-   * 视图与空间拓扑索引自联动
-   * 
-   * 性能军规守卫 (AGENTS.md):
-   * 1. 双版本号守卫：仅当节点几何发生真实位移/尺寸形变 (geomVersion 递增) 时才更新空间索引！
-   *    文本、背景色、边框样式或纯视口缩放时，数万个无几何形变的节点 0 耗时跳过。
-   * 2. O(1) 差集删除：通过 Map 键集合毫秒级定位已删除节点，杜绝向树发送 [-Infinity, Infinity] 深度递归。
+   * 按变更集增量维护空间索引：只触达本次提交涉及的实体，由索引实现自行决定逐条插入还是整体重建
    */
-  private syncSpatialIndexFromView(view: CanvasDocumentView): void {
-    const activeIds = new Set<string>();
-    const nodes = view.content.nodes;
+  private syncSpatialIndexes(changes: DocumentChangeSet): void {
+    for (const id of changes.nodes.removed) {
+      this.spatialIndex.remove(id);
+    }
+    const nodeEntries: SpatialIndexEntry[] = [];
+    for (const id of changes.nodes.geometry) {
+      const runtimeNode = this.entityStore.getNode(id);
+      if (runtimeNode) nodeEntries.push([id, computeNodeBounds(runtimeNode.entity)]);
+    }
+    this.spatialIndex.load(nodeEntries);
 
-    for (let i = 0; i < nodes.length; i++) {
-      const node = nodes[i];
-      activeIds.add(node.id);
+    for (const id of changes.connectors.removed) {
+      this.connectorSpatialIndex.remove(id);
+    }
+    // 依附节点移动引发的路由失效已由 DocumentStore 并入 connectors.geometry
+    this.loadConnectorBounds(changes.connectors.geometry);
+  }
 
-      // 双版本号守卫拦截
-      const runtimeNode = this.entityStore.getNode(node.id);
-      const currentGeomVer = runtimeNode?.runtime.geomVersion ?? 0;
-      const lastGeomVer = this.indexedGeomVersions.get(node.id);
-
-      if (lastGeomVer !== currentGeomVer) {
-        this.spatialIndex.update(node.id, {
-          left: node.x,
-          top: node.y,
-          right: node.x + node.width,
-          bottom: node.y + node.height,
-          width: node.width,
-          height: node.height
-        });
-        this.indexedGeomVersions.set(node.id, currentGeomVer);
+  private loadConnectorBounds(connectorIds: Iterable<string>): void {
+    const resolveNode = (nodeId: string) => this.entityStore.getNode(nodeId)?.entity;
+    const entries: SpatialIndexEntry[] = [];
+    for (const id of connectorIds) {
+      const runtimeConnector = this.entityStore.getConnector(id);
+      const bounds = runtimeConnector ? computeConnectorBounds(runtimeConnector.entity, resolveNode) : null;
+      if (bounds) {
+        entries.push([id, bounds]);
+      } else {
+        // 两端均无法定位 (悬空连线) 时不参与空间检索
+        this.connectorSpatialIndex.remove(id);
       }
     }
-
-    // 剔除已删除的节点：基于 Map 差集精准定位与释放
-    if (this.indexedGeomVersions.size > activeIds.size) {
-      for (const id of this.indexedGeomVersions.keys()) {
-        if (!activeIds.has(id)) {
-          this.spatialIndex.remove(id);
-          this.indexedGeomVersions.delete(id);
-        }
-      }
-    }
+    this.connectorSpatialIndex.load(entries);
   }
 }

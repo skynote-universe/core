@@ -6,3 +6,6 @@
 export * from './id';
 export * from './geometry';
 export * from './equality';
+export * from './clone';
+export * from './color';
+export * from './theme';

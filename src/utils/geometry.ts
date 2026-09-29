@@ -196,3 +196,61 @@ export function buildRoundedPolylinePath(
   return path;
 }
 
+
+/**
+ * 求解节点在世界坐标系中的轴对齐包围盒
+ * 暂不计入 rotation：旋转中心约定尚未在协议层确定，确定后在此统一扩展为旋转外接矩形
+ */
+export function computeNodeBounds(node: { x: number; y: number; width: number; height: number }): RectBounds {
+  return {
+    left: node.x,
+    top: node.y,
+    right: node.x + node.width,
+    bottom: node.y + node.height,
+    width: node.width,
+    height: node.height
+  };
+}
+
+/**
+ * 求解连线的保守外包围盒：两端 (绑定节点的包围盒或自由端点) 与手动控制点的并集
+ * 正交/贝塞尔路由均落在该凸包附近，渲染器视锥裁剪时再叠加缓冲边距即可覆盖路由外扩
+ * @returns 两端均无法定位 (如悬空连线的节点已删除且无自由坐标) 时返回 null
+ */
+export function computeConnectorBounds(
+  connector: {
+    from: { nodeId?: string; position?: Point };
+    to: { nodeId?: string; position?: Point };
+    controlPoints?: readonly Point[];
+  },
+  resolveNode: (nodeId: string) => { x: number; y: number; width: number; height: number } | undefined
+): RectBounds | null {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+
+  const include = (x1: number, y1: number, x2: number, y2: number): void => {
+    left = Math.min(left, x1);
+    top = Math.min(top, y1);
+    right = Math.max(right, x2);
+    bottom = Math.max(bottom, y2);
+  };
+
+  for (const endpoint of [connector.from, connector.to]) {
+    const node = endpoint.nodeId !== undefined ? resolveNode(endpoint.nodeId) : undefined;
+    if (node) {
+      include(node.x, node.y, node.x + node.width, node.y + node.height);
+    } else if (endpoint.position) {
+      include(endpoint.position.x, endpoint.position.y, endpoint.position.x, endpoint.position.y);
+    }
+  }
+
+  const controlPoints = connector.controlPoints ?? [];
+  for (let i = 0; i < controlPoints.length; i++) {
+    include(controlPoints[i].x, controlPoints[i].y, controlPoints[i].x, controlPoints[i].y);
+  }
+
+  if (left === Infinity) return null;
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}

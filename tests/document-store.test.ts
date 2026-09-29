@@ -13,8 +13,10 @@ describe('DocumentStore & EntityStore', () => {
     const view = store.getView();
 
     expect(view.id).toBe('doc_root');
-    expect(view.viewport.zoom).toBe(1);
-    expect(view.content.nodes.length).toBe(0);
+    // 视口与选区属于本地会话状态，不进入可持久化文档
+    expect('viewport' in view).toBe(false);
+    expect('selection' in view).toBe(false);
+    expect(Object.keys(view.content.nodes)).toHaveLength(0);
     expect(store.entityStore.getAllNodes().length).toBe(0);
   });
 
@@ -37,15 +39,14 @@ describe('DocumentStore & EntityStore', () => {
 
     store.addNode(node);
 
-    expect(store.getView().content.nodes.length).toBe(1);
-    expect(store.getView().content.nodes[0].id).toBe('node_1');
+    expect(Object.keys(store.getView().content.nodes)).toEqual(['node_1']);
 
     // 验证 EntityStore O(1) 索引与运行时信封
     const envelope = store.entityStore.getNode('node_1');
     expect(envelope).toBeDefined();
     expect(envelope?.entity.id).toBe('node_1');
-    expect(envelope?.runtime.geomVersion).toBe(1);
-    expect(envelope?.runtime.dataVersion).toBe(1);
+    expect(envelope?.runtime.geomVersion).toBeGreaterThan(0);
+    expect(envelope?.runtime.dataVersion).toBeGreaterThan(0);
   });
 
   it('moveNode 仅递增 geomVersion，不影响 dataVersion (双版本号守卫)', () => {
@@ -65,17 +66,16 @@ describe('DocumentStore & EntityStore', () => {
 
     store.addNode(node);
     const envelope = store.entityStore.getNode('node_1')!;
-    expect(envelope.runtime.geomVersion).toBe(1);
-    expect(envelope.runtime.dataVersion).toBe(1);
+    const { geomVersion, dataVersion } = envelope.runtime;
 
     // 移动节点
     store.moveNode('node_1', { x: 50, y: 30 });
-    expect(store.getView().content.nodes[0].x).toBe(150);
-    expect(store.getView().content.nodes[0].y).toBe(230);
+    expect(store.getView().content.nodes.node_1.x).toBe(150);
+    expect(store.getView().content.nodes.node_1.y).toBe(230);
 
     // 几何版本号递增，数据版本号保持不变！
-    expect(envelope.runtime.geomVersion).toBe(2);
-    expect(envelope.runtime.dataVersion).toBe(1);
+    expect(envelope.runtime.geomVersion).toBeGreaterThan(geomVersion);
+    expect(envelope.runtime.dataVersion).toBe(dataVersion);
   });
 
   it('修改样式内容仅递增 dataVersion', () => {
@@ -96,6 +96,7 @@ describe('DocumentStore & EntityStore', () => {
 
     store.addNode(node);
     const envelope = store.entityStore.getNode('node_1')!;
+    const { geomVersion, dataVersion } = envelope.runtime;
 
     // 通过 commit 提交颜色修改
     store.commit({
@@ -103,16 +104,16 @@ describe('DocumentStore & EntityStore', () => {
       patches: [
         {
           op: 'set',
-          path: ['content', 'nodes', 0, 'style', 'fill'],
+          path: ['content', 'nodes', 'node_1', 'style', 'fill'],
           value: '#ff0000'
         }
       ]
     });
 
-    expect(store.getView().content.nodes[0].style?.fill).toBe('#ff0000');
+    expect(store.getView().content.nodes.node_1.style?.fill).toBe('#ff0000');
     // dataVersion 递增，geomVersion 不变
-    expect(envelope.runtime.geomVersion).toBe(1);
-    expect(envelope.runtime.dataVersion).toBe(2);
+    expect(envelope.runtime.geomVersion).toBe(geomVersion);
+    expect(envelope.runtime.dataVersion).toBeGreaterThan(dataVersion);
   });
 
   it('removeNode 删除节点并级联清理选中态', () => {
@@ -131,29 +132,15 @@ describe('DocumentStore & EntityStore', () => {
     };
 
     store.addNode(node);
-    store.setSelection({ nodeIds: ['node_1'] });
-    expect(store.getSelection().nodeIds).toContain('node_1');
 
     store.removeNode('node_1');
-    expect(store.getView().content.nodes.length).toBe(0);
+    expect(store.getView().content.nodes.node_1).toBeUndefined();
     expect(store.entityStore.hasNode('node_1')).toBe(false);
-    expect(store.getSelection().nodeIds).not.toContain('node_1');
 
     // 撤销删除
     store.undo();
-    expect(store.getView().content.nodes.length).toBe(1);
+    expect(store.getView().content.nodes.node_1.id).toBe('node_1');
     expect(store.entityStore.hasNode('node_1')).toBe(true);
-  });
-
-  it('setViewport 变更视口且默认不污染历史栈', () => {
-    const store = new DocumentStore();
-    store.setViewport({ x: 500, y: 300, zoom: 1.5 });
-
-    const vp = store.getViewport();
-    expect(vp.x).toBe(500);
-    expect(vp.y).toBe(300);
-    expect(vp.zoom).toBe(1.5);
-    expect(store.canUndo).toBe(false);
   });
 
   it('updateNode 语义化更新节点属性并支持样式浅合并', () => {
@@ -179,14 +166,14 @@ describe('DocumentStore & EntityStore', () => {
       style: { fill: '#ffffff', strokeWidth: 3 }
     });
 
-    const target = store.getView().content.nodes[0];
+    const target = store.getView().content.nodes.node_1;
     expect(target.style?.fill).toBe('#ffffff');
     expect(target.style?.strokeWidth).toBe(3);
     expect(target.style?.stroke).toBe('#222222'); // 原属性保留
 
     // 撤销 updateNode
     store.undo();
-    const restored = store.getView().content.nodes[0];
+    const restored = store.getView().content.nodes.node_1;
     expect(restored.style?.fill).toBe('#111111');
     expect(restored.style?.strokeWidth).toBe(1);
   });
@@ -208,24 +195,98 @@ describe('DocumentStore & EntityStore', () => {
 
     store.addNode(node);
     const envelope = store.entityStore.getNode('node_1')!;
-    expect(envelope.runtime.geomVersion).toBe(1);
-    expect(envelope.runtime.dataVersion).toBe(1);
+    const { geomVersion, dataVersion } = envelope.runtime;
 
-    // 整包替换 nodes[0]
+    // 整包替换节点
     store.commit({
       label: '整包覆盖节点',
       patches: [
         {
           op: 'set',
-          path: ['content', 'nodes', 0],
+          path: ['content', 'nodes', 'node_1'],
           value: { ...node, x: 100, width: 200, style: { fill: '#aabbcc' } }
         }
       ]
     });
 
-    // 几何与数据版本均自增
-    expect(envelope.runtime.geomVersion).toBe(2);
-    expect(envelope.runtime.dataVersion).toBe(2);
+    // 几何与数据版本均自增，且实体索引指向新对象
+    expect(envelope.runtime.geomVersion).toBeGreaterThan(geomVersion);
+    expect(envelope.runtime.dataVersion).toBeGreaterThan(dataVersion);
+    expect(store.getNode('node_1')?.x).toBe(100);
+  });
+
+  it('补丁按 id 寻址：远端插入节点后撤销仍命中原节点', () => {
+    const store = new DocumentStore();
+    const make = (id: string): NodeEntity => ({
+      id,
+      type: 'node',
+      nodeType: 'rect',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      zIndex: 1,
+      locked: false
+    });
+
+    store.addNode(make('a'));
+    store.addNode(make('b'));
+    store.moveNode('b', { x: 100 });
+
+    store.commit({
+      origin: 'remote',
+      patches: [{ op: 'set', path: ['content', 'nodes', 'remote_1'], value: make('remote_1') }]
+    });
+
+    store.undo();
+    const nodes = store.getView().content.nodes;
+    expect(nodes.b.x).toBe(0);
+    expect(nodes.a.x).toBe(0);
+    expect(nodes.remote_1).toBeDefined();
+  });
+
+  it('updateNode 合并新样式键后撤销不残留', () => {
+    const store = new DocumentStore();
+    store.addNode({
+      id: 'node_1',
+      type: 'node',
+      nodeType: 'rect',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      zIndex: 1,
+      locked: false,
+      style: {}
+    });
+
+    store.updateNode('node_1', { style: { fill: '#ff0000' } });
+    store.undo();
+    expect(store.getNode('node_1')?.style).toEqual({});
+  });
+
+  it('删除后撤销恢复的节点获得全新版本号', () => {
+    const store = new DocumentStore();
+    store.addNode({
+      id: 'node_1',
+      type: 'node',
+      nodeType: 'rect',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      zIndex: 1,
+      locked: false
+    });
+    const before = store.entityStore.getNode('node_1')!.runtime.geomVersion;
+
+    store.removeNode('node_1');
+    store.undo();
+
+    expect(store.entityStore.getNode('node_1')!.runtime.geomVersion).toBeGreaterThan(before);
   });
 
   it('本地操作自动更新 doc.meta.updatedAt', async () => {
@@ -235,8 +296,19 @@ describe('DocumentStore & EntityStore', () => {
     // 稍微等待 2ms 确保时间戳不同
     await new Promise((resolve) => setTimeout(resolve, 2));
 
-    store.setViewport({ zoom: 2 });
-    expect(store.getView().meta.updatedAt).toBeGreaterThanOrEqual(initialUpdatedAt);
+    store.addNode({
+      id: 'node_1',
+      type: 'node',
+      nodeType: 'rect',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      zIndex: 1,
+      locked: false
+    });
+    expect(store.getView().meta.updatedAt).toBeGreaterThan(initialUpdatedAt);
   });
 });
 

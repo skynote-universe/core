@@ -11,3 +11,5 @@ export * from './asset';
 export * from './style';
 export * from './operation';
 export * from './runtime';
+export * from './change-set';
+export * from './theme';

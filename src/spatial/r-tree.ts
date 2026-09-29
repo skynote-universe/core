@@ -1,12 +1,16 @@
 /**
  * @file r-tree.ts
  * @description 专为无限画布定制的高性能 R-Tree (层次包围盒) 空间拓扑索引
- * 
+ *
  * 设计考量 (Why):
  * 1. 完美适应极端图元尺寸：自适应分层包络，无论是 10px 的小图标还是 10000px 的超大画框 Frame，
  *    内存占用严格为 O(1)，无网格哈希的格子膨胀与退化问题。
  * 2. 0 依赖纯数学实现：100% 遵守 AGENTS.md 极简依赖红线，跨平台零壁垒。
  * 3. 内存与删除加速：内部维护叶子节点直达映射，将传统 R-Tree 最慢的删除遍历加速至 O(树高)。
+ * 4. 长时编辑不退化：删除时执行 CondenseTree（解散欠载节点并重插其条目、收缩单子根），
+ *    空节点包围盒取「反向无穷」不参与并集；拖拽小步移动在原叶子范围内就地更新，免去删插。
+ *    否则反复拖拽会堆积大量空叶子，并把根包围盒拉向原点，检索开销随编辑时长持续膨胀。
+ * 5. STR 批量装载：初次加载或大批量变更时整体排序打包，建树速度与树形质量均优于逐条插入。
  */
 
 import type { Point } from '../types/canvas';
@@ -15,7 +19,7 @@ import {
   doBoundsIntersect,
   isPointInBounds
 } from '../utils/geometry';
-import type { SpatialIndex } from './spatial-index';
+import type { SpatialIndex, SpatialIndexEntry } from './spatial-index';
 
 interface RTreeEntry {
   readonly id: string;
@@ -27,6 +31,11 @@ interface RTreeNode {
   bounds: RectBounds;
   children: (RTreeNode | RTreeEntry)[];
   parent?: RTreeNode;
+}
+
+/** 空节点包围盒：与任何矩形求并集都不产生影响，也不与任何查询相交 */
+function createEmptyBounds(): RectBounds {
+  return { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, width: 0, height: 0 };
 }
 
 /** 计算两个矩形包围盒的最小联合外包矩形 (MBR) */
@@ -45,6 +54,23 @@ function unionBounds(a: RectBounds, b: RectBounds): RectBounds {
   };
 }
 
+function computeChildrenBounds(children: readonly (RTreeNode | RTreeEntry)[]): RectBounds {
+  let bounds = createEmptyBounds();
+  for (let i = 0; i < children.length; i++) {
+    bounds = unionBounds(bounds, children[i].bounds);
+  }
+  return bounds;
+}
+
+function containsBounds(outer: RectBounds, inner: RectBounds): boolean {
+  return (
+    inner.left >= outer.left &&
+    inner.top >= outer.top &&
+    inner.right <= outer.right &&
+    inner.bottom <= outer.bottom
+  );
+}
+
 /** 计算包围盒面积 */
 function calcArea(b: RectBounds): number {
   return Math.max(0, b.width) * Math.max(0, b.height);
@@ -54,6 +80,14 @@ function calcArea(b: RectBounds): number {
 function calcEnlargement(target: RectBounds, added: RectBounds): number {
   const merged = unionBounds(target, added);
   return calcArea(merged) - calcArea(target);
+}
+
+function centerX(item: { bounds: RectBounds }): number {
+  return item.bounds.left + item.bounds.right;
+}
+
+function centerY(item: { bounds: RectBounds }): number {
+  return item.bounds.top + item.bounds.bottom;
 }
 
 export interface RTreeOptions {
@@ -91,16 +125,53 @@ export class RTreeSpatialIndex implements SpatialIndex {
       if (
         ob.left === bounds.left &&
         ob.top === bounds.top &&
-        ob.width === bounds.width &&
-        ob.height === bounds.height
+        ob.right === bounds.right &&
+        ob.bottom === bounds.bottom
       ) {
         return; // 包围盒无变化，直接跳过
       }
+
+      // 拖拽小步移动的主路径：仍落在原叶子范围内时就地替换，只向上收紧包围盒
+      const { leaf } = existing;
+      if (containsBounds(leaf.bounds, bounds)) {
+        const entry: RTreeEntry = { id: nodeId, bounds };
+        leaf.children[leaf.children.indexOf(existing.entry)] = entry;
+        existing.entry = entry;
+        this.recalculateBoundsUpwards(leaf);
+        return;
+      }
+
       this.remove(nodeId);
     }
 
-    const entry: RTreeEntry = { id: nodeId, bounds };
-    this.insert(entry);
+    this.insert({ id: nodeId, bounds });
+  }
+
+  /**
+   * 批量插入或更新
+   * 批量规模超过现有条目数时整体 STR 重建，否则逐条增量插入
+   */
+  load(entries: Iterable<SpatialIndexEntry>): void {
+    const incoming: RTreeEntry[] = [];
+    for (const [id, bounds] of entries) {
+      incoming.push({ id, bounds });
+    }
+
+    if (incoming.length <= this.itemMap.size) {
+      for (let i = 0; i < incoming.length; i++) {
+        this.update(incoming[i].id, incoming[i].bounds);
+      }
+      return;
+    }
+
+    const merged = new Map<string, RTreeEntry>();
+    for (const { entry } of this.itemMap.values()) {
+      merged.set(entry.id, entry);
+    }
+    for (let i = 0; i < incoming.length; i++) {
+      merged.set(incoming[i].id, incoming[i]);
+    }
+    this.rebuild(Array.from(merged.values()));
   }
 
   /**
@@ -113,14 +184,9 @@ export class RTreeSpatialIndex implements SpatialIndex {
     }
 
     const { entry, leaf } = record;
-    const idx = leaf.children.indexOf(entry);
-    if (idx !== -1) {
-      leaf.children.splice(idx, 1);
-    }
+    leaf.children.splice(leaf.children.indexOf(entry), 1);
     this.itemMap.delete(nodeId);
-
-    // 向上更新包围盒
-    this.recalculateBoundsUpwards(leaf);
+    this.condense(leaf);
     return true;
   }
 
@@ -162,7 +228,7 @@ export class RTreeSpatialIndex implements SpatialIndex {
   private createNode(isLeaf: boolean): RTreeNode {
     return {
       isLeaf,
-      bounds: { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 },
+      bounds: createEmptyBounds(),
       children: []
     };
   }
@@ -171,18 +237,98 @@ export class RTreeSpatialIndex implements SpatialIndex {
     const leaf = this.chooseSubtree(this.root, entry.bounds);
     leaf.children.push(entry);
     this.itemMap.set(entry.id, { entry, leaf });
-
-    if (leaf.children.length === 1) {
-      leaf.bounds = { ...entry.bounds };
-    } else {
-      leaf.bounds = unionBounds(leaf.bounds, entry.bounds);
-    }
+    leaf.bounds = unionBounds(leaf.bounds, entry.bounds);
 
     if (leaf.children.length > this.maxEntries) {
       this.split(leaf);
     } else {
       this.recalculateBoundsUpwards(leaf);
     }
+  }
+
+  /**
+   * CondenseTree：自删除位置向上，解散欠载的非根节点并收集其全部条目，最后统一重插
+   */
+  private condense(node: RTreeNode): void {
+    const orphans: RTreeEntry[] = [];
+    let curr = node;
+
+    while (curr !== this.root) {
+      const parent = curr.parent!;
+      if (curr.children.length < this.minEntries) {
+        parent.children.splice(parent.children.indexOf(curr), 1);
+        this.collectEntries(curr, orphans);
+      } else {
+        curr.bounds = computeChildrenBounds(curr.children);
+      }
+      curr = parent;
+    }
+    this.root.bounds = computeChildrenBounds(this.root.children);
+
+    // 收缩只剩单个子节点的根，降低树高
+    while (!this.root.isLeaf && this.root.children.length === 1) {
+      this.root = this.root.children[0] as RTreeNode;
+      this.root.parent = undefined;
+    }
+    if (!this.root.isLeaf && this.root.children.length === 0) {
+      this.root = this.createNode(true);
+    }
+
+    for (let i = 0; i < orphans.length; i++) {
+      this.insert(orphans[i]);
+    }
+  }
+
+  private collectEntries(node: RTreeNode, result: RTreeEntry[]): void {
+    if (node.isLeaf) {
+      for (let i = 0; i < node.children.length; i++) {
+        result.push(node.children[i] as RTreeEntry);
+      }
+      return;
+    }
+    for (let i = 0; i < node.children.length; i++) {
+      this.collectEntries(node.children[i] as RTreeNode, result);
+    }
+  }
+
+  /**
+   * STR (Sort-Tile-Recursive) 整体重建：按中心 x 切成竖条，条内按中心 y 排序后按容量打包，逐层向上
+   */
+  private rebuild(entries: RTreeEntry[]): void {
+    this.itemMap.clear();
+    if (entries.length === 0) {
+      this.root = this.createNode(true);
+      return;
+    }
+
+    let level = this.packLevel(entries, true);
+    while (level.length > 1) {
+      level = this.packLevel(level, false);
+    }
+    this.root = level[0];
+    this.root.parent = undefined;
+  }
+
+  private packLevel(items: (RTreeNode | RTreeEntry)[], isLeaf: boolean): RTreeNode[] {
+    const capacity = this.maxEntries;
+    const nodeCount = Math.ceil(items.length / capacity);
+    const sliceSize = Math.ceil(Math.sqrt(nodeCount)) * capacity;
+    const result: RTreeNode[] = [];
+
+    items.sort((a, b) => centerX(a) - centerX(b));
+    for (let sliceStart = 0; sliceStart < items.length; sliceStart += sliceSize) {
+      const slice = items.slice(sliceStart, sliceStart + sliceSize);
+      slice.sort((a, b) => centerY(a) - centerY(b));
+
+      for (let start = 0; start < slice.length; start += capacity) {
+        const node = this.createNode(isLeaf);
+        node.children = slice.slice(start, start + capacity);
+        node.bounds = computeChildrenBounds(node.children);
+        this.updateChildrenPointers(node);
+        result.push(node);
+      }
+    }
+    return result;
   }
 
   /**
@@ -222,15 +368,15 @@ export class RTreeSpatialIndex implements SpatialIndex {
     const children = node.children;
     const total = children.length;
 
-    // 线性挑出最两端的种子项
+    // 二次方法挑出合并后浪费面积最大的一对种子项
     let seed1Idx = 0;
     let seed2Idx = 1;
     let maxDist = -Infinity;
 
     for (let i = 0; i < total - 1; i++) {
-      const b1 = (children[i] as { bounds: RectBounds }).bounds;
+      const b1 = children[i].bounds;
       for (let j = i + 1; j < total; j++) {
-        const b2 = (children[j] as { bounds: RectBounds }).bounds;
+        const b2 = children[j].bounds;
         const merged = unionBounds(b1, b2);
         const dist = calcArea(merged) - calcArea(b1) - calcArea(b2);
         if (dist > maxDist) {
@@ -250,14 +396,14 @@ export class RTreeSpatialIndex implements SpatialIndex {
     const group1 = [child1];
     const group2 = [child2];
 
-    let b1 = { ...(child1 as { bounds: RectBounds }).bounds };
-    let b2 = { ...(child2 as { bounds: RectBounds }).bounds };
+    let b1 = child1.bounds;
+    let b2 = child2.bounds;
 
     // 将剩余条目分配给面积扩张更小的一方
     for (let i = 0; i < total; i++) {
       if (i === seed1Idx || i === seed2Idx) continue;
       const item = children[i];
-      const ib = (item as { bounds: RectBounds }).bounds;
+      const ib = item.bounds;
 
       const e1 = calcEnlargement(b1, ib);
       const e2 = calcEnlargement(b2, ib);
@@ -317,6 +463,8 @@ export class RTreeSpatialIndex implements SpatialIndex {
         const mapped = this.itemMap.get(entry.id);
         if (mapped) {
           mapped.leaf = node;
+        } else {
+          this.itemMap.set(entry.id, { entry, leaf: node });
         }
       } else {
         (child as RTreeNode).parent = node;
@@ -327,15 +475,7 @@ export class RTreeSpatialIndex implements SpatialIndex {
   private recalculateBoundsUpwards(node: RTreeNode): void {
     let curr: RTreeNode | undefined = node;
     while (curr) {
-      if (curr.children.length === 0) {
-        curr.bounds = { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 };
-      } else {
-        let b = { ...(curr.children[0] as { bounds: RectBounds }).bounds };
-        for (let i = 1; i < curr.children.length; i++) {
-          b = unionBounds(b, (curr.children[i] as { bounds: RectBounds }).bounds);
-        }
-        curr.bounds = b;
-      }
+      curr.bounds = computeChildrenBounds(curr.children);
       curr = curr.parent;
     }
   }

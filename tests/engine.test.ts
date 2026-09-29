@@ -194,11 +194,9 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
           label: '插件添加节点',
           patches: [
             {
-              op: 'splice',
-              path: 'content.nodes',
-              index: 0,
-              deleteCount: 0,
-              items: [node]
+              op: 'set',
+              path: ['content', 'nodes', node.id],
+              value: node
             }
           ]
         });
@@ -213,8 +211,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
 
     // 验证文档中节点已增加
     const view = engine.getView();
-    expect(view.content.nodes.length).toBe(1);
-    expect(view.content.nodes[0].id).toBe('plugin_node_1');
+    expect(Object.keys(view.content.nodes)).toEqual(['plugin_node_1']);
 
     // 验证空间索引自动联动生效！
     const hits = engine.spatialIndex.hitTest({ x: 250, y: 240 });

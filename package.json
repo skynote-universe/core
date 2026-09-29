@@ -8,8 +8,9 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run --dir tests",
+    "typecheck": "tsc --noEmit",
+    "bench": "vitest run --dir bench"
   },
   "exports": {
     ".": {

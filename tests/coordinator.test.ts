@@ -149,4 +149,51 @@ describe('OperationCoordinator', () => {
     expect(entries[1].label).toBe('步长 4');
     expect(entries[2].label).toBe('步长 5');
   });
+
+  it('同组折叠时压缩同一路径的整值覆盖：长拖拽只保留常数条补丁，撤销/重做结果不变', () => {
+    const doc = { node: { x: 0, y: 0 } };
+    const coordinator = new OperationCoordinator(doc);
+
+    for (let i = 1; i <= 300; i++) {
+      coordinator.commitOperation({
+        groupId: 'drag',
+        patches: [
+          { op: 'set', path: 'node.x', value: i },
+          { op: 'set', path: 'node.y', value: i * 2 }
+        ]
+      });
+    }
+
+    const [entry] = coordinator.getUndoEntries();
+    expect(entry.patches).toHaveLength(2);
+    expect(entry.inversePatches).toHaveLength(2);
+
+    coordinator.undo();
+    expect(doc.node).toEqual({ x: 0, y: 0 });
+    coordinator.redo();
+    expect(doc.node).toEqual({ x: 300, y: 600 });
+  });
+
+  it('覆盖之间有祖先/后代路径介入时不压缩，保证回放语义', () => {
+    const doc: { style: Record<string, unknown> } = { style: { fill: 'a', stroke: 'k' } };
+    const coordinator = new OperationCoordinator(doc);
+    const steps = [
+      { op: 'set', path: 'style.fill', value: 'b' },
+      { op: 'set', path: 'style', value: { fill: 'c' } },
+      { op: 'set', path: 'style.fill', value: 'd' },
+      { op: 'set', path: 'style', merge: true, value: { stroke: 'z' } },
+      { op: 'set', path: 'style.fill', value: 'e' }
+    ] as const;
+
+    for (const patch of steps) {
+      coordinator.commitOperation({ groupId: 'edit', patches: [patch] });
+    }
+    expect(doc.style).toEqual({ fill: 'e', stroke: 'z' });
+
+    coordinator.undo();
+    expect(doc.style).toEqual({ fill: 'a', stroke: 'k' });
+    coordinator.redo();
+    expect(doc.style).toEqual({ fill: 'e', stroke: 'z' });
+  });
 });
+

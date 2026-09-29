@@ -12,6 +12,9 @@
 import type { Point } from '../types/canvas';
 import type { RectBounds } from '../utils/geometry';
 
+/** 批量装载条目：[实体 id, 包围盒] */
+export type SpatialIndexEntry = readonly [string, RectBounds];
+
 /**
  * 空间拓扑索引标准抽象接口
  */
@@ -20,6 +23,12 @@ export interface SpatialIndex {
    * 插入或更新节点空间包围盒
    */
   update(nodeId: string, bounds: RectBounds): void;
+
+  /**
+   * 批量插入或更新 (初次加载、大批量粘贴或全量同步)
+   * 实现可据此选择整体重建，例如 R-Tree 的 STR 批量装载
+   */
+  load(entries: Iterable<SpatialIndexEntry>): void;
 
   /**
    * 移除指定节点

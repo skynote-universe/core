@@ -10,6 +10,16 @@
 
 import type { NodeEntity, NodeStyle, Point, TextSizingMode, NodeTextStyle } from '../types';
 import type { CanvasPrimitive } from './primitives.protocol';
+import type { CanvasTheme } from '../types/theme';
+
+/** compose() 的渲染上下文 */
+export interface NodeComposeContext {
+  /**
+   * 当前主题：未显式设置颜色的零件应取主题语义色 (如 theme.nodeFill / theme.textColor)，
+   * 也可直接输出 `$名称` 引用调色板，由渲染管线统一解析
+   */
+  readonly theme: CanvasTheme;
+}
 
 /** 节点外框尺寸驱动策略 */
 export type NodeSizingPolicy =
@@ -90,8 +100,9 @@ export interface NodeTypeDefinition<
    * 【模式 A：声明式跨引擎中间图元】(选填：极力推荐)
    * 返回纯 JSON 描述的基础图元集合，引擎自动将其渲染至当前生效的渲染器 (Leafer / WebGPU / SVG)。
    * 内部各零件 (如文本下方的矩形、进度条) 可直接基于 node 的最新宽高进行相对数学计算。
+   * 主题切换后会以新主题重新调用，严禁在图元中写死色值。
    */
-  compose?: (node: NodeEntity<TData, TStyle>) => CanvasPrimitive[];
+  compose?: (node: NodeEntity<TData, TStyle>, context: NodeComposeContext) => CanvasPrimitive[];
 
   /**
    * 【模式 B：DOM 浮层逃生舱】(选填)

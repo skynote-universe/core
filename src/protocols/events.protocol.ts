@@ -66,7 +66,10 @@ export interface CanvasWheelEvent {
   /** 归一化后的平移量 (已做平台平滑滤波，抹平 Windows 机械滚轮与 Mac 触控板差异) */
   readonly deltaPan: Point;
 
-  /** 归一化后的缩放增量比例 (例如 +0.05 或 -0.05) */
+  /**
+   * 对数刻度的缩放增量：缩放倍率 = Math.exp(deltaZoom)，正数放大、负数缩小
+   * 对数刻度下多次增量可直接相加 (宿主按帧合并滚轮时结果不变)，且快速滚动也不会得到负倍率
+   */
   readonly deltaZoom: number;
 
   /** 是否由触控板双指捏合 (Pinch) 触发 */

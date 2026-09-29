@@ -250,4 +250,43 @@ describe('SceneSpatialIndex 分层空间索引', () => {
     expect(engine.spatialIndex.search(far)).toEqual([]);
     expect(searched).toEqual(['root-index']);
   });
+
+  it('getContentBounds 覆盖全部节点，含伸出容器的后代；空画布为 null', () => {
+    const engine = new SkyNoteEngine();
+    expect(engine.spatialIndex.getContentBounds()).toBeNull();
+    const store = engine.documentStore;
+    store.addNode({
+      id: 'a',
+      type: 'node',
+      nodeType: 'rect',
+      x: 100,
+      y: 50,
+      width: 100,
+      height: 100,
+      rotation: 0,
+      zIndex: 'a0',
+      locked: false
+    });
+    store.addNode({
+      id: 'b',
+      type: 'node',
+      nodeType: 'rect',
+      x: 150,
+      y: 20,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      zIndex: 'a0',
+      locked: false,
+      parentId: 'a'
+    });
+    expect(engine.spatialIndex.getContentBounds()).toEqual({
+      left: 100,
+      top: 50,
+      right: 260,
+      bottom: 150,
+      width: 160,
+      height: 100
+    });
+  });
 });

@@ -65,6 +65,8 @@ export interface NodeSpatialQuery {
   hitTest(point: Point): readonly string[];
   /** 节点自身的世界外接矩形 */
   getBounds(nodeId: string): RectBounds | undefined;
+  /** 全部节点 (含伸出容器的后代) 的世界外接矩形，空画布为 null；用于适配视口，O(根层级节点数) */
+  getContentBounds(): RectBounds | null;
 }
 
 function boundsEqual(a: RectBounds, b: RectBounds): boolean {
@@ -199,6 +201,17 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
     if (!placement) return undefined;
     if (placement.container === undefined) return placement.own;
     return computeNodeWorldBounds(this.entities.getNode(nodeId)!.entity, this.entities.getWorldTransform(nodeId)!);
+  }
+
+  getContentBounds(): RectBounds | null {
+    const root = this.containers.get(undefined);
+    if (!root) return null;
+    let bounds: RectBounds | null = null;
+    for (const id of root.members) {
+      const entry = this.placements.get(id)!.entry;
+      bounds = bounds ? unionBounds(bounds, entry) : entry;
+    }
+    return bounds;
   }
 
   clear(): void {

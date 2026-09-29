@@ -75,3 +75,17 @@ describe('PointerDispatcher', () => {
     expect(hooks.moves).toBe(1);
   });
 });
+
+describe('指针取消', () => {
+  it('pointercancel 分发给 onPointerCancel，拖拽会话据此收尾', () => {
+    const dispatcher = new PointerDispatcher();
+    const calls: string[] = [];
+    dispatcher.register('drag', {
+      onPointerDown: () => calls.push('down'),
+      onPointerCancel: () => calls.push('cancel')
+    });
+    dispatcher.dispatchPointerDown(createCanvasPointerEvent({ point: { x: 0, y: 0 } }));
+    dispatcher.dispatchPointerCancel(createCanvasPointerEvent({ point: { x: 0, y: 0 } }));
+    expect(calls).toEqual(['down', 'cancel']);
+  });
+});

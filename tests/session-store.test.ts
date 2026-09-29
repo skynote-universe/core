@@ -113,3 +113,34 @@ describe('插件上下文的会话与变更订阅', () => {
     expect(sessionChanges).toHaveLength(1);
   });
 });
+
+describe('视口缩放范围', () => {
+  it('setViewport 与 zoomAt 都受缩放范围约束，zoomAt 保持不动点的屏幕位置', () => {
+    const session = new SessionStore({ zoomRange: { min: 0.5, max: 4 } });
+    session.setViewport({ zoom: 100 });
+    expect(session.viewport.zoom).toBe(4);
+    session.setViewport({ zoom: 0.01 });
+    expect(session.viewport.zoom).toBe(0.5);
+
+    session.setViewport({ x: 10, y: 20, zoom: 1 });
+    const world = { x: 200, y: 100 };
+    const screenBefore = { x: world.x * 1 + 10, y: world.y * 1 + 20 };
+    session.zoomAt(2, world);
+    const { x, y, zoom } = session.viewport;
+    expect(zoom).toBe(2);
+    expect(world.x * zoom + x).toBeCloseTo(screenBefore.x);
+    expect(world.y * zoom + y).toBeCloseTo(screenBefore.y);
+
+    // 触及上限后继续放大：缩放不变，视口也不漂移
+    session.zoomAt(10, world);
+    const atMax = session.viewport;
+    session.zoomAt(10, world);
+    expect(session.viewport).toBe(atMax);
+  });
+
+  it('初始视口按范围夹取，非法范围直接报错', () => {
+    expect(new SessionStore({ viewport: { zoom: 50 } }).viewport.zoom).toBe(8);
+    expect(() => new SessionStore({ zoomRange: { min: 0, max: 1 } })).toThrow();
+    expect(() => new SessionStore({ zoomRange: { min: 2, max: 1 } })).toThrow();
+  });
+});

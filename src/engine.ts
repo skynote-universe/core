@@ -25,7 +25,7 @@ import type { CanvasOperationRecord } from './types/operation';
 import { collectTextLayoutTargets, deriveTextLayoutPatches } from './layout/text-layout';
 import { DocumentStore, createEmptyCanvasDocument } from './state/document-store';
 import type { EntityReader } from './state/entity-store';
-import { SessionStore } from './state/session-store';
+import { SessionStore, type ZoomRange } from './state/session-store';
 import { NodeTypeRegistry } from './registry/node-type-registry';
 import { ArrowMarkerRegistry } from './registry/arrow-marker-registry';
 import { ConnectorRouterRegistry } from './registry/connector-router-registry';
@@ -46,6 +46,8 @@ export interface SkyNoteEngineOptions {
   initialDoc?: CanvasDocument;
   /** 初始视口 (宿主可自行持久化上次浏览位置并在此恢复) */
   initialViewport?: Partial<ViewportState>;
+  /** 视口缩放范围 (默认 DEFAULT_ZOOM_RANGE) */
+  zoomRange?: ZoomRange;
   /** 画布主题 (默认浅色预设)，运行时通过 engine.session.setTheme() 显式切换 */
   theme?: CanvasThemeConfig;
   /** 文本测量器 (由渲染适配层提供，如 createLeaferTextMeasurer)，缺省时不做文本驱动的自动尺寸 */
@@ -86,7 +88,11 @@ export class SkyNoteEngine {
 
     this.documentStore = new DocumentStore(doc);
     this.entityStore = this.documentStore.entityStore;
-    this.session = new SessionStore({ viewport: options?.initialViewport, theme: options?.theme });
+    this.session = new SessionStore({
+      viewport: options?.initialViewport,
+      theme: options?.theme,
+      zoomRange: options?.zoomRange
+    });
     this.nodeTypes = new NodeTypeRegistry();
     this.arrowMarkers = new ArrowMarkerRegistry();
     this.routers = new ConnectorRouterRegistry();

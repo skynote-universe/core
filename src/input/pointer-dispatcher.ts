@@ -16,6 +16,11 @@ export interface PointerHooks {
   onPointerDown?(e: CanvasPointerEvent): void;
   onPointerMove?(e: CanvasPointerEvent): void;
   onPointerUp?(e: CanvasPointerEvent): void;
+  /**
+   * 指针被系统中断 (触摸被浏览器接管为滚动、窗口失焦、指针设备断开等)
+   * 拖拽、框选等会话必须在此结束并回收瞬态图元，否则会残留半截状态
+   */
+  onPointerCancel?(e: CanvasPointerEvent): void;
   onWheel?(e: CanvasWheelEvent): void;
 }
 
@@ -70,6 +75,10 @@ export class PointerDispatcher {
 
   dispatchPointerUp(e: CanvasPointerEvent): void {
     this.dispatch(e, (hooks) => hooks.onPointerUp);
+  }
+
+  dispatchPointerCancel(e: CanvasPointerEvent): void {
+    this.dispatch(e, (hooks) => hooks.onPointerCancel);
   }
 
   dispatchWheel(e: CanvasWheelEvent): void {

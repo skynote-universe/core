@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
-import { createSpatialIndex } from '../src/spatial';
+import { RTreeSpatialIndex } from '../src/spatial';
 import { applyMatrix, computeNodeWorldBounds, doBoundsIntersect, type RectBounds } from '../src/utils/geometry';
 import type { NodeEntity } from '../src/types/node';
 
@@ -149,7 +149,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
     const updateSpy = vi.fn();
     const engine = new SkyNoteEngine({
       createNodeSpatialIndex: () => {
-        const index = createSpatialIndex('rtree');
+        const index = new RTreeSpatialIndex();
         const update = index.update.bind(index);
         index.update = (id, bounds) => {
           updateSpy(id);
@@ -206,7 +206,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
     const searched: string[] = [];
     const engine = new SkyNoteEngine({
       createNodeSpatialIndex: () => {
-        const index = createSpatialIndex('rtree');
+        const index = new RTreeSpatialIndex();
         const search = index.search.bind(index);
         index.search = (bounds) => {
           // 以容器内登记的节点标识被检索的容器索引

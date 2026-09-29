@@ -10,7 +10,7 @@
  */
 
 import type { CanvasPluginContext, SkyNotePlugin } from '../protocols/plugin.protocol';
-import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
+import type { CreateNodeRequest, NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { ArrowMarkerDefinition } from '../protocols/arrow-marker.protocol';
 import type { ConnectorRouterDefinition } from '../protocols/connector-router.protocol';
 import type { InputScope } from '../protocols/input-scope.protocol';
@@ -43,6 +43,7 @@ export interface PluginManagerDependencies {
   entities: EntityReader;
   spatial: NodeSpatialQuery;
   hitTestNode: (point: Point) => Readonly<NodeEntity> | undefined;
+  createNode: <T extends string>(request: CreateNodeRequest<T>) => string | null;
   /** 当前挂载的宿主 (渲染器挂载前为空实现)；每次调用时读取，插件无需关心挂载先后 */
   getHost: () => CanvasHost;
 }
@@ -233,6 +234,7 @@ export class PluginManager {
       entities: this.deps.entities,
       spatial: this.deps.spatial,
       hitTestNode: this.deps.hitTestNode,
+      createNode: this.deps.createNode,
       host,
       onDocumentChange: (
         listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void

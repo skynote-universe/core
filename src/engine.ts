@@ -22,6 +22,8 @@ import { computeNodeWorldBounds, isPointInNode, type RectBounds } from './utils/
 import { compareHierarchicalNodes } from './layout/layer-order';
 import { DETACHED_CANVAS_HOST, type CanvasHost } from './protocols/overlay.protocol';
 import type { NodeEntity } from './types/node';
+import type { CreateNodeRequest } from './protocols/node-type.protocol';
+import { generateId } from './utils/id';
 import type { Point } from './types/canvas';
 import { computeConnectorRoute } from './routing/connector-route';
 import type { TextMeasurer } from './protocols/text-measurer.protocol';
@@ -38,7 +40,7 @@ import {
   type SpatialIndex,
   type SpatialIndexEntry,
   SceneSpatialIndex,
-  createSpatialIndex
+  RTreeSpatialIndex
 } from './spatial';
 import { InputScopeManager } from './input/input-scope-manager';
 import { PointerDispatcher } from './input/pointer-dispatcher';
@@ -103,10 +105,10 @@ export class SkyNoteEngine {
     this.routers = new ConnectorRouterRegistry();
     this.nodeSpatialIndex = new SceneSpatialIndex(
       this.entityStore,
-      options?.createNodeSpatialIndex ?? (() => createSpatialIndex('rtree'))
+      options?.createNodeSpatialIndex ?? (() => new RTreeSpatialIndex())
     );
     this.spatialIndex = this.nodeSpatialIndex;
-    this.connectorSpatialIndex = options?.connectorSpatialIndex ?? createSpatialIndex('rtree');
+    this.connectorSpatialIndex = options?.connectorSpatialIndex ?? new RTreeSpatialIndex();
     this.inputScopes = new InputScopeManager();
     this.pointer = new PointerDispatcher();
 
@@ -121,6 +123,7 @@ export class SkyNoteEngine {
       entities: this.entityStore,
       spatial: this.spatialIndex,
       hitTestNode: (point) => this.hitTestNode(point),
+      createNode: (request) => this.createNode(request),
       getHost: () => this.currentHost
     });
 
@@ -198,6 +201,39 @@ export class SkyNoteEngine {
       top = node;
     }
     return top;
+  }
+
+  /**
+   * 新建节点的统一入口：由已注册节点类型的 createContent 给出内容，引擎补齐公共字段后经事务提交 (一步撤销)
+   * 新节点置于目标容器最上层
+   * @returns 新节点 id；提交被拒绝时返回 null
+   * @throws 节点类型未注册或不支持新建 (属调用方编程错误)
+   */
+  createNode<T extends string>(request: CreateNodeRequest<T>): string | null {
+    const definition = this.nodeTypes.get(request.nodeType);
+    if (!definition?.createContent) {
+      throw new Error(`[SkyNoteEngine] 节点类型 "${request.nodeType}" 未注册或不支持新建`);
+    }
+    const content = definition.createContent(request.options ?? {});
+    const width = request.width ?? content.width;
+    const height = request.height ?? content.height;
+    // 内容驱动尺寸的节点 (如自由文本) 以 0 尺寸创建、提交时才测量，居中放置时退化为左上角对准
+    const centered = request.origin === 'center';
+    const node: NodeEntity = {
+      ...content,
+      id: request.id ?? generateId('node'),
+      type: 'node',
+      nodeType: request.nodeType,
+      ...(request.parentId !== undefined && { parentId: request.parentId }),
+      x: centered ? request.x - width / 2 : request.x,
+      y: centered ? request.y - height / 2 : request.y,
+      width,
+      height,
+      rotation: request.rotation ?? 0,
+      zIndex: this.documentStore.createTopZIndex(request.parentId),
+      locked: false
+    };
+    return this.documentStore.addNode(node, { label: request.label }) ? node.id : null;
   }
 
   /**

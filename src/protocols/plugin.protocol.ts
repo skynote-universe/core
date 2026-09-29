@@ -8,7 +8,7 @@
  */
 
 import type { CanvasPointerEvent, CanvasWheelEvent } from './events.protocol';
-import type { NodeTypeDefinition } from './node-type.protocol';
+import type { CreateNodeRequest, NodeTypeDefinition } from './node-type.protocol';
 import type { InputScope } from './input-scope.protocol';
 import type { ArrowMarkerDefinition } from './arrow-marker.protocol';
 import type { ConnectorRouterDefinition } from './connector-router.protocol';
@@ -51,6 +51,8 @@ export interface CanvasPluginContext {
   readonly spatial: NodeSpatialQuery;
   /** 点选最上层节点：含旋转精判、裁剪型容器与层叠顺序 */
   hitTestNode(point: Point): Readonly<NodeEntity> | undefined;
+  /** 按已注册节点类型新建节点并提交 (一步撤销)，见 SkyNoteEngine.createNode */
+  createNode<T extends string>(request: CreateNodeRequest<T>): string | null;
   /**
    * 宿主能力：覆盖层、光标、指针捕获与视口尺寸 (渲染器挂载前为空实现)
    * 插件卸载时其覆盖层会话自动清除

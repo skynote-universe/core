@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { RTreeSpatialIndex } from '../src/spatial/r-tree';
-import { createSpatialIndex } from '../src/spatial';
+import { SpatialGridIndex } from '../src/spatial/spatial-grid-index';
 import { InputScopeManager } from '../src/input/input-scope-manager';
 import type { CanvasKeyboardEvent } from '../src/protocols/input-scope.protocol';
 import { SyntheticPointerEvent, SyntheticWheelEvent } from '../src/input/synthetic-events';
@@ -57,9 +57,9 @@ describe('RTreeSpatialIndex (默认底层层次包围盒索引)', () => {
 describe('SpatialIndex 抽象接口与底层随意热插拔', () => {
   it('上层 SkyNoteEngine 调用完全不变，底层可随意切换算法', () => {
     // 默认使用 R-Tree；分层索引的每个容器都由工厂创建，可热插拔为网格哈希
-    const engineWithRTree = new SkyNoteEngine({ createNodeSpatialIndex: () => createSpatialIndex('rtree') });
+    const engineWithRTree = new SkyNoteEngine({ createNodeSpatialIndex: () => new RTreeSpatialIndex() });
     const engineWithGrid = new SkyNoteEngine({
-      createNodeSpatialIndex: () => createSpatialIndex('grid', { cellSize: 256 })
+      createNodeSpatialIndex: () => new SpatialGridIndex({ cellSize: 256 })
     });
 
     for (const engine of [engineWithRTree, engineWithGrid]) {
@@ -538,5 +538,68 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     });
 
     expect(foundInPlugin).toBe(true);
+  });
+});
+
+describe('SkyNoteEngine.createNode (新建节点统一入口)', () => {
+  function setup() {
+    const engine = new SkyNoteEngine();
+    engine.nodeTypes.register({
+      type: 'badge',
+      label: '徽章',
+      defaultData: { text: '' },
+      createContent: (options: { text?: string }) => ({
+        width: 80,
+        height: 40,
+        data: { text: options.text ?? '' }
+      })
+    });
+    engine.nodeTypes.register({ type: 'static', label: '不可新建', defaultData: {} });
+    return engine;
+  }
+
+  it('节点类型只给内容，公共字段由引擎补齐；新节点置于目标容器最上层，一步撤销', () => {
+    const engine = setup();
+    const store = engine.documentStore;
+    const first = engine.createNode({ nodeType: 'badge', x: 10, y: 20, options: { text: 'A' } })!;
+    const second = engine.createNode({ nodeType: 'badge', id: 'b', x: 0, y: 0, label: '添加徽章' });
+
+    expect(second).toBe('b');
+    expect(store.getNode(first)).toMatchObject({
+      type: 'node',
+      nodeType: 'badge',
+      x: 10,
+      y: 20,
+      width: 80,
+      height: 40,
+      rotation: 0,
+      locked: false,
+      data: { text: 'A' }
+    });
+    expect(store.getNode('b')!.zIndex > store.getNode(first)!.zIndex).toBe(true);
+
+    store.undo();
+    expect(store.getNode('b')).toBeUndefined();
+    expect(store.getNode(first)).toBeDefined();
+    engine.destroy();
+  });
+
+  it('按中心放置并覆盖默认尺寸；挂到容器下时层级只在容器内比较', () => {
+    const engine = setup();
+    engine.createNode({ nodeType: 'badge', id: 'frame', x: 0, y: 0, width: 400, height: 300 });
+    engine.createNode({ nodeType: 'badge', id: 'c', parentId: 'frame', x: 100, y: 100, origin: 'center', width: 20 });
+
+    expect(engine.documentStore.getNode('frame')).toMatchObject({ width: 400, height: 300 });
+    expect(engine.documentStore.getNode('c')).toMatchObject({ parentId: 'frame', x: 90, y: 80, width: 20, height: 40 });
+    engine.destroy();
+  });
+
+  it('未注册或不支持新建的类型直接报错 (调用方编程错误)，id 冲突时拒绝提交', () => {
+    const engine = setup();
+    expect(() => engine.createNode({ nodeType: 'missing', x: 0, y: 0 })).toThrow();
+    expect(() => engine.createNode({ nodeType: 'static', x: 0, y: 0 })).toThrow();
+    engine.createNode({ nodeType: 'badge', id: 'dup', x: 0, y: 0 });
+    expect(engine.createNode({ nodeType: 'badge', id: 'dup', x: 5, y: 5 })).toBeNull();
+    engine.destroy();
   });
 });

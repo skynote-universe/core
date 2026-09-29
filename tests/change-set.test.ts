@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { DocumentStore } from '../src/state/document-store';
-import { createSpatialIndex } from '../src/spatial';
+import { RTreeSpatialIndex } from '../src/spatial';
 import type { DocumentChangeSet } from '../src/types/change-set';
 import type { NodeEntity } from '../src/types/node';
 import type { ConnectorEntity } from '../src/types/connector';
@@ -268,7 +268,7 @@ describe('引擎增量维护空间索引', () => {
     const updateSpy = vi.fn();
     const engine = new SkyNoteEngine({
       createNodeSpatialIndex: () => {
-        const index = createSpatialIndex('rtree');
+        const index = new RTreeSpatialIndex();
         const update = index.update.bind(index);
         index.update = (id, bounds) => {
           updateSpy(id, bounds);

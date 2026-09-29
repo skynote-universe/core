@@ -1,6 +1,6 @@
 /**
  * @file arrow-marker.protocol.ts
- * @description 连线端点箭头标记规范与 defineArrowMarker 注册协议
+ * @description 连线端点箭头标记规范 (纯数据定义，经 registerArrowMarker 注册)
  *
  * 设计考量 (Why):
  * 1. 突破硬编码限制：连线端点不应写死为有限枚举，支持上层插件注册 UML、BPMN、电路图、思维导图等专业端点符号。
@@ -34,11 +34,4 @@ export interface ArrowMarkerDefinition {
   readonly d: string;
   /** 填充规则 */
   readonly fillRule?: ArrowMarkerFillRule;
-}
-
-/**
- * 辅助构造函数：为插件开发者提供类型推导友好的箭头标记定义工具
- */
-export function defineArrowMarker(definition: ArrowMarkerDefinition): ArrowMarkerDefinition {
-  return definition;
 }

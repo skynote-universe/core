@@ -1,6 +1,6 @@
 /**
  * @file node-type.protocol.ts
- * @description 统一节点类型规范与 defineNodeType 注册协议
+ * @description 统一节点类型规范：插件以类实现 NodeTypeDefinition，经 registerNodeType 注册
  *
  * 设计考量 (Why):
  * 1. 渐进式渲染阶梯：普通节点实现 compose() 即可享受跨引擎绘制；富文本/视频实现 mountDOM() 作为逃生舱。
@@ -56,6 +56,45 @@ export interface NodeControlHandle {
   label?: string;
   cursor?: string;
   getPosition(node: NodeEntity): Point;
+}
+
+/** 节点类型为新节点提供的部分；id、类型、位置、旋转、层级与锁定由引擎填写 */
+export type NodeCreateContent<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> = Pick<
+  NodeEntity<TData, TStyle>,
+  'width' | 'height'
+> &
+  Partial<Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'anchors' | 'data'>>;
+
+/**
+ * 各节点类型的新建选项表：节点插件以模块扩充登记，createNode 据 nodeType 推导 options 的类型
+ * @example declare module '@skynote/core' { interface NodeCreateOptionsMap { sticky: StickyCreateOptions } }
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 供模块扩充的登记表，内核自身不登记任何类型
+export interface NodeCreateOptionsMap {}
+
+/** 某节点类型的新建选项；未登记的类型 (如运行时动态类型) 退化为任意对象 */
+export type NodeCreateOptions<T extends string> = T extends keyof NodeCreateOptionsMap
+  ? NodeCreateOptionsMap[T]
+  : object;
+
+/** 经引擎新建节点的请求 */
+export interface CreateNodeRequest<T extends string = string> {
+  nodeType: T;
+  /** 父容器局部坐标；origin 决定它是节点左上角 (默认) 还是中心 */
+  x: number;
+  y: number;
+  origin?: 'top-left' | 'center';
+  parentId?: string;
+  /** 缺省时自动生成 */
+  id?: string;
+  /** 覆盖节点类型给出的默认尺寸 (如拖拽框出的形状) */
+  width?: number;
+  height?: number;
+  rotation?: number;
+  /** 节点类型自身的选项 (文字、颜色、几何等) */
+  options?: NodeCreateOptions<T>;
+  /** 撤销记录名称 */
+  label?: string;
 }
 
 /**
@@ -119,15 +158,13 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    */
   mountDOM?: (node: NodeEntity<TData, TStyle>, container: unknown) => () => void;
 
+  /**
+   * 新建节点的内容 (选填)：按本类型默认值与选项给出尺寸、样式、数据与文本。
+   * 由 SkyNoteEngine.createNode 统一调用，id、位置、层级等公共字段由引擎填写；未实现的类型不能经引擎新建。
+   * 写成方法签名：各类型的选项结构不同，实现方可收窄参数类型 (选项表见 NodeCreateOptionsMap)。
+   */
+  createContent?(options: object): NodeCreateContent<TData, TStyle>;
+
   /** 控制手柄列表提供器 (选填) 【尚未实现】交互插件落地前不会调用该函数 */
   getHandles?: (node: NodeEntity<TData, TStyle>) => NodeControlHandle[];
-}
-
-/**
- * 辅助构造函数：为插件开发者提供类型推导友好的节点类型定义工具
- */
-export function defineNodeType<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle>(
-  definition: NodeTypeDefinition<TData, TStyle>
-): NodeTypeDefinition<TData, TStyle> {
-  return definition;
 }

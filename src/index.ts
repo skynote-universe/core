@@ -17,6 +17,7 @@ export * from './registry';
 export * from './spatial';
 export * from './input';
 export * from './plugin';
+export * from './routing/connector-route';
 export * from './engine';
 
 

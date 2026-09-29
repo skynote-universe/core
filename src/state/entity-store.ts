@@ -20,8 +20,7 @@ import type {
   RuntimeNode,
   RuntimeConnector,
   RuntimeNodeView,
-  RuntimeConnectorView,
-  ComputedRoute
+  RuntimeConnectorView
 } from '../types/runtime';
 
 /** 实体运行时索引的只读视图 (对内核之外暴露的唯一形态) */
@@ -161,7 +160,6 @@ export class EntityStore implements EntityReader {
     (existing as { entity: NodeEntity }).entity = entity;
     existing.runtime.geomVersion = ++this.versionClock;
     existing.runtime.dataVersion = ++this.versionClock;
-    existing.runtime.worldBounds = undefined;
     return 'replaced';
   }
 
@@ -191,7 +189,6 @@ export class EntityStore implements EntityReader {
     (existing as { entity: ConnectorEntity }).entity = entity;
     existing.runtime.geomVersion = ++this.versionClock;
     existing.runtime.dataVersion = ++this.versionClock;
-    existing.runtime.computedRoute = undefined;
     this.indexConnectorEndpoints(id, entity);
     return 'replaced';
   }
@@ -204,7 +201,6 @@ export class EntityStore implements EntityReader {
     const node = this.nodes.get(id);
     if (node) {
       node.runtime.geomVersion = ++this.versionClock;
-      node.runtime.worldBounds = undefined;
     }
   }
 
@@ -227,7 +223,6 @@ export class EntityStore implements EntityReader {
     const connector = this.connectors.get(id);
     if (connector) {
       connector.runtime.geomVersion = ++this.versionClock;
-      connector.runtime.computedRoute = undefined;
       this.indexConnectorEndpoints(id, connector.entity);
     }
   }
@@ -239,16 +234,6 @@ export class EntityStore implements EntityReader {
     const connector = this.connectors.get(id);
     if (connector) {
       connector.runtime.dataVersion = ++this.versionClock;
-    }
-  }
-
-  /**
-   * 缓存连线的解算路由
-   */
-  setConnectorRoute(id: string, route: ComputedRoute): void {
-    const connector = this.connectors.get(id);
-    if (connector) {
-      connector.runtime.computedRoute = route;
     }
   }
 

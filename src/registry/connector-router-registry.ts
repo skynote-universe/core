@@ -144,9 +144,13 @@ export class OrthogonalRouter extends ConnectorRouter {
   }
 }
 
+/** 路由器注册表变更回调：参数为发生变化的路由器 id */
+export type ConnectorRouterChangeListener = (routerId: string) => void;
+
 export class ConnectorRouterRegistry {
   private readonly definitions = new Map<string, ConnectorRouterDefinition>();
   private readonly defaultRouter = new StraightRouter();
+  private readonly listeners = new Set<ConnectorRouterChangeListener>();
 
   constructor() {
     // 默认装载三大内置寻路算法实例
@@ -163,13 +167,26 @@ export class ConnectorRouterRegistry {
       throw new Error('[ConnectorRouterRegistry] 注册失败：路由定义缺少有效 id 标识');
     }
     this.definitions.set(definition.id, definition);
+    this.notify(definition.id);
   }
 
   /**
    * 注销指定寻路算法
    */
   unregister(id: string): boolean {
-    return this.definitions.delete(id);
+    const deleted = this.definitions.delete(id);
+    if (deleted) this.notify(id);
+    return deleted;
+  }
+
+  /**
+   * 订阅路由器增删 (插件晚于文档加载注册路由器时，引擎据此重算该类型连线的路由)
+   */
+  onChange(listener: ConnectorRouterChangeListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   /**
@@ -200,9 +217,20 @@ export class ConnectorRouterRegistry {
    * 清空并重新恢复默认路由算法
    */
   clear(): void {
+    this.listeners.clear();
     this.definitions.clear();
     this.register(this.defaultRouter);
     this.register(new CurvedRouter());
     this.register(new OrthogonalRouter());
+  }
+
+  private notify(routerId: string): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(routerId);
+      } catch (err) {
+        console.error('[ConnectorRouterRegistry] 变更监听回调异常:', err);
+      }
+    }
   }
 }

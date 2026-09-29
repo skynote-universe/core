@@ -4,8 +4,8 @@
  * 
  * 设计考量 (Why):
  * 1. 持久化与运行时物理分离：NodeEntity 与 ConnectorEntity 只包含 100% 存入 JSON 的业务数据；
- *    所有高频脏检查版本号 (geomVersion / dataVersion)、实时包围盒、避障算法折线点集 (ComputedRoute)，
- *    全部收敛于纯内存运行时包装中，彻底杜绝数据冗余与协同网络雪崩。
+ *    高频脏检查版本号 (geomVersion / dataVersion) 收敛于纯内存运行时包装中，彻底杜绝数据冗余与协同网络雪崩；
+ *    连线路由 (ComputedRoute) 由引擎按版本增量求解并缓存 (engine.getConnectorRoute)。
  * 2. 垃圾回收友好：运行时元数据生命周期随内存实例结束而销毁，0 持久化负担，0 撤销栈毒化。
  */
 
@@ -20,10 +20,6 @@ export interface NodeRuntimeState {
   geomVersion: number;
   /** 数据版本号：在 style, textBlocks, data 变动时自增，驱动图元重绘 */
   dataVersion: number;
-  /** 当前节点在世界坐标系中的实时外包围盒 (供空间四叉树检索与视锥剔除) */
-  worldBounds?: RectBounds;
-  /** 交互态标记 (选填) */
-  isHovered?: boolean;
 }
 
 /**
@@ -40,19 +36,19 @@ export interface RuntimeNode<
   readonly runtime: NodeRuntimeState;
 }
 
-/** 算法动态解算出的连线路径几何描述 (纯内存计算缓存) */
+/**
+ * 引擎求解的连线路由 (纯内存派生缓存，绝不写入持久化文档)
+ * 连线自身或两端节点几何变化时整体替换，下游按对象引用判定是否需要重绘
+ */
 export interface ComputedRoute {
-  readonly connectorId: string;
-  /** 算法结合两端节点与 controlPoints 最终解算出的完整折线/曲线点序列 */
-  readonly points: Point[];
-  /** 预生成的 SVG Path "M ... L ..." 路径字符串 (供渲染器 O(1) 直接绘制) */
-  readonly pathString: string;
-  /** 折线几何总长度 (供连线文本标注按 position: 0.5 百分比居中定位) */
+  /** 路由器求解出的有序折线关键点 (世界坐标，至少两个点) */
+  readonly points: readonly Point[];
+  /** 路由器预生成的路径指令 (如贝塞尔平滑)，缺失时由渲染端按 points 绘制 */
+  readonly pathData?: string;
+  /** 折线总长度 (供连线文本标注按比例定位) */
   readonly totalLength: number;
-  /** 实时最小外包矩形 (供视锥剔除与空间拾取) */
+  /** 路由点集的最小外包矩形 (供视锥剔除与空间拾取) */
   readonly bounds: RectBounds;
-  /** 计算此路径时的两端节点几何版本快照 (用于版本脏检查缓存失效) */
-  readonly versionHash: string;
 }
 
 /** 连线纯内存运行时元数据 */
@@ -61,13 +57,6 @@ export interface ConnectorRuntimeState {
   geomVersion: number;
   /** 属性版本号 */
   dataVersion: number;
-  /**
-   * 路由算法实时求解的路径折点与几何缓存
-   * 随两端节点移动动态生成，绝不写入持久化文档
-   */
-  computedRoute?: ComputedRoute;
-  /** 交互态标记 */
-  isHovered?: boolean;
 }
 
 /**

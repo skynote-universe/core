@@ -284,8 +284,53 @@ describe('引擎增量维护空间索引', () => {
     store.addNode(makeNode('b', 100));
     store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
 
-    expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(110);
+    // 包围盒取真实路由：直线路由连接两端节点中心 (5 → 105)
+    expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(105);
+    const routeBefore = engine.getConnectorRoute('c1');
     store.moveNode('b', { x: 400 });
-    expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(510);
+    expect(engine.connectorSpatialIndex.getBounds('c1')?.right).toBe(505);
+    // 路由整体替换，下游按引用即可判定失效
+    expect(engine.getConnectorRoute('c1')).not.toBe(routeBefore);
+    expect(engine.getConnectorRoute('c1')?.totalLength).toBe(500);
+  });
+
+  it('样式等数据变更不重算路由；删除端点节点后连线随之删除并清出路由缓存', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('a'));
+    store.addNode(makeNode('b', 100));
+    store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: makeConnector('c1', 'a', 'b') }] });
+    const route = engine.getConnectorRoute('c1');
+
+    store.updateNode('a', { style: { fill: 'red' } });
+    expect(engine.getConnectorRoute('c1')).toBe(route);
+
+    store.removeNode('a');
+    expect(engine.getConnectorRoute('c1')).toBeUndefined();
+    expect(engine.connectorSpatialIndex.size).toBe(0);
+  });
+
+  it('插件晚于文档注册路由器时，自动重算该类型连线的路由与空间索引', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('a'));
+    store.addNode(makeNode('b', 100));
+    store.commit({
+      patches: [
+        { op: 'set', path: ['content', 'connectors', 'c1'], value: { ...makeConnector('c1', 'a', 'b'), connectorType: 'detour' } }
+      ]
+    });
+    // 未注册时回退直线
+    expect(engine.getConnectorRoute('c1')?.points).toHaveLength(2);
+
+    engine.routers.register({
+      id: 'detour',
+      label: '绕行',
+      route: ({ startPoint, endPoint }) => ({
+        points: [startPoint, { x: startPoint.x, y: 300 }, { x: endPoint.x, y: 300 }, endPoint]
+      })
+    });
+    expect(engine.getConnectorRoute('c1')?.points).toHaveLength(4);
+    expect(engine.connectorSpatialIndex.getBounds('c1')?.bottom).toBe(300);
   });
 });

@@ -7,13 +7,17 @@
  *    InputScopeManager、PluginManager 强力组装为一体。
  * 2. 空间拓扑与状态树自联动：消费 DocumentChangeSet 增量维护节点与连线两套空间索引，
  *    每次提交只触达变更实体，与画布总规模无关；渲染器与选框无需手动同步索引。
+ * 4. 连线路由统一求解：几何失效的连线在此求解路由并缓存，连线空间索引取真实路由包围盒；
+ *    渲染器、导出与插件经 getConnectorRoute 共享结果。路由器晚于文档注册时自动重算对应类型的连线。
  * 3. 严格遵循四大红线：全文 0 DOM / 0 Canvas 依赖，纯内存图灵完备，可无缝运行于浏览器、Web Worker 或 Node.js。
  */
 
 import type { CanvasDocument, CanvasDocumentView, ViewportState } from './types/canvas';
 import type { DocumentChangeSet } from './types/change-set';
 import type { CanvasThemeConfig } from './types/theme';
-import { computeNodeBounds, computeConnectorBounds } from './utils/geometry';
+import type { ComputedRoute } from './types/runtime';
+import { computeNodeBounds } from './utils/geometry';
+import { computeConnectorRoute } from './routing/connector-route';
 import { DocumentStore, createEmptyCanvasDocument } from './state/document-store';
 import type { EntityReader } from './state/entity-store';
 import { SessionStore } from './state/session-store';
@@ -54,6 +58,9 @@ export class SkyNoteEngine {
   readonly plugins: PluginManager;
 
   private readonly unsubscribeDocument: () => void;
+  private readonly unsubscribeRouters: () => void;
+  /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
+  private readonly routes = new Map<string, ComputedRoute>();
   private isDestroyed = false;
 
   constructor(options?: SkyNoteEngineOptions) {
@@ -83,13 +90,20 @@ export class SkyNoteEngine {
     this.spatialIndex.load(
       this.entityStore.getAllNodes().map((runtimeNode) => [runtimeNode.entity.id, computeNodeBounds(runtimeNode.entity)] as const)
     );
-    this.loadConnectorBounds(this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id));
+    this.updateConnectorRoutes(this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id));
 
     // 空间索引与选区都是文档的派生状态，由引擎统一维护一致性：
     // 实体删除（本地、远端或撤销）后选区不会残留指向不存在实体的 id
     this.unsubscribeDocument = this.documentStore.subscribe((_view, _record, changes) => {
       this.syncSpatialIndexes(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
+    });
+    this.unsubscribeRouters = this.routers.onChange((routerId) => {
+      const affected = this.entityStore
+        .getAllConnectors()
+        .filter((runtimeConnector) => runtimeConnector.entity.connectorType === routerId)
+        .map((runtimeConnector) => runtimeConnector.entity.id);
+      this.updateConnectorRoutes(affected);
     });
   }
 
@@ -116,6 +130,8 @@ export class SkyNoteEngine {
     this.isDestroyed = true;
 
     this.unsubscribeDocument();
+    this.unsubscribeRouters();
+    this.routes.clear();
     this.plugins.destroy();
     this.pointer.clear();
     this.spatialIndex.clear();
@@ -143,21 +159,31 @@ export class SkyNoteEngine {
 
     for (const id of changes.connectors.removed) {
       this.connectorSpatialIndex.remove(id);
+      this.routes.delete(id);
     }
     // 依附节点移动引发的路由失效已由 DocumentStore 并入 connectors.geometry
-    this.loadConnectorBounds(changes.connectors.geometry);
+    this.updateConnectorRoutes(changes.connectors.geometry);
   }
 
-  private loadConnectorBounds(connectorIds: Iterable<string>): void {
+  /**
+   * 获取连线的当前路由；悬空连线 (两端无法定位) 返回 undefined
+   */
+  getConnectorRoute(connectorId: string): ComputedRoute | undefined {
+    return this.routes.get(connectorId);
+  }
+
+  private updateConnectorRoutes(connectorIds: Iterable<string>): void {
     const resolveNode = (nodeId: string) => this.entityStore.getNode(nodeId)?.entity;
     const entries: SpatialIndexEntry[] = [];
     for (const id of connectorIds) {
       const runtimeConnector = this.entityStore.getConnector(id);
-      const bounds = runtimeConnector ? computeConnectorBounds(runtimeConnector.entity, resolveNode) : null;
-      if (bounds) {
-        entries.push([id, bounds]);
+      const route = runtimeConnector ? computeConnectorRoute(runtimeConnector.entity, resolveNode, this.routers) : null;
+      if (route) {
+        this.routes.set(id, route);
+        entries.push([id, route.bounds]);
       } else {
-        // 两端均无法定位 (悬空连线) 时不参与空间检索
+        // 悬空连线不参与渲染与空间检索
+        this.routes.delete(id);
         this.connectorSpatialIndex.remove(id);
       }
     }

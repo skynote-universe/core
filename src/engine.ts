@@ -18,7 +18,11 @@ import type { CanvasDocument, CanvasDocumentView, ViewportState } from './types/
 import type { DocumentChangeSet } from './types/change-set';
 import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
-import { computeNodeWorldBounds, type RectBounds } from './utils/geometry';
+import { computeNodeWorldBounds, isPointInNode, type RectBounds } from './utils/geometry';
+import { compareHierarchicalNodes } from './layout/layer-order';
+import { DETACHED_CANVAS_HOST, type CanvasHost } from './protocols/overlay.protocol';
+import type { NodeEntity } from './types/node';
+import type { Point } from './types/canvas';
 import { computeConnectorRoute } from './routing/connector-route';
 import type { TextMeasurer } from './protocols/text-measurer.protocol';
 import type { CanvasOperationRecord } from './types/operation';
@@ -50,7 +54,7 @@ export interface SkyNoteEngineOptions {
   zoomRange?: ZoomRange;
   /** 画布主题 (默认浅色预设)，运行时通过 engine.session.setTheme() 显式切换 */
   theme?: CanvasThemeConfig;
-  /** 文本测量器 (由渲染适配层提供，如 createLeaferTextMeasurer)，缺省时不做文本驱动的自动尺寸 */
+  /** 文本测量器 (由渲染适配层提供，如 LeaferTextMeasurer)，缺省时不做文本驱动的自动尺寸 */
   textMeasurer?: TextMeasurer;
   /**
    * 节点空间索引工厂 (默认 R-Tree)：节点索引按容器分层 (ADR-114)，每个容器各建一个实例
@@ -76,6 +80,7 @@ export class SkyNoteEngine {
   readonly plugins: PluginManager;
 
   private readonly nodeSpatialIndex: SceneSpatialIndex;
+  private currentHost: CanvasHost = DETACHED_CANVAS_HOST;
   private readonly unsubscribeDocument: () => void;
   private readonly unsubscribeRouters: () => void;
   /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
@@ -112,7 +117,11 @@ export class SkyNoteEngine {
       arrowMarkerRegistry: this.arrowMarkers,
       connectorRouterRegistry: this.routers,
       inputScopeManager: this.inputScopes,
-      pointerDispatcher: this.pointer
+      pointerDispatcher: this.pointer,
+      entities: this.entityStore,
+      spatial: this.spatialIndex,
+      hitTestNode: (point) => this.hitTestNode(point),
+      getHost: () => this.currentHost
     });
 
     this.nodeSpatialIndex.rebuild();
@@ -143,6 +152,52 @@ export class SkyNoteEngine {
   use(plugin: SkyNotePlugin): this {
     this.plugins.use(plugin);
     return this;
+  }
+
+  /** 当前挂载的宿主能力 (渲染器挂载前为空实现) */
+  get host(): CanvasHost {
+    return this.currentHost;
+  }
+
+  /**
+   * 挂载宿主 (由渲染器在 mount 时调用)，返回卸载函数
+   * 插件经上下文调用宿主能力时读取当前宿主，因此插件可以早于渲染器安装
+   */
+  attachHost(host: CanvasHost): () => void {
+    this.currentHost = host;
+    return () => {
+      if (this.currentHost === host) this.currentHost = DETACHED_CANVAS_HOST;
+    };
+  }
+
+  /**
+   * 点选最上层节点：空间索引粗筛后按世界矩阵精判 (含自身与祖先旋转)；
+   * 落在裁剪型祖先 (画框) 之外的部分不可拾取；候选返回顺序与层叠无关，必须显式比较层级
+   */
+  hitTestNode(point: Point): Readonly<NodeEntity> | undefined {
+    const { entityStore, nodeTypes } = this;
+    const chainCache = new Map<string, Readonly<NodeEntity>[]>();
+    const getNode = (id: string) => entityStore.getNode(id)?.entity;
+    const containsPoint = (node: Readonly<NodeEntity>) =>
+      isPointInNode(point, node, entityStore.getWorldTransform(node.id)!);
+    const isClippedOut = (node: Readonly<NodeEntity>): boolean => {
+      for (let parent = node.parentId === undefined ? undefined : getNode(node.parentId); parent;) {
+        if (nodeTypes.get(parent.nodeType)?.clipChildren && !containsPoint(parent)) return true;
+        parent = parent.parentId === undefined ? undefined : getNode(parent.parentId);
+      }
+      return false;
+    };
+
+    let top: Readonly<NodeEntity> | undefined;
+    const candidateIds = this.spatialIndex.hitTest(point);
+    for (let i = 0; i < candidateIds.length; i++) {
+      const node = getNode(candidateIds[i]);
+      if (!node || node.style?.opacity === 0 || !containsPoint(node)) continue;
+      if (top && compareHierarchicalNodes(node, top, getNode, chainCache) < 0) continue;
+      if (isClippedOut(node)) continue;
+      top = node;
+    }
+    return top;
   }
 
   /**

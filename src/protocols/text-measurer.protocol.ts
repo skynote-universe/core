@@ -4,7 +4,7 @@
  *
  * 设计考量 (Why):
  * 1. 平台中立红线：内核不触碰 Canvas / DOM，文本度量必须由宿主注入；渲染适配层应提供与自身排版一致的实现
- *    (如 renderer-leafer 的 createLeaferTextMeasurer)，保证测得的尺寸与实际绘制完全一致。
+ *    (如 renderer-leafer 的 LeaferTextMeasurer)，保证测得的尺寸与实际绘制完全一致。
  * 2. 只量内容盒：测量结果不含块级 padding，由排版管线统一叠加，测量器实现保持最小职责。
  */
 

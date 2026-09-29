@@ -16,6 +16,12 @@ import type { CanvasDocumentView, NodeEntity, ConnectorEntity } from '../types';
 import type { CommitOperationOptions, CanvasOperationRecord } from '../types/operation';
 import type { DocumentChangeSet } from '../types/change-set';
 import type { SessionController, SessionChange } from '../state/session-store';
+import type { DocumentCommands } from '../state/document-store';
+import type { EntityReader } from '../state/entity-store';
+import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
+import type { PointerHooks } from '../input/pointer-dispatcher';
+import type { CanvasHostServices } from './overlay.protocol';
+import type { Point } from '../types/canvas';
 
 /** 暴露给插件消费的画布上下文 API */
 export interface CanvasPluginContext {
@@ -37,6 +43,19 @@ export interface CanvasPluginContext {
 
   /** 本地会话状态 (视口与选区)：不进入文档、不入撤销栈、不参与协同 */
   readonly session: SessionController;
+  /** 语义化文档命令 (批量移动、删除、改挂、层级、批处理、撤销重做)，全部经事务提交 */
+  readonly document: DocumentCommands;
+  /** 实体只读索引 (世界矩阵、父子关系、依附连线) */
+  readonly entities: EntityReader;
+  /** 节点空间检索 (世界坐标) */
+  readonly spatial: NodeSpatialQuery;
+  /** 点选最上层节点：含旋转精判、裁剪型容器与层叠顺序 */
+  hitTestNode(point: Point): Readonly<NodeEntity> | undefined;
+  /**
+   * 宿主能力：覆盖层、光标、指针捕获与视口尺寸 (渲染器挂载前为空实现)
+   * 插件卸载时其覆盖层会话自动清除
+   */
+  readonly host: CanvasHostServices;
 
   /**
    * 订阅文档增量变更集 (插件卸载时自动解绑)
@@ -60,15 +79,7 @@ export interface CanvasPluginContext {
   registerInputScope(scope: InputScope): () => void;
 
   /** 注册指针与滚轮交互监听 (返回解绑注销函数，支持 priority 优先级排序) */
-  registerPointerHooks(
-    hooks: {
-      onPointerDown?(e: CanvasPointerEvent): void;
-      onPointerMove?(e: CanvasPointerEvent): void;
-      onPointerUp?(e: CanvasPointerEvent): void;
-      onWheel?(e: CanvasWheelEvent): void;
-    },
-    priority?: number
-  ): () => void;
+  registerPointerHooks(hooks: PointerHooks, priority?: number): () => void;
 }
 
 /**
@@ -92,6 +103,7 @@ export interface SkyNotePlugin {
   onPointerDown?(e: CanvasPointerEvent): void;
   onPointerMove?(e: CanvasPointerEvent): void;
   onPointerUp?(e: CanvasPointerEvent): void;
+  onPointerCancel?(e: CanvasPointerEvent): void;
 
   /** 滚轮手势钩子 (选填) */
   onWheel?(e: CanvasWheelEvent): void;

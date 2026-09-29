@@ -9,7 +9,7 @@ import { RTreeSpatialIndex } from '../src/spatial/r-tree';
 import { createSpatialIndex } from '../src/spatial';
 import { InputScopeManager } from '../src/input/input-scope-manager';
 import type { CanvasKeyboardEvent } from '../src/protocols/input-scope.protocol';
-import { createCanvasPointerEvent, createCanvasWheelEvent } from '../src/protocols/events.protocol';
+import { SyntheticPointerEvent, SyntheticWheelEvent } from '../src/input/synthetic-events';
 import { StraightRouter, OrthogonalRouter } from '../src/registry/connector-router-registry';
 import type { SkyNotePlugin, CanvasPluginContext } from '../src/protocols/plugin.protocol';
 import type { NodeEntity } from '../src/types/node';
@@ -279,7 +279,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     engine.use(handlePlugin);
     engine.use(dragPlugin);
 
-    const mockPointerEvent = createCanvasPointerEvent({
+    const mockPointerEvent = new SyntheticPointerEvent({
       point: { x: 100, y: 100 }
     });
 
@@ -332,7 +332,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       }
     });
 
-    const event = createCanvasPointerEvent({ point: { x: 50, y: 50 } });
+    const event = new SyntheticPointerEvent({ point: { x: 50, y: 50 } });
     engine.pointer.dispatchPointerDown(event);
 
     // 验证：高优先级拦截成功，低优先级未被调用
@@ -492,7 +492,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       }
     });
 
-    const wheelEvent = createCanvasWheelEvent({
+    const wheelEvent = new SyntheticWheelEvent({
       centerPoint: { x: 100, y: 100 },
       deltaZoom: 0.1
     });

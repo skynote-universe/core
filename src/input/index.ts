@@ -5,3 +5,4 @@
 
 export * from './input-scope-manager';
 export * from './pointer-dispatcher';
+export * from './synthetic-events';

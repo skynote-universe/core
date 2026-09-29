@@ -56,6 +56,26 @@ const CONNECTOR_GEOM_FIELDS: ReadonlySet<string | number> = new Set(['from', 'to
 const NODE_ORDER_FIELDS: ReadonlySet<string | number> = new Set(['zIndex', 'parentId']);
 const CONNECTOR_ORDER_FIELDS: ReadonlySet<string | number> = new Set(['zIndex', 'from', 'to']);
 
+/**
+ * 暴露给插件的语义化文档命令：全部经事务提交，自动满足守卫、派生排版与撤销合并
+ * 插件只拿到这些命令，拿不到 DocumentStore 本身 (订阅、历史清空等宿主级能力不对插件开放)
+ */
+export type DocumentCommands = Pick<
+  DocumentStore,
+  | 'addNode'
+  | 'updateNode'
+  | 'moveNodes'
+  | 'removeNodes'
+  | 'reparentNodes'
+  | 'moveLayers'
+  | 'createTopZIndex'
+  | 'batch'
+  | 'undo'
+  | 'redo'
+  | 'canUndo'
+  | 'canRedo'
+>;
+
 /** 文档视图订阅回调 */
 export type DocumentSubscriber = (
   view: CanvasDocumentView,

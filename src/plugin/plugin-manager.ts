@@ -24,6 +24,13 @@ import type { ArrowMarkerRegistry } from '../registry/arrow-marker-registry';
 import type { ConnectorRouterRegistry } from '../registry/connector-router-registry';
 import type { InputScopeManager } from '../input/input-scope-manager';
 import type { PointerDispatcher, PointerHooks } from '../input/pointer-dispatcher';
+import type { EntityReader } from '../state/entity-store';
+import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
+import type { CanvasHost, CanvasHostServices, OverlayChannel, OverlayOptions } from '../protocols/overlay.protocol';
+import type { CanvasPrimitive } from '../protocols/primitives.protocol';
+import type { SystemCursor } from '../protocols/host-bridge.protocol';
+import type { NodeEntity } from '../types/node';
+import type { Point } from '../types/canvas';
 
 export interface PluginManagerDependencies {
   documentStore: DocumentStore;
@@ -33,6 +40,62 @@ export interface PluginManagerDependencies {
   connectorRouterRegistry: ConnectorRouterRegistry;
   inputScopeManager: InputScopeManager;
   pointerDispatcher: PointerDispatcher;
+  entities: EntityReader;
+  spatial: NodeSpatialQuery;
+  hitTestNode: (point: Point) => Readonly<NodeEntity> | undefined;
+  /** 当前挂载的宿主 (渲染器挂载前为空实现)；每次调用时读取，插件无需关心挂载先后 */
+  getHost: () => CanvasHost;
+}
+
+/** 覆盖层转发：记录插件用过的会话，插件卸载时一并清除，避免残留图元 */
+class TrackedOverlay implements OverlayChannel {
+  private readonly sessions = new Set<string>();
+
+  constructor(private readonly getHost: () => CanvasHost) {}
+
+  setPrimitives(sessionId: string, primitives: readonly CanvasPrimitive[], options?: OverlayOptions): void {
+    this.sessions.add(sessionId);
+    this.getHost().overlay.setPrimitives(sessionId, primitives, options);
+  }
+
+  clear(sessionId: string): void {
+    this.sessions.delete(sessionId);
+    this.getHost().overlay.clear(sessionId);
+  }
+
+  dispose(): void {
+    for (const sessionId of this.sessions) this.getHost().overlay.clear(sessionId);
+    this.sessions.clear();
+  }
+}
+
+/** 插件可用的宿主能力：每次调用读取当前宿主，插件无需关心渲染器挂载先后 */
+class PluginHostServices implements CanvasHostServices {
+  readonly overlay: TrackedOverlay;
+
+  constructor(private readonly getHost: () => CanvasHost) {
+    this.overlay = new TrackedOverlay(getHost);
+  }
+
+  setCursor(cursor: SystemCursor): void {
+    this.getHost().bridge.setCursor(cursor);
+  }
+
+  capturePointer(pointerId: number): void {
+    this.getHost().bridge.capturePointer(pointerId);
+  }
+
+  releasePointer(pointerId: number): void {
+    this.getHost().bridge.releasePointer(pointerId);
+  }
+
+  getViewportSize(): { width: number; height: number } {
+    return this.getHost().bridge.getViewportRect();
+  }
+
+  dispose(): void {
+    this.overlay.dispose();
+  }
 }
 
 export class PluginManager {
@@ -60,11 +123,18 @@ export class PluginManager {
     this.cleanupBags.set(plugin.id, cleanupList);
 
     // 若插件自身声明了指针交互钩子，自动注册到输入子系统并在卸载时自动解绑
-    if (plugin.onPointerDown || plugin.onPointerMove || plugin.onPointerUp || plugin.onWheel) {
+    if (
+      plugin.onPointerDown ||
+      plugin.onPointerMove ||
+      plugin.onPointerUp ||
+      plugin.onPointerCancel ||
+      plugin.onWheel
+    ) {
       const unbindPointer = this.deps.pointerDispatcher.register(plugin.id, {
         onPointerDown: plugin.onPointerDown?.bind(plugin),
         onPointerMove: plugin.onPointerMove?.bind(plugin),
         onPointerUp: plugin.onPointerUp?.bind(plugin),
+        onPointerCancel: plugin.onPointerCancel?.bind(plugin),
         onWheel: plugin.onWheel?.bind(plugin)
       });
       cleanupList.push(unbindPointer);
@@ -143,6 +213,8 @@ export class PluginManager {
    * 构建插件专属的受控上下文，所有自注册资源自动纳入沙盒生命周期管控
    */
   private createPluginContext(pluginId: string, cleanupList: Array<() => void>): CanvasPluginContext {
+    const host = new PluginHostServices(this.deps.getHost);
+    cleanupList.push(() => host.dispose());
     return {
       getDocument: (): CanvasDocumentView => {
         return this.deps.documentStore.getView();
@@ -157,6 +229,11 @@ export class PluginManager {
         return this.deps.documentStore.commit(options);
       },
       session: this.deps.session,
+      document: this.deps.documentStore,
+      entities: this.deps.entities,
+      spatial: this.deps.spatial,
+      hitTestNode: this.deps.hitTestNode,
+      host,
       onDocumentChange: (
         listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void
       ): (() => void) => {

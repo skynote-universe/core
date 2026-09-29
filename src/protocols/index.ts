@@ -12,3 +12,4 @@ export * from './input-scope.protocol';
 export * from './connector-router.protocol';
 export * from './plugin.protocol';
 export * from './text-measurer.protocol';
+export * from './overlay.protocol';

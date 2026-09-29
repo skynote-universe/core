@@ -5,7 +5,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { PointerDispatcher } from '../src/input/pointer-dispatcher';
-import { createCanvasPointerEvent, createCanvasWheelEvent } from '../src/protocols/events.protocol';
+import { SyntheticPointerEvent, SyntheticWheelEvent } from '../src/input/synthetic-events';
+import type { NodeEntity } from '../src/types/node';
 
 describe('PointerDispatcher', () => {
   it('高优先级 claimPointer 后，低优先级监听者读到 isClaimed === true 并短路', () => {
@@ -24,7 +25,7 @@ describe('PointerDispatcher', () => {
       0
     );
 
-    const event = createCanvasPointerEvent({ point: { x: 0, y: 0 } });
+    const event = new SyntheticPointerEvent({ point: { x: 0, y: 0 } });
     dispatcher.dispatchPointerDown(event);
 
     expect(log).toEqual([]);
@@ -49,7 +50,7 @@ describe('PointerDispatcher', () => {
     );
     dispatcher.register('bottom', { onWheel: () => log.push('bottom') }, 0);
 
-    const wheel = createCanvasWheelEvent({ centerPoint: { x: 0, y: 0 }, deltaZoom: 0.1 });
+    const wheel = new SyntheticWheelEvent({ centerPoint: { x: 0, y: 0 }, deltaZoom: 0.1 });
     dispatcher.dispatchWheel({
       ...wheel,
       stopPropagation: () => {
@@ -71,7 +72,7 @@ describe('PointerDispatcher', () => {
     };
     dispatcher.register('stateful', hooks);
 
-    dispatcher.dispatchPointerMove(createCanvasPointerEvent({ point: { x: 1, y: 1 } }));
+    dispatcher.dispatchPointerMove(new SyntheticPointerEvent({ point: { x: 1, y: 1 } }));
     expect(hooks.moves).toBe(1);
   });
 });
@@ -84,8 +85,38 @@ describe('指针取消', () => {
       onPointerDown: () => calls.push('down'),
       onPointerCancel: () => calls.push('cancel')
     });
-    dispatcher.dispatchPointerDown(createCanvasPointerEvent({ point: { x: 0, y: 0 } }));
-    dispatcher.dispatchPointerCancel(createCanvasPointerEvent({ point: { x: 0, y: 0 } }));
+    dispatcher.dispatchPointerDown(new SyntheticPointerEvent({ point: { x: 0, y: 0 } }));
+    dispatcher.dispatchPointerCancel(new SyntheticPointerEvent({ point: { x: 0, y: 0 } }));
     expect(calls).toEqual(['down', 'cancel']);
+  });
+});
+
+describe('SyntheticPointerEvent', () => {
+  it('经分发器原型包装后认领状态仍然共享：低优先级监听者与原事件都能看到', () => {
+    const dispatcher = new PointerDispatcher();
+    const seen: boolean[] = [];
+    dispatcher.register('high', { onPointerDown: (e) => e.claimPointer('high') }, 10);
+    dispatcher.register('low', { onPointerDown: (e) => seen.push(e.isClaimed) }, 0);
+    const event = new SyntheticPointerEvent({ point: { x: 0, y: 0 } });
+    dispatcher.dispatchPointerDown(event);
+    expect(seen).toEqual([true]);
+    expect(event.isClaimed).toBe(true);
+    // 记录首个认领者，后续认领不覆盖
+    event.claimPointer('other');
+    expect(event.claimedBy).toBe('high');
+  });
+
+  it('延迟拾取：读取 target 时才计算，同一事件 (含各监听者的包装) 只计算一次', () => {
+    const dispatcher = new PointerDispatcher();
+    let calls = 0;
+    const node = { id: 'n' } as NodeEntity;
+    const targets: (NodeEntity | undefined)[] = [];
+    dispatcher.register('a', { onPointerMove: (e) => targets.push(e.target) }, 1);
+    dispatcher.register('b', { onPointerMove: (e) => targets.push(e.target) }, 0);
+    const event = new SyntheticPointerEvent({ point: { x: 0, y: 0 }, resolveTarget: () => (calls++, node) });
+    expect(calls).toBe(0);
+    dispatcher.dispatchPointerMove(event);
+    expect(targets).toEqual([node, node]);
+    expect(calls).toBe(1);
   });
 });

@@ -78,6 +78,33 @@ export function computeBoundingBox(
 }
 
 /**
+ * 适配视口 (缩放按钮、快捷键共用)：容纳全部内容并居中；空画布 (bounds 为 null) 回到原点；
+ * 内容退化为一条线或一个点时无法按面积适配，保持当前缩放 (不超过 maxZoom) 并把内容中心移到视口中心
+ */
+export function computeFitViewport(
+  bounds: RectBounds | null,
+  viewportSize: { width: number; height: number },
+  current: ViewportState,
+  options: { padding: number; minZoom: number; maxZoom: number }
+): ViewportState {
+  if (!bounds) return { x: 0, y: 0, zoom: 1 };
+  const fitted = computeViewportToFitBounds(bounds, {
+    viewportWidth: viewportSize.width,
+    viewportHeight: viewportSize.height,
+    padding: options.padding,
+    minZoom: options.minZoom,
+    maxZoom: options.maxZoom
+  });
+  if (fitted) return fitted;
+  const zoom = Math.min(current.zoom, options.maxZoom);
+  return {
+    x: viewportSize.width / 2 - (bounds.left + bounds.width / 2) * zoom,
+    y: viewportSize.height / 2 - (bounds.top + bounds.height / 2) * zoom,
+    zoom
+  };
+}
+
+/**
  * 计算将指定包围盒完全容纳在当前视口中央的 ViewportState (缩放与平移)
  */
 export function computeViewportToFitBounds(bounds: RectBounds, options: FitViewportOptions): ViewportState | null {

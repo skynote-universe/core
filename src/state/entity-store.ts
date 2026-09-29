@@ -10,6 +10,8 @@
  *    收敛于此纯内存信封，GC 友好。
  * 4. 节点-连线邻接索引：节点移动/删除时 O(度数) 定位依附连线，避免每帧全量扫描连线。
  * 6. 容器父子索引：级联移动与级联删除按子树规模定位后代，不扫描全部节点。
+ * 7. 世界矩阵缓存 (ADR-114)：节点坐标相对父容器，世界矩阵按需自顶向下复合并缓存。缓存以「自身 geomVersion +
+ *    父级世界矩阵引用 + parentId」校验，祖先移动或改挂后下次读取自动重算，无需显式失效，也不产生任何补丁。
  * 5. 读写分离：写入方法只供 DocumentStore 在事务提交后调用；引擎、渲染器与插件只拿到 EntityReader，
  *    类型层面既无法调用 sync/notify 让索引与文档失配，也无法就地改写实体字段绕过事务。
  */
@@ -17,6 +19,7 @@
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity } from '../types/connector';
 import type { RuntimeNode, RuntimeConnector, RuntimeNodeView, RuntimeConnectorView } from '../types/runtime';
+import { computeNodeLocalMatrix, multiplyMatrix, type Matrix2D } from '../utils/geometry';
 
 /** 实体运行时索引的只读视图 (对内核之外暴露的唯一形态) */
 export interface EntityReader {
@@ -36,6 +39,16 @@ export interface EntityReader {
   getChildIds(parentId: string | undefined): ReadonlySet<string>;
   /** 全部后代节点 id (广度优先，自带防环) */
   collectDescendantIds(nodeId: string): string[];
+  /** 节点世界矩阵 (节点局部坐标 → 世界坐标)；父节点缺失 (如远端删除容器) 时按根层级处理 */
+  getWorldTransform(nodeId: string): Matrix2D | undefined;
+}
+
+interface WorldTransformCache {
+  readonly matrix: Matrix2D;
+  readonly geomVersion: number;
+  readonly parentId: string | undefined;
+  /** 计算时所用的父级世界矩阵 (引用)；父级重算后引用变化，本缓存随之失效 */
+  readonly parentMatrix: Matrix2D | null;
 }
 
 /** 单个实体与持久化文档对齐后的结果 */
@@ -56,6 +69,7 @@ export class EntityStore implements EntityReader {
   private readonly nodeParents = new Map<string, string | undefined>();
   /** connectorId -> 已登记进邻接索引的两端节点 id (就地修改端点后据此解除旧关联) */
   private readonly connectorEndpoints = new Map<string, readonly (string | undefined)[]>();
+  private readonly worldTransforms = new Map<string, WorldTransformCache>();
   /**
    * 全局单调版本时钟：所有版本号均从此取值，
    * 实体被删除后以同 id 恢复（撤销删除）时不会复用旧版本号，下游按 `!==` 比较的缓存必然失效
@@ -125,6 +139,33 @@ export class EntityStore implements EntityReader {
     return result;
   }
 
+  getWorldTransform(nodeId: string): Matrix2D | undefined {
+    const runtimeNode = this.nodes.get(nodeId);
+    return runtimeNode ? this.resolveWorldTransform(nodeId, runtimeNode) : undefined;
+  }
+
+  /** 提交守卫保证容器无环，递归深度即容器嵌套深度 */
+  private resolveWorldTransform(nodeId: string, runtimeNode: RuntimeNode): Matrix2D {
+    const node = runtimeNode.entity;
+    const parentId = node.parentId;
+    const parentRuntime = parentId === undefined ? undefined : this.nodes.get(parentId);
+    const parentMatrix = parentRuntime ? this.resolveWorldTransform(parentId!, parentRuntime) : null;
+
+    const cached = this.worldTransforms.get(nodeId);
+    if (
+      cached &&
+      cached.geomVersion === runtimeNode.runtime.geomVersion &&
+      cached.parentMatrix === parentMatrix &&
+      cached.parentId === parentId
+    ) {
+      return cached.matrix;
+    }
+    const local = computeNodeLocalMatrix(node);
+    const matrix = parentMatrix ? multiplyMatrix(parentMatrix, local) : local;
+    this.worldTransforms.set(nodeId, { matrix, geomVersion: runtimeNode.runtime.geomVersion, parentId, parentMatrix });
+    return matrix;
+  }
+
   /** parentId 被字段级补丁就地修改后，刷新父子索引 */
   reindexNodeParent(id: string): void {
     this.indexNodeParent(id, this.nodes.get(id)?.entity);
@@ -140,6 +181,7 @@ export class EntityStore implements EntityReader {
     if (!entity) {
       if (!existing) return 'unchanged';
       this.nodes.delete(id);
+      this.worldTransforms.delete(id);
       this.indexNodeParent(id, undefined);
       return 'removed';
     }
@@ -246,6 +288,7 @@ export class EntityStore implements EntityReader {
     this.nodeChildren.clear();
     this.rootNodeIds.clear();
     this.nodeParents.clear();
+    this.worldTransforms.clear();
   }
 
   private indexNodeParent(id: string, entity: NodeEntity | undefined): void {

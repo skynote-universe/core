@@ -108,22 +108,24 @@ describe('容器无环守卫', () => {
 });
 
 describe('容器语义', () => {
-  it('移动容器在同一事务内连带平移全部后代，撤销整体还原', () => {
+  it('移动容器只改容器自身，后代坐标相对容器随之整体移动，撤销整体还原 (ADR-114)', () => {
     const engine = new SkyNoteEngine();
     const store = engine.documentStore;
     store.addNode(makeNode('frame', 0));
     store.addNode(makeNode('card', 20, 'frame'));
-    store.addNode(makeNode('badge', 25, 'card'));
+    store.addNode(makeNode('badge', 5, 'card'));
     store.addNode(makeNode('outside', 500));
 
-    store.moveNodes(['frame'], { x: 100 });
+    const record = store.moveNodes(['frame'], { x: 100 })!;
+    expect(record.patches.map((p) => p.path)).toEqual([['content', 'nodes', 'frame', 'x']]);
     const nodes = engine.getView().content.nodes;
-    expect([nodes.frame.x, nodes.card.x, nodes.badge.x, nodes.outside.x]).toEqual([100, 120, 125, 500]);
-    // 空间索引同步更新了后代
+    expect([nodes.frame.x, nodes.card.x, nodes.badge.x, nodes.outside.x]).toEqual([100, 20, 5, 500]);
+    // 后代没有补丁，但空间索引按世界坐标同步更新
     expect(engine.spatialIndex.getBounds('badge')?.left).toBe(125);
 
     store.undo();
-    expect([nodes.frame.x, nodes.card.x, nodes.badge.x]).toEqual([0, 20, 25]);
+    expect(nodes.frame.x).toBe(0);
+    expect(engine.spatialIndex.getBounds('badge')?.left).toBe(25);
   });
 
   it('删除容器级联删除全部后代及其依附连线，撤销整体恢复', () => {
@@ -161,7 +163,7 @@ describe('容器语义', () => {
     expect(Object.keys(store.getView().content.connectors)).toEqual(['c1']);
   });
 
-  it('多选移动：同时选中容器与其子节点时每个节点只移动一次，一步撤销', () => {
+  it('多选移动：同时选中容器与其子节点时子节点不再单独移动，一步撤销', () => {
     const store = new DocumentStore();
     store.addNode(makeNode('frame', 0));
     store.addNode(makeNode('card', 20, 'frame'));
@@ -169,7 +171,8 @@ describe('容器语义', () => {
 
     store.moveNodes(['card', 'frame', 'solo'], { x: 100 });
     const nodes = store.getView().content.nodes;
-    expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([100, 120, 600]);
+    expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([100, 20, 600]);
+    expect(store.entityStore.getWorldTransform('card')!.e).toBe(120);
     expect(store.coordinator.getUndoEntries()).toHaveLength(4);
 
     store.undo();

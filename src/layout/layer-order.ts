@@ -1,6 +1,6 @@
 /**
  * @file layer-order.ts
- * @description 同一容器兄弟间的层级调整 (纯函数)：上移一层、下移一层、置顶、置底
+ * @description 层叠顺序 (纯函数)：跨容器的整体层叠比较，以及同一容器兄弟间的上移、下移、置顶、置底
  *
  * 设计考量 (Why):
  * 1. 按列表顺序移动：上移/下移越过紧挨的一个未选中兄弟，与画面是否重叠无关 (与 Figma / PowerPoint 一致)。
@@ -24,6 +24,56 @@ export type LayerMove = 'forward' | 'backward' | 'front' | 'back';
 /** 兄弟节点按层叠顺序从下到上排序 (键相同按 id 决胜) */
 export function sortSiblingsByLayer(siblings: readonly Readonly<NodeEntity>[]): Readonly<NodeEntity>[] {
   return [...siblings].sort((a, b) => compareFractionalIndex(a.zIndex, a.id, b.zIndex, b.id));
+}
+
+/** 求解节点自根向下的祖先链 (含自身)；父节点缺失时截断为根层级 */
+export function resolveNodeAncestryChain<T extends Readonly<NodeEntity>>(
+  node: T,
+  getNode: (id: string) => T | undefined
+): T[] {
+  const result: T[] = [node];
+  let current = node;
+  while (current.parentId !== undefined) {
+    const parent = getNode(current.parentId);
+    if (!parent) break;
+    result.push(parent);
+    current = parent;
+  }
+  return result.reverse();
+}
+
+/**
+ * 全局层叠比较 (拾取、多选改挂等跨容器场景)：祖先永远在后代下方；
+ * 在第一个分叉处按兄弟的分数索引比较，键相同时按 id 决胜，各客户端结果一致，除同一节点外从不返回 0
+ * @param chainCache 同一轮比较中复用祖先链，排序时把每个节点的回溯从 O(n log n) 次降为 1 次
+ */
+export function compareHierarchicalNodes<T extends Readonly<NodeEntity>>(
+  left: T,
+  right: T,
+  getNode: (id: string) => T | undefined,
+  chainCache?: Map<string, T[]>
+): number {
+  if (left.id === right.id) return 0;
+  const getChain = (node: T): T[] => {
+    let chain = chainCache?.get(node.id);
+    if (!chain) {
+      chain = resolveNodeAncestryChain(node, getNode);
+      chainCache?.set(node.id, chain);
+    }
+    return chain;
+  };
+  const leftChain = getChain(left);
+  const rightChain = getChain(right);
+
+  let index = 0;
+  while (index < leftChain.length && index < rightChain.length && leftChain[index].id === rightChain[index].id) {
+    index += 1;
+  }
+  if (index === leftChain.length) return -1;
+  if (index === rightChain.length) return 1;
+  const leftFork = leftChain[index];
+  const rightFork = rightChain[index];
+  return compareFractionalIndex(leftFork.zIndex, leftFork.id, rightFork.zIndex, rightFork.id);
 }
 
 /** 按列表顺序计算移动后的新顺序 (自下而上的 id 列表) */

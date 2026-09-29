@@ -170,7 +170,7 @@ export function buildRoundedPolylinePath(points: readonly Point[], cornerRadius 
   return path;
 }
 
-/** 参与旋转几何计算的节点字段 (rotation 单位为度，绕节点中心旋转；x / y / width / height 描述未旋转的框) */
+/** 参与几何计算的节点字段：x / y / rotation 相对父容器 (ADR-114)，rotation 单位为度、绕节点中心旋转 */
 export interface RotatableBox {
   x: number;
   y: number;
@@ -180,74 +180,127 @@ export interface RotatableBox {
 }
 
 /**
- * 把节点局部坐标 (相对未旋转框左上角) 变换为世界坐标：绕节点中心旋转 rotation 度
+ * 二维仿射矩阵：x' = a·x + c·y + e，y' = b·x + d·y + f
+ * 节点只有平移与旋转 (尺寸由 width / height 表达，不含缩放)，世界矩阵始终是刚体变换
  */
-export function nodeLocalToWorld(node: RotatableBox, localX: number, localY: number): Point {
-  const angle = node.rotation ?? 0;
-  if (angle === 0) return { x: node.x + localX, y: node.y + localY };
+export interface Matrix2D {
+  readonly a: number;
+  readonly b: number;
+  readonly c: number;
+  readonly d: number;
+  readonly e: number;
+  readonly f: number;
+}
 
+export const IDENTITY_MATRIX: Matrix2D = Object.freeze({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
+
+/** 矩阵复合：先应用 inner 再应用 outer */
+export function multiplyMatrix(outer: Matrix2D, inner: Matrix2D): Matrix2D {
+  return {
+    a: outer.a * inner.a + outer.c * inner.b,
+    b: outer.b * inner.a + outer.d * inner.b,
+    c: outer.a * inner.c + outer.c * inner.d,
+    d: outer.b * inner.c + outer.d * inner.d,
+    e: outer.a * inner.e + outer.c * inner.f + outer.e,
+    f: outer.b * inner.e + outer.d * inner.f + outer.f
+  };
+}
+
+export function invertMatrix(m: Matrix2D): Matrix2D {
+  const det = m.a * m.d - m.b * m.c;
+  return {
+    a: m.d / det,
+    b: -m.b / det,
+    c: -m.c / det,
+    d: m.a / det,
+    e: (m.c * m.f - m.d * m.e) / det,
+    f: (m.b * m.e - m.a * m.f) / det
+  };
+}
+
+export function applyMatrix(m: Matrix2D, x: number, y: number): Point {
+  return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
+}
+
+/** 只应用线性部分 (旋转)，用于把世界位移换算为父容器局部位移 */
+export function applyMatrixToVector(m: Matrix2D, x: number, y: number): Point {
+  return { x: m.a * x + m.c * y, y: m.b * x + m.d * y };
+}
+
+/**
+ * 节点相对父容器的局部矩阵：平移到 (x, y) 后绕自身中心旋转
+ * 等价于 Leafer 的 x / y + rotation + origin: 'center'
+ */
+export function computeNodeLocalMatrix(node: RotatableBox): Matrix2D {
+  const angle = node.rotation ?? 0;
+  if (angle === 0) return { a: 1, b: 0, c: 0, d: 1, e: node.x, f: node.y };
   const rad = (angle * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
-  const dx = localX - node.width / 2;
-  const dy = localY - node.height / 2;
+  const cx = node.width / 2;
+  const cy = node.height / 2;
   return {
-    x: node.x + node.width / 2 + dx * cos - dy * sin,
-    y: node.y + node.height / 2 + dx * sin + dy * cos
+    a: cos,
+    b: sin,
+    c: -sin,
+    d: cos,
+    e: node.x + cx - cos * cx + sin * cy,
+    f: node.y + cy - sin * cx - cos * cy
   };
 }
 
 /**
- * 求解节点在世界坐标系中的轴对齐包围盒：旋转节点取四角旋转后的外接矩形
+ * computeNodeLocalMatrix 的逆运算：已知目标局部矩阵 (刚体) 与节点尺寸，求 x / y / rotation
+ * 用于改挂容器时保持节点在世界中的位置与朝向不变
  */
-export function computeNodeBounds(node: RotatableBox): RectBounds {
-  if (!node.rotation) {
+export function decomposeNodeMatrix(
+  m: Matrix2D,
+  width: number,
+  height: number
+): { x: number; y: number; rotation: number } {
+  const rad = Math.atan2(m.b, m.a);
+  let rotation = (rad * 180) / Math.PI;
+  // 消除 atan2 带来的 -0 与浮点噪声，保证未旋转的节点得到整洁的 0
+  if (Math.abs(rotation) < 1e-9) rotation = 0;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = width / 2;
+  const cy = height / 2;
+  return { x: m.e - cx + cos * cx - sin * cy, y: m.f - cy + sin * cx + cos * cy, rotation };
+}
+
+/** 节点局部坐标 (相对自身未旋转框左上角) 在给定世界矩阵下的世界坐标 */
+export function nodeLocalToWorld(worldMatrix: Matrix2D, localX: number, localY: number): Point {
+  return applyMatrix(worldMatrix, localX, localY);
+}
+
+/** 节点在世界坐标系中的轴对齐包围盒：四角经世界矩阵变换后的外接矩形 */
+export function computeNodeWorldBounds(size: { width: number; height: number }, worldMatrix: Matrix2D): RectBounds {
+  const m = worldMatrix;
+  if (m.b === 0 && m.c === 0) {
     return {
-      left: node.x,
-      top: node.y,
-      right: node.x + node.width,
-      bottom: node.y + node.height,
-      width: node.width,
-      height: node.height
+      left: m.e,
+      top: m.f,
+      right: m.e + size.width,
+      bottom: m.f + size.height,
+      width: size.width,
+      height: size.height
     };
   }
-
-  const corners = [
-    nodeLocalToWorld(node, 0, 0),
-    nodeLocalToWorld(node, node.width, 0),
-    nodeLocalToWorld(node, node.width, node.height),
-    nodeLocalToWorld(node, 0, node.height)
-  ];
-  let left = Infinity;
-  let top = Infinity;
-  let right = -Infinity;
-  let bottom = -Infinity;
-  for (let i = 0; i < corners.length; i++) {
-    left = Math.min(left, corners[i].x);
-    top = Math.min(top, corners[i].y);
-    right = Math.max(right, corners[i].x);
-    bottom = Math.max(bottom, corners[i].y);
-  }
+  const xs = [m.e, m.a * size.width + m.e, m.c * size.height + m.e, m.a * size.width + m.c * size.height + m.e];
+  const ys = [m.f, m.b * size.width + m.f, m.d * size.height + m.f, m.b * size.width + m.d * size.height + m.f];
+  const left = Math.min(xs[0], xs[1], xs[2], xs[3]);
+  const top = Math.min(ys[0], ys[1], ys[2], ys[3]);
+  const right = Math.max(xs[0], xs[1], xs[2], xs[3]);
+  const bottom = Math.max(ys[0], ys[1], ys[2], ys[3]);
   return { left, top, right, bottom, width: right - left, height: bottom - top };
 }
 
 /**
- * 点是否落在节点 (含旋转) 的矩形框内：把点反向旋转回节点局部坐标后判断
+ * 点是否落在节点 (含自身与祖先旋转) 的矩形框内：把世界点反变换回节点局部坐标后判断
  * 空间索引只按外接矩形粗筛，旋转节点外接矩形的四个空角需要此函数精判
  */
-export function isPointInNode(point: Point, node: RotatableBox): boolean {
-  let x = point.x;
-  let y = point.y;
-  if (node.rotation) {
-    const rad = (-node.rotation * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const cx = node.x + node.width / 2;
-    const cy = node.y + node.height / 2;
-    const dx = point.x - cx;
-    const dy = point.y - cy;
-    x = cx + dx * cos - dy * sin;
-    y = cy + dx * sin + dy * cos;
-  }
-  return x >= node.x && x <= node.x + node.width && y >= node.y && y <= node.y + node.height;
+export function isPointInNode(point: Point, size: { width: number; height: number }, worldMatrix: Matrix2D): boolean {
+  const local = applyMatrix(invertMatrix(worldMatrix), point.x, point.y);
+  return local.x >= 0 && local.x <= size.width && local.y >= 0 && local.y <= size.height;
 }

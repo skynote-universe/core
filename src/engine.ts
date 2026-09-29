@@ -18,7 +18,7 @@ import type { CanvasDocument, CanvasDocumentView, ViewportState } from './types/
 import type { DocumentChangeSet } from './types/change-set';
 import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
-import { computeNodeBounds } from './utils/geometry';
+import { computeNodeWorldBounds, type RectBounds } from './utils/geometry';
 import { computeConnectorRoute } from './routing/connector-route';
 import type { TextMeasurer } from './protocols/text-measurer.protocol';
 import type { CanvasOperationRecord } from './types/operation';
@@ -98,7 +98,7 @@ export class SkyNoteEngine {
     this.spatialIndex.load(
       this.entityStore
         .getAllNodes()
-        .map((runtimeNode) => [runtimeNode.entity.id, computeNodeBounds(runtimeNode.entity)] as const)
+        .map((runtimeNode) => [runtimeNode.entity.id, this.getNodeWorldBounds(runtimeNode.entity.id)!] as const)
     );
     this.updateConnectorRoutes(
       this.entityStore.getAllConnectors().map((runtimeConnector) => runtimeConnector.entity.id)
@@ -164,10 +164,10 @@ export class SkyNoteEngine {
     for (const id of changes.nodes.removed) {
       this.spatialIndex.remove(id);
     }
+    // 按世界几何更新：容器移动时后代没有补丁，但世界包围盒随之改变
     const nodeEntries: SpatialIndexEntry[] = [];
-    for (const id of changes.nodes.geometry) {
-      const runtimeNode = this.entityStore.getNode(id);
-      if (runtimeNode) nodeEntries.push([id, computeNodeBounds(runtimeNode.entity)]);
+    for (const id of changes.nodes.worldGeometry) {
+      nodeEntries.push([id, this.getNodeWorldBounds(id)!]);
     }
     this.spatialIndex.load(nodeEntries);
 
@@ -208,6 +208,15 @@ export class SkyNoteEngine {
   }
 
   /**
+   * 节点在世界坐标系中的轴对齐包围盒 (含自身与祖先旋转)；节点不存在时返回 undefined
+   */
+  getNodeWorldBounds(nodeId: string): RectBounds | undefined {
+    const runtimeNode = this.entityStore.getNode(nodeId);
+    if (!runtimeNode) return undefined;
+    return computeNodeWorldBounds(runtimeNode.entity, this.entityStore.getWorldTransform(nodeId)!);
+  }
+
+  /**
    * 获取连线的当前路由；悬空连线 (两端无法定位) 返回 undefined
    */
   getConnectorRoute(connectorId: string): ComputedRoute | undefined {
@@ -215,7 +224,10 @@ export class SkyNoteEngine {
   }
 
   private updateConnectorRoutes(connectorIds: Iterable<string>): void {
-    const resolveNode = (nodeId: string) => this.entityStore.getNode(nodeId)?.entity;
+    const resolveNode = (nodeId: string) => {
+      const runtimeNode = this.entityStore.getNode(nodeId);
+      return runtimeNode && { node: runtimeNode.entity, worldMatrix: this.entityStore.getWorldTransform(nodeId)! };
+    };
     const entries: SpatialIndexEntry[] = [];
     for (const id of connectorIds) {
       const runtimeConnector = this.entityStore.getConnector(id);

@@ -4,12 +4,21 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { computeNodeBounds, isPointInNode, nodeLocalToWorld } from '../src/utils/geometry';
+import {
+  applyMatrix,
+  computeNodeLocalMatrix,
+  computeNodeWorldBounds,
+  isPointInNode,
+  type RotatableBox
+} from '../src/utils/geometry';
 import { resolveConnectorEndpoint } from '../src/routing/connector-route';
 import { SkyNoteEngine } from '../src/engine';
 import type { NodeEntity } from '../src/types/node';
 
 const box = { x: 100, y: 100, width: 200, height: 100 };
+
+/** 根层级节点的世界矩阵即其局部矩阵 */
+const computeNodeBounds = (node: RotatableBox) => computeNodeWorldBounds(node, computeNodeLocalMatrix(node));
 
 describe('绕中心旋转的几何', () => {
   it('旋转 90° 后外接矩形绕中心 (200, 150) 转置', () => {
@@ -31,9 +40,10 @@ describe('绕中心旋转的几何', () => {
   it('点选精判：外接矩形的空角不算命中，旋转后的框内算命中', () => {
     const rotated = { ...box, rotation: 45 };
     const bounds = computeNodeBounds(rotated);
-    expect(isPointInNode({ x: bounds.left + 2, y: bounds.top + 2 }, rotated)).toBe(false);
-    expect(isPointInNode({ x: 200, y: 150 }, rotated)).toBe(true);
-    expect(isPointInNode(nodeLocalToWorld(rotated, 190, 50), rotated)).toBe(true);
+    const matrix = computeNodeLocalMatrix(rotated);
+    expect(isPointInNode({ x: bounds.left + 2, y: bounds.top + 2 }, rotated, matrix)).toBe(false);
+    expect(isPointInNode({ x: 200, y: 150 }, rotated, matrix)).toBe(true);
+    expect(isPointInNode(applyMatrix(matrix, 190, 50), rotated, matrix)).toBe(true);
   });
 
   it('连线锚点随节点绕中心旋转，中心锚点不受影响', () => {
@@ -48,10 +58,13 @@ describe('绕中心旋转的几何', () => {
       anchors: [{ id: 'right', x: 1, y: 0.5 }]
     } as NodeEntity;
 
-    const right = resolveConnectorEndpoint({ nodeId: 'n', anchorId: 'right' }, node)!;
+    const resolved = { node, worldMatrix: computeNodeLocalMatrix(node) };
+    const right = resolveConnectorEndpoint({ nodeId: 'n', anchorId: 'right' }, resolved)!;
     expect(right.x).toBeCloseTo(200);
     expect(right.y).toBeCloseTo(250);
-    expect(resolveConnectorEndpoint({ nodeId: 'n' }, node)).toEqual({ x: 200, y: 150 });
+    const center = resolveConnectorEndpoint({ nodeId: 'n' }, resolved)!;
+    expect(center.x).toBeCloseTo(200);
+    expect(center.y).toBeCloseTo(150);
   });
 
   it('引擎空间索引使用旋转后的外接矩形，旋转属于几何变更', () => {

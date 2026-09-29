@@ -12,30 +12,37 @@ import type { Point } from '../types/canvas';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity, ConnectorEndpoint } from '../types/connector';
 import type { ComputedRoute } from '../types/runtime';
-import { nodeLocalToWorld } from '../utils/geometry';
+import { applyMatrix, type Matrix2D } from '../utils/geometry';
 import type { ConnectorRouterRegistry } from '../registry/connector-router-registry';
 
+/** 端点绑定的节点及其世界矩阵 (节点坐标相对父容器，ADR-114) */
+export interface ResolvedEndpointNode {
+  readonly node: Readonly<NodeEntity>;
+  readonly worldMatrix: Matrix2D;
+}
+
 /**
- * 求解端点世界坐标：优先自由坐标，其次按 anchorId 求解吸附点 (0~1 视为相对比例，否则为绝对偏移)，兜底节点中心
- * 锚点随节点一起绕中心旋转
+ * 求解端点世界坐标：优先自由坐标 (世界坐标)，其次按 anchorId 求解吸附点 (0~1 视为相对比例，否则为绝对偏移)，
+ * 兜底节点中心；锚点随节点及其祖先一起旋转
  * @returns 端点绑定的节点不存在且无自由坐标 (悬空连线) 时返回 null
  */
 export function resolveConnectorEndpoint(
   endpoint: Readonly<ConnectorEndpoint>,
-  node: Readonly<NodeEntity> | undefined
+  resolved: ResolvedEndpointNode | undefined
 ): Point | null {
   if (endpoint.position) {
     return { x: endpoint.position.x, y: endpoint.position.y };
   }
-  if (!node) return null;
+  if (!resolved) return null;
 
+  const { node, worldMatrix } = resolved;
   const anchor = endpoint.anchorId ? node.anchors?.find((a) => a.id === endpoint.anchorId) : undefined;
   if (anchor) {
     const relX = anchor.x >= 0 && anchor.x <= 1 ? node.width * anchor.x : anchor.x;
     const relY = anchor.y >= 0 && anchor.y <= 1 ? node.height * anchor.y : anchor.y;
-    return nodeLocalToWorld(node, relX, relY);
+    return applyMatrix(worldMatrix, relX, relY);
   }
-  return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+  return applyMatrix(worldMatrix, node.width / 2, node.height / 2);
 }
 
 /**
@@ -44,7 +51,7 @@ export function resolveConnectorEndpoint(
  */
 export function computeConnectorRoute(
   connector: Readonly<ConnectorEntity>,
-  resolveNode: (nodeId: string) => Readonly<NodeEntity> | undefined,
+  resolveNode: (nodeId: string) => ResolvedEndpointNode | undefined,
   routers: ConnectorRouterRegistry
 ): ComputedRoute | null {
   const start = resolveConnectorEndpoint(

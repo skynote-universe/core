@@ -77,4 +77,57 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     // 实测约 8ms；撤销压缩或空间索引若退化为平方级，此处会达到数百毫秒
     expect(median).toBeLessThan(40);
   });
+
+  it('拖动含 2000 个子节点的容器 (ADR-114：只改容器自身)', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    const patches: CanvasPatch[] = [
+      {
+        op: 'set',
+        path: ['content', 'nodes', 'frame'],
+        value: {
+          id: 'frame',
+          type: 'node',
+          nodeType: 'rect',
+          x: 0,
+          y: 0,
+          width: 3000,
+          height: 3000,
+          rotation: 0,
+          zIndex: 'a0',
+          locked: false
+        }
+      }
+    ];
+    for (let i = 0; i < 2000; i++) {
+      const node: NodeEntity = {
+        id: `c${i}`,
+        type: 'node',
+        nodeType: 'rect',
+        x: (i % 50) * 60,
+        y: Math.floor(i / 50) * 60,
+        width: 40,
+        height: 40,
+        rotation: 0,
+        zIndex: 'a0',
+        locked: false,
+        parentId: 'frame'
+      };
+      patches.push({ op: 'set', path: ['content', 'nodes', node.id], value: node });
+    }
+    store.commit({ patches, undoable: false });
+
+    const frames: number[] = [];
+    let patchCount = 0;
+    for (let f = 0; f < 60; f++) {
+      const start = performance.now();
+      patchCount = store.moveNodes(['frame'], { x: 1, y: 1 }, { groupId: 'frame-drag' })!.patches.length;
+      frames.push(performance.now() - start);
+    }
+    const median = [...frames].sort((a, b) => a - b)[30];
+    console.info(`[bench] 拖动含 2000 子节点的容器: 中位 ${median.toFixed(1)}ms / 帧，每帧 ${patchCount} 条补丁`);
+    // 事务、撤销与协同只有容器自身 2 条补丁；开销集中在后代世界包围盒与空间索引的更新
+    expect(patchCount).toBe(2);
+    expect(median).toBeLessThan(40);
+  });
 });

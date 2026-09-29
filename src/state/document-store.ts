@@ -5,7 +5,7 @@
  * 设计考量 (Why):
  * 1. 深度只读投影 (CanvasDocumentView)：对外暴露的文档对象强锁 readonly，防止外部直接属性赋值绕过事务机制。
  * 2. 状态与事务闭环：内聚集成 EntityStore 与 OperationCoordinator，当补丁应用时自动完成双版本号更新与实体索引刷新。
- * 3. 极速响应：提供便捷的高频操作辅助函数 (addNode, moveNode, updateNode)，自动封装规范补丁并走事务提交。
+ * 3. 极速响应：提供便捷的高频语义操作 (addNode、updateNode、moveNodes、reparentNodes、removeNodes 等)，自动封装规范补丁并走事务提交。
  *    视口与选区属于本地会话状态，由 SessionStore 管理，不在此处。
  * 4. 增量变更集：每次提交把补丁路径按实体语义归类为 DocumentChangeSet 一并广播，下游全部增量消费。
  */
@@ -22,13 +22,15 @@ import { normalizePatchPath } from '../operation/patch-path';
 import { clonePlainData } from '../utils/clone';
 import { findInlineMediaUrl, findInlineMediaInPatches, findParentCycle, findInvalidZIndex } from './commit-guards';
 import {
+  compareHierarchicalNodes,
   computeLayerOrder,
   deriveLayerOrderPatches,
   renumberLayerOrder,
   sortSiblingsByLayer,
   type LayerMove
 } from '../layout/layer-order';
-import { generateKeyBetween, type FractionalIndex } from '../utils/fractional-index';
+import { generateKeyBetween, generateNKeysBetween, type FractionalIndex } from '../utils/fractional-index';
+import { applyMatrixToVector, decomposeNodeMatrix, invertMatrix, multiplyMatrix } from '../utils/geometry';
 
 /** 创建纯净空文档初始数据 */
 export function createEmptyCanvasDocument(id = 'doc_root', name = '未命名画布'): CanvasDocument {
@@ -239,8 +241,8 @@ export class DocumentStore {
   }
 
   /**
-   * 过滤出「祖先不在集合中」的节点：容器的移动与删除已连带处理后代，
-   * 否则同时选中容器与其子节点时，子节点会被重复移动 (连带一次 + 自身一次)
+   * 过滤出「祖先不在集合中」的节点：后代坐标相对容器，随容器一起移动、改挂或删除；
+   * 否则同时选中容器与其子节点时，子节点会被重复移动 (随容器一次 + 自身一次)
    */
   private collectTopmost(nodeIds: Iterable<string>): string[] {
     const { nodes } = this.document.content;
@@ -293,8 +295,8 @@ export class DocumentStore {
   }
 
   /**
-   * 移动节点 (支持多选)：坐标均为世界坐标，容器移动时在同一事务内连带平移全部后代，每个节点只移动一次
-   * 高频拖拽通过 groupId 折叠为一步撤销
+   * 移动节点 (支持多选)：delta 为世界坐标位移，只改最顶层选中节点，后代坐标相对容器，不产生补丁 (ADR-114)
+   * 父容器旋转时把世界位移换算为父容器局部位移；高频拖拽通过 groupId 折叠为一步撤销
    */
   moveNodes(
     nodeIds: Iterable<string>,
@@ -303,18 +305,17 @@ export class DocumentStore {
   ): CanvasOperationRecord | null {
     if (!delta.x && !delta.y) return null;
     const { nodes } = this.document.content;
-    const moved = new Set<string>();
-    for (const id of this.collectTopmost(nodeIds)) {
-      moved.add(id);
-      for (const descendantId of this.entityStore.collectDescendantIds(id)) moved.add(descendantId);
-    }
-    if (moved.size === 0) return null;
-
     const patches: CanvasPatch[] = [];
-    for (const id of moved) {
-      if (delta.x) patches.push({ op: 'set', path: ['content', 'nodes', id, 'x'], value: nodes[id].x + delta.x });
-      if (delta.y) patches.push({ op: 'set', path: ['content', 'nodes', id, 'y'], value: nodes[id].y + delta.y });
+    for (const id of this.collectTopmost(nodeIds)) {
+      const node = nodes[id];
+      const parentMatrix = node.parentId === undefined ? undefined : this.entityStore.getWorldTransform(node.parentId);
+      const local = parentMatrix
+        ? applyMatrixToVector(invertMatrix(parentMatrix), delta.x ?? 0, delta.y ?? 0)
+        : { x: delta.x ?? 0, y: delta.y ?? 0 };
+      if (local.x) patches.push({ op: 'set', path: ['content', 'nodes', id, 'x'], value: node.x + local.x });
+      if (local.y) patches.push({ op: 'set', path: ['content', 'nodes', id, 'y'], value: node.y + local.y });
     }
+    if (patches.length === 0) return null;
 
     return this.commit({
       label: options?.label ?? '移动节点',
@@ -325,15 +326,70 @@ export class DocumentStore {
   }
 
   /**
+   * 改挂容器 (支持多选，parentId 为 undefined 时移出到根层级)：保持节点在世界中的位置与朝向不变，
+   * 换算为新容器的局部坐标，并按原有层叠顺序依次放到新容器最上层；会成环的改挂由提交守卫整体拒绝
+   */
+  reparentNodes(
+    nodeIds: Iterable<string>,
+    parentId: string | undefined,
+    options?: { undoable?: boolean; groupId?: string; label?: string }
+  ): CanvasOperationRecord | null {
+    const { nodes } = this.document.content;
+    if (parentId !== undefined && !Object.hasOwn(nodes, parentId)) return null;
+    const getNode = (id: string): Readonly<NodeEntity> | undefined =>
+      Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+    const chainCache = new Map<string, Readonly<NodeEntity>[]>();
+    const targets = this.collectTopmost(nodeIds)
+      .filter((id) => nodes[id].parentId !== parentId)
+      .map((id) => nodes[id])
+      .sort((a, b) => compareHierarchicalNodes(a, b, getNode, chainCache));
+    if (targets.length === 0) return null;
+
+    const parentMatrix = parentId === undefined ? undefined : this.entityStore.getWorldTransform(parentId);
+    const toParentLocal = parentMatrix ? invertMatrix(parentMatrix) : undefined;
+    const keys = generateNKeysBetween(this.findTopZIndex(parentId), null, targets.length);
+    const patches: CanvasPatch[] = [];
+    for (let i = 0; i < targets.length; i++) {
+      const node = targets[i];
+      const world = this.entityStore.getWorldTransform(node.id)!;
+      const pose = decomposeNodeMatrix(
+        toParentLocal ? multiplyMatrix(toParentLocal, world) : world,
+        node.width,
+        node.height
+      );
+      const base = ['content', 'nodes', node.id];
+      patches.push(
+        parentId === undefined
+          ? { op: 'unset', path: [...base, 'parentId'] }
+          : { op: 'set', path: [...base, 'parentId'], value: parentId },
+        { op: 'set', path: [...base, 'x'], value: pose.x },
+        { op: 'set', path: [...base, 'y'], value: pose.y },
+        { op: 'set', path: [...base, 'rotation'], value: pose.rotation },
+        { op: 'set', path: [...base, 'zIndex'], value: keys[i] }
+      );
+    }
+    return this.commit({
+      label: options?.label ?? '移入容器',
+      undoable: options?.undoable ?? true,
+      groupId: options?.groupId,
+      patches
+    });
+  }
+
+  /**
    * 生成指定容器 (undefined 为根层级) 中位于最上层的新层级索引，用于新建节点
    */
   createTopZIndex(parentId?: string): FractionalIndex {
+    return generateKeyBetween(this.findTopZIndex(parentId), null);
+  }
+
+  private findTopZIndex(parentId: string | undefined): FractionalIndex | null {
     let top: FractionalIndex | null = null;
     for (const id of this.entityStore.getChildIds(parentId)) {
       const key = this.document.content.nodes[id].zIndex;
       if (top === null || key > top) top = key;
     }
-    return generateKeyBetween(top, null);
+    return top;
   }
 
   /**
@@ -580,8 +636,21 @@ export class DocumentStore {
       connectorChanges.data.add(id);
     }
 
-    // 节点移动或删除时，依附连线的路由随之失效
-    for (const affected of [nodeChanges.geometry, nodeChanges.removed]) {
+    // 世界几何失效：自身几何变化、改挂容器的节点连同全部后代；被删除容器遗留的子节点回落到根层级，同样失效
+    const worldGeometry = new Set<string>();
+    const invalidateSubtree = (id: string): void => {
+      if (worldGeometry.has(id) || !store.hasNode(id)) return;
+      worldGeometry.add(id);
+      for (const descendantId of store.collectDescendantIds(id)) worldGeometry.add(descendantId);
+    };
+    for (const id of nodeChanges.geometry) invalidateSubtree(id);
+    for (const id of reparentedNodeIds) invalidateSubtree(id);
+    for (const id of nodeChanges.removed) {
+      for (const childId of store.getChildIds(id)) invalidateSubtree(childId);
+    }
+
+    // 节点世界几何变化或删除时，依附连线的路由随之失效
+    for (const affected of [worldGeometry, nodeChanges.removed]) {
       for (const nodeId of affected) {
         for (const connectorId of store.getConnectorIdsOfNode(nodeId)) {
           if (connectorChanges.geometry.has(connectorId) || !store.hasConnector(connectorId)) continue;
@@ -592,7 +661,7 @@ export class DocumentStore {
     }
 
     const changes: DocumentChangeSet = {
-      nodes: nodeChanges,
+      nodes: { ...nodeChanges, worldGeometry },
       connectors: connectorChanges,
       orderChanged
     };

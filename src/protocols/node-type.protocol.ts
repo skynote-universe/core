@@ -78,6 +78,12 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
   readonly sizingPolicy?: NodeSizingPolicy;
 
   /**
+   * 是否裁剪子节点 (画框类容器，默认 false)：子节点超出本节点外框的部分不绘制也不可拾取。
+   * 两端都在本容器内的连线随之裁剪；跨容器连线挂在公共祖先容器中，不受裁剪 (ADR-114)。
+   */
+  readonly clipChildren?: boolean;
+
+  /**
    * 静态文本插槽规则集合 (Blueprint)
    * 声明节点拥有哪些语义文本槽位及其是否撑开容器，纯静态配置，不入持久化文档。
    * 排版时插槽的 sizing 与 defaultStyle 作为该插槽文本块的默认值。

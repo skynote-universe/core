@@ -20,7 +20,15 @@ import { EntityStore } from "./entity-store";
 import { OperationCoordinator } from "../operation/coordinator";
 import { normalizePatchPath } from "../operation/patch-path";
 import { clonePlainData } from "../utils/clone";
-import { findInlineMediaUrl, findParentCycle } from "./commit-guards";
+import { findInlineMediaUrl, findParentCycle, findInvalidZIndex } from "./commit-guards";
+import {
+    computeLayerOrder,
+    deriveLayerOrderPatches,
+    renumberLayerOrder,
+    sortSiblingsByLayer,
+    type LayerMove,
+} from "../layout/layer-order";
+import { generateKeyBetween, type FractionalIndex } from "../utils/fractional-index";
 
 /** 创建纯净空文档初始数据 */
 export function createEmptyCanvasDocument(id = "doc_root", name = "未命名画布"): CanvasDocument {
@@ -106,6 +114,12 @@ export class DocumentStore {
         if (cycle) {
             throw new Error(`[DocumentStore] 文档容器层级非法：${cycle}`);
         }
+        const invalidZIndex = findInvalidZIndex([
+            { op: "set", path: ["content"], value: this.document.content },
+        ]);
+        if (invalidZIndex) {
+            throw new Error(`[DocumentStore] 文档层级索引非法：${invalidZIndex}`);
+        }
         this.entityIndex = new EntityStore();
         this.entityStore = this.entityIndex;
         this.coordinator = new OperationCoordinator<CanvasDocument>(this.document);
@@ -152,6 +166,11 @@ export class DocumentStore {
         const cycle = findParentCycle(this.document, options.patches);
         if (cycle) {
             console.error(`[DocumentStore] 事务被拒绝：${cycle}`);
+            return null;
+        }
+        const invalidZIndex = findInvalidZIndex(options.patches);
+        if (invalidZIndex) {
+            console.error(`[DocumentStore] 事务被拒绝：${invalidZIndex}`);
             return null;
         }
         return this.coordinator.commitOperation(options);
@@ -258,6 +277,61 @@ export class DocumentStore {
             groupId: options?.groupId,
             patches,
         });
+    }
+
+    /**
+     * 生成指定容器 (undefined 为根层级) 中位于最上层的新层级索引，用于新建节点
+     */
+    createTopZIndex(parentId?: string): FractionalIndex {
+        let top: FractionalIndex | null = null;
+        for (const id of this.entityStore.getChildIds(parentId)) {
+            const key = this.document.content.nodes[id].zIndex;
+            if (top === null || key > top) top = key;
+        }
+        return generateKeyBetween(top, null);
+    }
+
+    /**
+     * 调整层级 (上移一层 / 下移一层 / 置顶 / 置底)，按列表顺序在各自容器的兄弟之间移动
+     * 只为被移动的节点生成新索引，多选时保持相对顺序；顺序无变化时返回 null
+     */
+    moveLayers(nodeIds: Iterable<string>, move: LayerMove, options?: { undoable?: boolean; label?: string }): CanvasOperationRecord | null {
+        const { nodes } = this.document.content;
+        const groups = new Map<string | undefined, Set<string>>();
+        for (const id of nodeIds) {
+            if (!Object.hasOwn(nodes, id)) continue;
+            const parentId = nodes[id].parentId;
+            let group = groups.get(parentId);
+            if (!group) {
+                group = new Set();
+                groups.set(parentId, group);
+            }
+            group.add(id);
+        }
+
+        const patches: CanvasPatch[] = [];
+        for (const [parentId, selected] of groups) {
+            const siblings = sortSiblingsByLayer([...this.entityStore.getChildIds(parentId)].map((id) => nodes[id]));
+            const order = siblings.map((node) => node.id);
+            const newOrder = computeLayerOrder(order, selected, move);
+            if (newOrder.every((id, i) => id === order[i])) continue;
+            patches.push(...deriveLayerOrderPatches(siblings, newOrder, selected));
+        }
+        if (patches.length === 0) return null;
+
+        const labels: Record<LayerMove, string> = { forward: "上移一层", backward: "下移一层", front: "置顶", back: "置底" };
+        return this.commit({ label: options?.label ?? labels[move], undoable: options?.undoable ?? true, patches });
+    }
+
+    /**
+     * 按当前层叠顺序为容器内的兄弟重新编号为最短的均匀索引 (画面顺序不变)
+     * 用于同一位置反复插入导致索引过长时整理，以非撤销的系统事务提交
+     */
+    renumberLayers(parentId?: string): CanvasOperationRecord | null {
+        const { nodes } = this.document.content;
+        const siblings = sortSiblingsByLayer([...this.entityStore.getChildIds(parentId)].map((id) => nodes[id]));
+        const patches = renumberLayerOrder(siblings, siblings.map((node) => node.id));
+        return this.commit({ label: "整理层级索引", source: "system", undoable: false, patches });
     }
 
     /**

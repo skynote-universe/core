@@ -20,7 +20,7 @@ function makeNode(id: string, x = 0, extra?: Partial<NodeEntity>): NodeEntity {
     width: 10,
     height: 10,
     rotation: 0,
-    zIndex: 0,
+    zIndex: 'a0',
     locked: false,
     style: {},
     ...extra
@@ -34,7 +34,7 @@ function makeConnector(id: string, fromNodeId: string, toNodeId: string): Connec
     connectorType: 'straight',
     from: { nodeId: fromNodeId },
     to: { nodeId: toNodeId },
-    zIndex: 0,
+    zIndex: 'a0',
     locked: false
   };
 }
@@ -112,7 +112,7 @@ describe('数据一致性底线', () => {
       '{"id":"d","name":"n","meta":{"version":1,"createdAt":0,"updatedAt":0},' +
         '"viewport":{"x":0,"y":0,"zoom":1},"selection":{"nodeIds":[],"connectorIds":[]},' +
         '"content":{"nodes":{"a":{"id":"a","type":"node","nodeType":"rect","x":0,"y":0,"width":1,"height":1,' +
-        '"rotation":0,"zIndex":0,"locked":false,"data":{"__proto__":{"polluted":1}}}},"connectors":{}}}'
+        '"rotation":0,"zIndex":"a0","locked":false,"data":{"__proto__":{"polluted":1}}}},"connectors":{}}}'
     );
     const store = new DocumentStore(initialDoc);
     initialDoc.content.nodes.a.x = 42;
@@ -190,7 +190,7 @@ describe('DocumentChangeSet 归类', () => {
 
     store.moveNode('a', { x: 5 });
     store.updateNode('a', { style: { fill: 'red' } });
-    store.updateNode('a', { zIndex: 3 });
+    store.updateNode('a', { zIndex: 'a3' });
 
     const [move, style, z] = changes;
     expect([...move.nodes.geometry]).toEqual(['a']);

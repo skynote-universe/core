@@ -28,7 +28,7 @@ function createLargeEngine(): SkyNoteEngine {
       width: 20,
       height: 20,
       rotation: 0,
-      zIndex: 0,
+      zIndex: 'a0',
       locked: false,
       style: {}
     };

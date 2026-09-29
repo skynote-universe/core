@@ -9,7 +9,7 @@ import { DocumentStore, createEmptyCanvasDocument } from '../src/state/document-
 import type { NodeEntity } from '../src/types/node';
 
 function makeNode(id: string, x: number, parentId?: string): NodeEntity {
-  return { id, type: 'node', nodeType: 'rect', x, y: 0, width: 10, height: 10, rotation: 0, zIndex: 0, locked: false, parentId };
+  return { id, type: 'node', nodeType: 'rect', x, y: 0, width: 10, height: 10, rotation: 0, zIndex: 'a0', locked: false, parentId };
 }
 
 beforeEach(() => {
@@ -105,7 +105,7 @@ describe('容器语义', () => {
         {
           op: 'set',
           path: ['content', 'connectors', 'c1'],
-          value: { id: 'c1', type: 'connector', connectorType: 'straight', from: { nodeId: 'badge' }, to: { nodeId: 'outside' }, zIndex: 0, locked: false }
+          value: { id: 'c1', type: 'connector', connectorType: 'straight', from: { nodeId: 'badge' }, to: { nodeId: 'outside' }, zIndex: 'a0', locked: false }
         }
       ]
     });

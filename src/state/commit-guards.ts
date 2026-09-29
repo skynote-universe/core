@@ -7,11 +7,13 @@
  *    blob: 地址只在当前页面会话有效，持久化后必然失效。两者在提交入口一律拒绝，本地、插件与远端补丁同等对待。
  * 2. 容器无环：parentId 形成环会让层级排序、级联移动与级联删除全部失控，必须在写入前拦截，
  *    且要把同一事务内的多处 parentId 变更合并考虑 (如先后交换两个节点的父子关系)。
+ * 3. 层级索引合法：zIndex 必须是合法的分数索引，否则后续生成相邻键时会抛错、排序也失去意义。
  */
 
 import type { CanvasDocument } from '../types/canvas';
 import type { CanvasPatch } from '../types/operation';
 import { normalizePatchPath } from '../operation/patch-path';
+import { isValidFractionalIndex } from '../utils/fractional-index';
 
 const INLINE_MEDIA_URL = /^(?:data|blob):/i;
 
@@ -92,6 +94,54 @@ export function findParentCycle(doc: CanvasDocument, patches: readonly CanvasPat
       visited.add(current);
       current = parentOf(current);
     }
+  }
+  return null;
+}
+
+/**
+ * 检查补丁写入的节点/连线 zIndex 是否均为合法分数索引，返回首个非法值的描述；全部合法返回 null
+ */
+export function findInvalidZIndex(patches: readonly CanvasPatch[]): string | null {
+  const checkEntity = (kind: string, id: string, entity: unknown, requirePresent: boolean): string | null => {
+    if (entity === null || typeof entity !== 'object') return null;
+    const record = entity as { zIndex?: unknown };
+    if (!requirePresent && !('zIndex' in record)) return null;
+    return isValidFractionalIndex(record.zIndex) ? null : `${kind} ${id} 的 zIndex ${JSON.stringify(record.zIndex)} 不是合法的分数索引`;
+  };
+  const checkCollection = (kind: string, collection: unknown): string | null => {
+    if (collection === null || typeof collection !== 'object') return null;
+    for (const [id, entity] of Object.entries(collection as Record<string, unknown>)) {
+      const found = checkEntity(kind, id, entity, true);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  for (let i = 0; i < patches.length; i++) {
+    const patch = patches[i];
+    if (patch.op !== 'set') continue;
+    const segments = normalizePatchPath(patch.path);
+    if (segments[0] !== 'content') continue;
+
+    let found: string | null = null;
+    if (segments.length === 1) {
+      const content = patch.value as { nodes?: unknown; connectors?: unknown } | undefined;
+      found = checkCollection('节点', content?.nodes) ?? checkCollection('连线', content?.connectors);
+    } else if (segments[1] !== 'nodes' && segments[1] !== 'connectors') {
+      continue;
+    } else {
+      const kind = segments[1] === 'nodes' ? '节点' : '连线';
+      if (segments.length === 2) {
+        found = checkCollection(kind, patch.value);
+      } else if (segments.length === 3) {
+        found = checkEntity(kind, String(segments[2]), patch.value, !patch.merge);
+      } else if (segments.length === 4 && segments[3] === 'zIndex') {
+        found = isValidFractionalIndex(patch.value)
+          ? null
+          : `${kind} ${String(segments[2])} 的 zIndex ${JSON.stringify(patch.value)} 不是合法的分数索引`;
+      }
+    }
+    if (found) return found;
   }
   return null;
 }

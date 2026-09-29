@@ -19,6 +19,7 @@ export * from './input';
 export * from './plugin';
 export * from './routing/connector-route';
 export * from './layout/text-layout';
+export * from './layout/layer-order';
 export * from './engine';
 
 

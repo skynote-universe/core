@@ -57,7 +57,7 @@ function makeNode(id: string, nodeType: string, text: string, width = 100): Node
     width,
     height: 10,
     rotation: 0,
-    zIndex: 0,
+    zIndex: 'a0',
     locked: false,
     textBlocks: [createSimpleTextBlock(`${id}_t`, text, { slot: 'body' })]
   };

@@ -10,6 +10,7 @@
 import type { Point } from "./canvas";
 import type { TextBlock } from "./text";
 import type { StrokeCap, StrokeJoin } from "./style";
+import type { FractionalIndex } from "../utils/fractional-index";
 
 /** 连线端点绑定位置描述 */
 export interface ConnectorEndpoint {
@@ -60,7 +61,8 @@ export interface ConnectorEntity<TData = Record<string, unknown>, TStyle extends
     connectorType: string;
     from: ConnectorEndpoint;
     to: ConnectorEndpoint;
-    zIndex: number;
+    /** 伴生锚定到同一节点的连线之间的层叠顺序 (分数索引) */
+    zIndex: FractionalIndex;
     locked: boolean;
     style?: TStyle;
     textBlocks?: ConnectorTextBlock[];

@@ -43,7 +43,7 @@ describe('绕中心旋转的几何', () => {
       nodeType: 'rect',
       ...box,
       rotation: 90,
-      zIndex: 0,
+      zIndex: 'a0',
       locked: false,
       anchors: [{ id: 'right', x: 1, y: 0.5 }]
     } as NodeEntity;
@@ -56,7 +56,7 @@ describe('绕中心旋转的几何', () => {
 
   it('引擎空间索引使用旋转后的外接矩形，旋转属于几何变更', () => {
     const engine = new SkyNoteEngine();
-    engine.documentStore.addNode({ id: 'n', type: 'node', nodeType: 'rect', ...box, rotation: 0, zIndex: 0, locked: false });
+    engine.documentStore.addNode({ id: 'n', type: 'node', nodeType: 'rect', ...box, rotation: 0, zIndex: 'a0', locked: false });
     engine.documentStore.updateNode('n', { rotation: 90 });
     const bounds = engine.spatialIndex.getBounds('n')!;
     expect(bounds.top).toBeCloseTo(50);

@@ -10,6 +10,7 @@
 import type { Point } from "./canvas";
 import type { TextBlock, NodeTextStyle } from "./text";
 import type { CornerRadius, StrokeCap, StrokeJoin, StrokeAlign } from "./style";
+import type { FractionalIndex } from "../utils/fractional-index";
 
 /** 渐变停靠点 */
 export interface NodeGradientStop {
@@ -74,7 +75,11 @@ export interface NodeEntity<TData = Record<string, unknown>, TStyle extends Node
     width: number;
     height: number;
     rotation: number;
-    zIndex: number;
+    /**
+     * 同一容器 (相同 parentId) 兄弟之间的层叠顺序：分数索引字符串，越大越靠上
+     * 调整层级只改被移动节点自身；键相同时按 id 决出先后，保证各客户端一致
+     */
+    zIndex: FractionalIndex;
     locked: boolean;
 
     /** 绑定的统一文本块列表 (单一事实源) */

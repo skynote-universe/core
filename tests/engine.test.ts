@@ -186,7 +186,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
           width: 120,
           height: 80,
           rotation: 0,
-          zIndex: 1,
+          zIndex: 'a1',
           locked: false
         };
         ctx.commitOperation({
@@ -485,7 +485,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       width: 100,
       height: 80,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     });
 

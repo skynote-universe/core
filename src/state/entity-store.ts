@@ -37,8 +37,8 @@ export interface EntityReader {
   hasConnector(id: string): boolean;
   /** 端点绑定在指定节点上的全部连线 id */
   getConnectorIdsOfNode(nodeId: string): ReadonlySet<string>;
-  /** 直接子节点 id */
-  getChildIds(parentId: string): ReadonlySet<string>;
+  /** 直接子节点 id；parentId 为 undefined 时返回根层级 (不在任何容器内) 的节点 */
+  getChildIds(parentId: string | undefined): ReadonlySet<string>;
   /** 全部后代节点 id (广度优先，自带防环) */
   collectDescendantIds(nodeId: string): string[];
 }
@@ -55,8 +55,10 @@ export class EntityStore implements EntityReader {
   private readonly nodeConnectors = new Map<string, Set<string>>();
   /** parentId -> 直接子节点 id 集合 */
   private readonly nodeChildren = new Map<string, Set<string>>();
-  /** nodeId -> 已登记进父子索引的 parentId (就地修改 parentId 后据此解除旧关联) */
-  private readonly nodeParents = new Map<string, string>();
+  /** 根层级节点 (层级操作按「同一容器的兄弟」分组，根层级同样是一组兄弟) */
+  private readonly rootNodeIds = new Set<string>();
+  /** nodeId -> 已登记进父子索引的 parentId (undefined 表示根层级；就地修改 parentId 后据此解除旧关联) */
+  private readonly nodeParents = new Map<string, string | undefined>();
   /** connectorId -> 已登记进邻接索引的两端节点 id (就地修改端点后据此解除旧关联) */
   private readonly connectorEndpoints = new Map<string, readonly (string | undefined)[]>();
   /**
@@ -108,7 +110,8 @@ export class EntityStore implements EntityReader {
     return this.nodeConnectors.get(nodeId) ?? EMPTY_ID_SET;
   }
 
-  getChildIds(parentId: string): ReadonlySet<string> {
+  getChildIds(parentId: string | undefined): ReadonlySet<string> {
+    if (parentId === undefined) return this.rootNodeIds;
     return this.nodeChildren.get(parentId) ?? EMPTY_ID_SET;
   }
 
@@ -246,29 +249,39 @@ export class EntityStore implements EntityReader {
     this.nodeConnectors.clear();
     this.connectorEndpoints.clear();
     this.nodeChildren.clear();
+    this.rootNodeIds.clear();
     this.nodeParents.clear();
   }
 
   private indexNodeParent(id: string, entity: NodeEntity | undefined): void {
+    const registered = this.nodeParents.has(id);
     const previous = this.nodeParents.get(id);
     const next = entity?.parentId;
-    if (previous === next) return;
+    if (entity && registered && previous === next) return;
 
-    if (previous !== undefined) {
-      const siblings = this.nodeChildren.get(previous);
-      siblings?.delete(id);
-      if (siblings?.size === 0) this.nodeChildren.delete(previous);
+    if (registered) {
+      if (previous === undefined) {
+        this.rootNodeIds.delete(id);
+      } else {
+        const siblings = this.nodeChildren.get(previous);
+        siblings?.delete(id);
+        if (siblings?.size === 0) this.nodeChildren.delete(previous);
+      }
       this.nodeParents.delete(id);
     }
-    if (next !== undefined) {
-      this.nodeParents.set(id, next);
-      let children = this.nodeChildren.get(next);
-      if (!children) {
-        children = new Set();
-        this.nodeChildren.set(next, children);
-      }
-      children.add(id);
+    if (!entity) return;
+
+    this.nodeParents.set(id, next);
+    if (next === undefined) {
+      this.rootNodeIds.add(id);
+      return;
     }
+    let children = this.nodeChildren.get(next);
+    if (!children) {
+      children = new Set();
+      this.nodeChildren.set(next, children);
+    }
+    children.add(id);
   }
 
   private indexConnectorEndpoints(connectorId: string, entity: ConnectorEntity | undefined): void {

@@ -32,7 +32,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 150,
       height: 80,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false,
       style: { fill: '#ffffff' }
     };
@@ -60,7 +60,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 150,
       height: 80,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     };
 
@@ -89,7 +89,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 150,
       height: 80,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false,
       style: { fill: '#ffffff' }
     };
@@ -127,7 +127,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 100,
       height: 100,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     };
 
@@ -154,7 +154,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 100,
       height: 100,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false,
       style: { fill: '#111111', stroke: '#222222', strokeWidth: 1 }
     };
@@ -189,7 +189,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 50,
       height: 50,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     };
 
@@ -226,7 +226,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 10,
       height: 10,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     });
 
@@ -257,7 +257,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 10,
       height: 10,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false,
       style: {}
     });
@@ -278,7 +278,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 10,
       height: 10,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     });
     const before = store.entityStore.getNode('node_1')!.runtime.geomVersion;
@@ -305,7 +305,7 @@ describe('DocumentStore & EntityStore', () => {
       width: 10,
       height: 10,
       rotation: 0,
-      zIndex: 1,
+      zIndex: 'a1',
       locked: false
     });
     expect(store.getView().meta.updatedAt).toBe(initialUpdatedAt);

@@ -1,223 +1,79 @@
 /**
  * @file geometry.ts
- * @description 纯函数 2D 几何计算、包围盒求解与视口自适应算法
+ * @description 2D 几何纯函数：包围盒、仿射矩阵、视口换算与距离
  *
- * 设计考量 (Why):
- * 1. 纯函数铁律：所有几何函数严禁就地修改入参对象，必须计算并返回全新对象，确保撤销重做与并发计算无副作用。
- * 2. 跨平台纯数学：仅依赖基础数学运算符，零 DOM/Canvas 依赖，支持在 Node.js 和 Web Worker 中独立并行运行。
+ * 所有函数不修改入参、返回新对象；类型定义见 types/geometry。
  */
 
-import type { Point, ViewportState } from '../types';
+import type { Matrix2D, Point, RectBounds, RotatableBox } from '../types/geometry';
+import type { ViewportState } from '../types/canvas';
 
-/** 基础轴对齐包围盒 (AABB) */
-export interface RectBounds {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-  width: number;
-  height: number;
+// ================= 数值与包围盒 =================
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
-export interface FitViewportOptions {
-  viewportWidth: number;
-  viewportHeight: number;
-  padding?: number;
-  minZoom?: number;
-  maxZoom?: number;
-}
-
-/** 数值区间钳位纯函数 */
-export function clamp(val: number, min: number, max: number): number {
-  return Math.min(Math.max(val, min), max);
-}
-
-/** 点是否在矩形包围盒内 */
 export function isPointInBounds(point: Point, bounds: RectBounds): boolean {
   return point.x >= bounds.left && point.x <= bounds.right && point.y >= bounds.top && point.y <= bounds.bottom;
 }
 
-/** 两个矩形包围盒是否相交 (用于框选相交判定) */
 export function doBoundsIntersect(a: RectBounds, b: RectBounds): boolean {
   return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
 }
 
-/**
- * 求解多个节点的联合最小外包围盒 (AABB)
- * @param nodes 节点坐标与尺寸集合
- */
-export function computeBoundingBox(
-  nodes: Iterable<{ x: number; y: number; width: number; height: number }>
-): RectBounds | null {
-  let left = Infinity;
-  let top = Infinity;
-  let right = -Infinity;
-  let bottom = -Infinity;
-  let hasItems = false;
-
-  for (const node of nodes) {
-    hasItems = true;
-    left = Math.min(left, node.x);
-    top = Math.min(top, node.y);
-    right = Math.max(right, node.x + node.width);
-    bottom = Math.max(bottom, node.y + node.height);
-  }
-
-  if (!hasItems) {
-    return null;
-  }
-
+/** 两点张成的包围盒 (框选区域) */
+export function boundsFromPoints(a: Point, b: Point): RectBounds {
   return {
-    left,
-    top,
-    right,
-    bottom,
-    width: Math.max(0, right - left),
-    height: Math.max(0, bottom - top)
+    left: Math.min(a.x, b.x),
+    top: Math.min(a.y, b.y),
+    right: Math.max(a.x, b.x),
+    bottom: Math.max(a.y, b.y)
   };
 }
 
-/**
- * 适配视口 (缩放按钮、快捷键共用)：容纳全部内容并居中；空画布 (bounds 为 null) 回到原点；
- * 内容退化为一条线或一个点时无法按面积适配，保持当前缩放 (不超过 maxZoom) 并把内容中心移到视口中心
- */
-export function computeFitViewport(
-  bounds: RectBounds | null,
-  viewportSize: { width: number; height: number },
-  current: ViewportState,
-  options: { padding: number; minZoom: number; maxZoom: number }
-): ViewportState {
-  if (!bounds) return { x: 0, y: 0, zoom: 1 };
-  const fitted = computeViewportToFitBounds(bounds, {
-    viewportWidth: viewportSize.width,
-    viewportHeight: viewportSize.height,
-    padding: options.padding,
-    minZoom: options.minZoom,
-    maxZoom: options.maxZoom
-  });
-  if (fitted) return fitted;
-  const zoom = Math.min(current.zoom, options.maxZoom);
+/** 四周外扩 margin (视锥缓冲、拾取容差) */
+export function expandBounds(bounds: RectBounds, margin: number): RectBounds {
   return {
-    x: viewportSize.width / 2 - (bounds.left + bounds.width / 2) * zoom,
-    y: viewportSize.height / 2 - (bounds.top + bounds.height / 2) * zoom,
-    zoom
+    left: bounds.left - margin,
+    top: bounds.top - margin,
+    right: bounds.right + margin,
+    bottom: bounds.bottom + margin
   };
 }
 
-/**
- * 计算将指定包围盒完全容纳在当前视口中央的 ViewportState (缩放与平移)
- */
-export function computeViewportToFitBounds(bounds: RectBounds, options: FitViewportOptions): ViewportState | null {
-  const { viewportWidth, viewportHeight, padding = 120, minZoom = 0.1, maxZoom = 2.0 } = options;
-
-  if (viewportWidth <= 0 || viewportHeight <= 0 || bounds.width <= 0 || bounds.height <= 0) {
-    return null;
-  }
-
-  const availableWidth = Math.max(1, viewportWidth - padding * 2);
-  const availableHeight = Math.max(1, viewportHeight - padding * 2);
-
-  const zoom = clamp(Math.min(availableWidth / bounds.width, availableHeight / bounds.height), minZoom, maxZoom);
-
-  const centerX = bounds.left + bounds.width / 2;
-  const centerY = bounds.top + bounds.height / 2;
-
+export function unionBounds(a: RectBounds, b: RectBounds): RectBounds {
   return {
-    x: viewportWidth / 2 - centerX * zoom,
-    y: viewportHeight / 2 - centerY * zoom,
-    zoom
+    left: Math.min(a.left, b.left),
+    top: Math.min(a.top, b.top),
+    right: Math.max(a.right, b.right),
+    bottom: Math.max(a.bottom, b.bottom)
   };
 }
 
-/**
- * 构造带有转弯圆角平滑过渡的折线 SVG 路径指令 (M ... L ... Q ...)
- *
- * 设计考量 (Why):
- * 1. 纯函数铁律：严格纯数学计算，零修改入参，支持正交路由、多段折线或用户手动拐点。
- * 2. 动态自适应截断：圆角半径 r = min(cornerRadius, d1/2, d2/2)，防止超短线段发生圆角反向穿透畸变。
- * 3. 刀锋锐利切线：通过二阶贝塞尔曲线以原拐点为控制手柄，完美契合切线连续性 (C1 连续)。
- *
- * @param points 折线有序顶点集合 (至少 2 个点)
- * @param cornerRadius 拐点最大圆角半径 (若 <= 0 则生成直角直线路径)
- */
-export function buildRoundedPolylinePath(points: readonly Point[], cornerRadius = 0): string {
-  if (points.length === 0) return '';
-  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
-  if (points.length === 2 || cornerRadius <= 0) {
-    let path = `M ${points[0].x} ${points[0].y}`;
-    for (let i = 1; i < points.length; i++) {
-      path += ` L ${points[i].x} ${points[i].y}`;
-    }
-    return path;
+/** 包围盒经矩阵变换后的轴对齐外接矩形 (四角变换后取极值；无旋转时只做平移) */
+export function transformBounds(bounds: RectBounds, m: Matrix2D): RectBounds {
+  if (m.b === 0 && m.c === 0 && m.a === 1 && m.d === 1) {
+    return { left: bounds.left + m.e, top: bounds.top + m.f, right: bounds.right + m.e, bottom: bounds.bottom + m.f };
   }
-
-  let path = `M ${points[0].x} ${points[0].y}`;
-
-  for (let i = 1; i < points.length - 1; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const next = points[i + 1];
-
-    const v1x = prev.x - curr.x;
-    const v1y = prev.y - curr.y;
-    const v2x = next.x - curr.x;
-    const v2y = next.y - curr.y;
-
-    const d1 = Math.sqrt(v1x * v1x + v1y * v1y);
-    const d2 = Math.sqrt(v2x * v2x + v2y * v2y);
-
-    // 若相邻点重合，退化为普通直线连接
-    if (d1 < 1e-4 || d2 < 1e-4) {
-      path += ` L ${curr.x} ${curr.y}`;
-      continue;
-    }
-
-    // 向量叉积：判定是否三点共线
-    const cross = v1x * v2y - v1y * v2x;
-    if (Math.abs(cross) < 1e-4) {
-      path += ` L ${curr.x} ${curr.y}`;
-      continue;
-    }
-
-    // 钳位最大圆角，防止相邻线段长度不足时发生互相侵入重叠
-    const r = Math.min(cornerRadius, d1 / 2, d2 / 2);
-
-    // 切入点与切出点
-    const c1x = curr.x + (v1x / d1) * r;
-    const c1y = curr.y + (v1y / d1) * r;
-    const c2x = curr.x + (v2x / d2) * r;
-    const c2y = curr.y + (v2y / d2) * r;
-
-    path += ` L ${c1x} ${c1y} Q ${curr.x} ${curr.y}, ${c2x} ${c2y}`;
-  }
-
-  const last = points[points.length - 1];
-  path += ` L ${last.x} ${last.y}`;
-
-  return path;
+  const { left: l, top: t, right: r, bottom: b } = bounds;
+  const x1 = m.a * l + m.c * t;
+  const x2 = m.a * r + m.c * t;
+  const x3 = m.a * l + m.c * b;
+  const x4 = m.a * r + m.c * b;
+  const y1 = m.b * l + m.d * t;
+  const y2 = m.b * r + m.d * t;
+  const y3 = m.b * l + m.d * b;
+  const y4 = m.b * r + m.d * b;
+  return {
+    left: Math.min(x1, x2, x3, x4) + m.e,
+    top: Math.min(y1, y2, y3, y4) + m.f,
+    right: Math.max(x1, x2, x3, x4) + m.e,
+    bottom: Math.max(y1, y2, y3, y4) + m.f
+  };
 }
 
-/** 参与几何计算的节点字段：x / y / rotation 相对父容器 (ADR-114)，rotation 单位为度、绕节点中心旋转 */
-export interface RotatableBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation?: number;
-}
-
-/**
- * 二维仿射矩阵：x' = a·x + c·y + e，y' = b·x + d·y + f
- * 节点只有平移与旋转 (尺寸由 width / height 表达，不含缩放)，世界矩阵始终是刚体变换
- */
-export interface Matrix2D {
-  readonly a: number;
-  readonly b: number;
-  readonly c: number;
-  readonly d: number;
-  readonly e: number;
-  readonly f: number;
-}
+// ================= 仿射矩阵 =================
 
 export const IDENTITY_MATRIX: Matrix2D = Object.freeze({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 });
 
@@ -253,6 +109,13 @@ export function applyMatrix(m: Matrix2D, x: number, y: number): Point {
 export function applyMatrixToVector(m: Matrix2D, x: number, y: number): Point {
   return { x: m.a * x + m.c * y, y: m.b * x + m.d * y };
 }
+
+/** 矩阵的旋转角 (度) */
+export function matrixRotation(m: Matrix2D): number {
+  return (Math.atan2(m.b, m.a) * 180) / Math.PI;
+}
+
+// ================= 节点几何 =================
 
 /**
  * 节点相对父容器的局部矩阵：平移到 (x, y) 后绕自身中心旋转
@@ -296,56 +159,9 @@ export function decomposeNodeMatrix(
   return { x: m.e - cx + cos * cx - sin * cy, y: m.f - cy + sin * cx + cos * cy, rotation };
 }
 
-/** 节点局部坐标 (相对自身未旋转框左上角) 在给定世界矩阵下的世界坐标 */
-export function nodeLocalToWorld(worldMatrix: Matrix2D, localX: number, localY: number): Point {
-  return applyMatrix(worldMatrix, localX, localY);
-}
-
-/** 包围盒经矩阵变换后的轴对齐外接矩形 (四角变换后取极值；无旋转时只做平移) */
-export function transformBounds(bounds: RectBounds, m: Matrix2D): RectBounds {
-  if (m.b === 0 && m.c === 0 && m.a === 1 && m.d === 1) {
-    return {
-      left: bounds.left + m.e,
-      top: bounds.top + m.f,
-      right: bounds.right + m.e,
-      bottom: bounds.bottom + m.f,
-      width: bounds.width,
-      height: bounds.height
-    };
-  }
-  const { left: l, top: t, right: r, bottom: b } = bounds;
-  const x1 = m.a * l + m.c * t;
-  const x2 = m.a * r + m.c * t;
-  const x3 = m.a * l + m.c * b;
-  const x4 = m.a * r + m.c * b;
-  const y1 = m.b * l + m.d * t;
-  const y2 = m.b * r + m.d * t;
-  const y3 = m.b * l + m.d * b;
-  const y4 = m.b * r + m.d * b;
-  const left = Math.min(x1, x2, x3, x4) + m.e;
-  const top = Math.min(y1, y2, y3, y4) + m.f;
-  const right = Math.max(x1, x2, x3, x4) + m.e;
-  const bottom = Math.max(y1, y2, y3, y4) + m.f;
-  return { left, top, right, bottom, width: right - left, height: bottom - top };
-}
-
-/** 两个包围盒的并集 */
-export function unionBounds(a: RectBounds, b: RectBounds): RectBounds {
-  const left = Math.min(a.left, b.left);
-  const top = Math.min(a.top, b.top);
-  const right = Math.max(a.right, b.right);
-  const bottom = Math.max(a.bottom, b.bottom);
-  return { left, top, right, bottom, width: right - left, height: bottom - top };
-}
-
-/** 节点自身框在其局部坐标系中的包围盒 */
-export function nodeLocalBox(size: { width: number; height: number }): RectBounds {
-  return { left: 0, top: 0, right: size.width, bottom: size.height, width: size.width, height: size.height };
-}
-
-/** 节点在世界坐标系中的轴对齐包围盒：四角经世界矩阵变换后的外接矩形 */
+/** 节点在世界坐标系中的轴对齐包围盒：自身框四角经世界矩阵变换后的外接矩形 */
 export function computeNodeWorldBounds(size: { width: number; height: number }, worldMatrix: Matrix2D): RectBounds {
-  return transformBounds(nodeLocalBox(size), worldMatrix);
+  return transformBounds({ left: 0, top: 0, right: size.width, bottom: size.height }, worldMatrix);
 }
 
 /**
@@ -355,4 +171,114 @@ export function computeNodeWorldBounds(size: { width: number; height: number }, 
 export function isPointInNode(point: Point, size: { width: number; height: number }, worldMatrix: Matrix2D): boolean {
   const local = applyMatrix(invertMatrix(worldMatrix), point.x, point.y);
   return local.x >= 0 && local.x <= size.width && local.y >= 0 && local.y <= size.height;
+}
+
+// ================= 视口 =================
+
+/** 视口像素坐标 → 世界坐标 */
+export function screenToWorld(screen: Point, viewport: ViewportState): Point {
+  return { x: (screen.x - viewport.x) / viewport.zoom, y: (screen.y - viewport.y) / viewport.zoom };
+}
+
+/** 世界坐标 → 视口像素坐标 */
+export function worldToScreen(world: Point, viewport: ViewportState): Point {
+  return { x: world.x * viewport.zoom + viewport.x, y: world.y * viewport.zoom + viewport.y };
+}
+
+/** 视口在世界坐标系中覆盖的区域 */
+export function computeViewportWorldBounds(
+  viewport: ViewportState,
+  size: { width: number; height: number }
+): RectBounds {
+  return {
+    left: -viewport.x / viewport.zoom,
+    top: -viewport.y / viewport.zoom,
+    right: (size.width - viewport.x) / viewport.zoom,
+    bottom: (size.height - viewport.y) / viewport.zoom
+  };
+}
+
+/**
+ * 适配视口：缩放并平移使 bounds 居中且四周留白 padding (屏幕像素)；空画布 (null) 回到原点
+ * 内容退化为一条线或一个点、或视口尚无尺寸时无法按面积适配，保持当前缩放 (不超过 maxZoom) 只居中
+ */
+export function computeFitViewport(
+  bounds: RectBounds | null,
+  size: { width: number; height: number },
+  current: ViewportState,
+  options: { padding: number; minZoom: number; maxZoom: number }
+): ViewportState {
+  if (!bounds) return { x: 0, y: 0, zoom: 1 };
+  const width = bounds.right - bounds.left;
+  const height = bounds.bottom - bounds.top;
+  const zoom =
+    width > 0 && height > 0 && size.width > 0 && size.height > 0
+      ? clamp(
+          Math.min(
+            Math.max(1, size.width - options.padding * 2) / width,
+            Math.max(1, size.height - options.padding * 2) / height
+          ),
+          options.minZoom,
+          options.maxZoom
+        )
+      : Math.min(current.zoom, options.maxZoom);
+  return {
+    x: size.width / 2 - (bounds.left + width / 2) * zoom,
+    y: size.height / 2 - (bounds.top + height / 2) * zoom,
+    zoom
+  };
+}
+
+// ================= 折线 =================
+
+/** 点到线段的距离 */
+export function distanceToSegment(point: Point, start: Point, end: Point): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t = lengthSq === 0 ? 0 : clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSq, 0, 1);
+  return Math.hypot(point.x - (start.x + t * dx), point.y - (start.y + t * dy));
+}
+
+/** 点到折线的最小距离 (连线拾取) */
+export function distanceToPolyline(point: Point, points: readonly Point[]): number {
+  if (points.length === 1) return Math.hypot(point.x - points[0].x, point.y - points[0].y);
+  let min = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    min = Math.min(min, distanceToSegment(point, points[i], points[i + 1]));
+  }
+  return min;
+}
+
+/**
+ * 带圆角过渡的折线路径指令 (M ... L ... Q ...)
+ * 圆角半径取 min(cornerRadius, 相邻两段各自一半)，短线段不会因圆角互相侵入
+ */
+export function buildRoundedPolylinePath(points: readonly Point[], cornerRadius = 0): string {
+  if (points.length === 0) return '';
+  let path = `M ${points[0].x} ${points[0].y}`;
+  if (points.length === 1) return path;
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const prev = points[i - 1];
+    const curr = points[i];
+    const next = points[i + 1];
+    const v1x = prev.x - curr.x;
+    const v1y = prev.y - curr.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+    const d1 = Math.hypot(v1x, v1y);
+    const d2 = Math.hypot(v2x, v2y);
+    // 无圆角、相邻点重合或三点共线时直接连到拐点
+    if (cornerRadius <= 0 || d1 < 1e-4 || d2 < 1e-4 || Math.abs(v1x * v2y - v1y * v2x) < 1e-4) {
+      path += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+    const r = Math.min(cornerRadius, d1 / 2, d2 / 2);
+    path += ` L ${curr.x + (v1x / d1) * r} ${curr.y + (v1y / d1) * r}`;
+    path += ` Q ${curr.x} ${curr.y}, ${curr.x + (v2x / d2) * r} ${curr.y + (v2y / d2) * r}`;
+  }
+
+  const last = points[points.length - 1];
+  return `${path} L ${last.x} ${last.y}`;
 }

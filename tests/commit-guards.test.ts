@@ -118,7 +118,7 @@ describe('容器语义', () => {
 
     const record = store.moveNodes(['frame'], { x: 100 })!;
     expect(record.patches.map((p) => p.path)).toEqual([['content', 'nodes', 'frame', 'x']]);
-    const nodes = engine.getView().content.nodes;
+    const nodes = engine.documentStore.getView().content.nodes;
     expect([nodes.frame.x, nodes.card.x, nodes.badge.x, nodes.outside.x]).toEqual([100, 20, 5, 500]);
     // 后代没有补丁，但空间索引按世界坐标同步更新
     expect(engine.spatialIndex.getBounds('badge')?.left).toBe(125);
@@ -173,7 +173,7 @@ describe('容器语义', () => {
     const nodes = store.getView().content.nodes;
     expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([100, 20, 600]);
     expect(store.entityStore.getWorldTransform('card')!.e).toBe(120);
-    expect(store.coordinator.getUndoEntries()).toHaveLength(4);
+    expect(store.undoEntries).toHaveLength(4);
 
     store.undo();
     expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([0, 20, 500]);
@@ -185,11 +185,11 @@ describe('容器语义', () => {
     store.addNode(makeNode('card', 20, 'frame'));
     store.addNode(makeNode('a', 300));
     store.addNode(makeNode('b', 400));
-    const depth = store.coordinator.getUndoEntries().length;
+    const depth = store.undoEntries.length;
 
     store.removeNodes(['card', 'frame', 'a', 'missing']);
     expect(Object.keys(store.getView().content.nodes)).toEqual(['b']);
-    expect(store.coordinator.getUndoEntries()).toHaveLength(depth + 1);
+    expect(store.undoEntries).toHaveLength(depth + 1);
 
     store.undo();
     expect(Object.keys(store.getView().content.nodes).sort()).toEqual(['a', 'b', 'card', 'frame']);

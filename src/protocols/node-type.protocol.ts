@@ -8,7 +8,7 @@
  * 3. 严格类型约束：通过泛型严密绑定节点的私有 data 与 style，杜绝运行时属性未定义访问。
  */
 
-import type { NodeEntity, NodeStyle, Point, TextSizingMode, NodeTextStyle } from '../types';
+import type { NodeEntity, NodeStyle, TextSizingMode, NodeTextStyle } from '../types';
 import type { CanvasPrimitive } from './primitives.protocol';
 import type { CanvasTheme } from '../types/theme';
 
@@ -48,14 +48,6 @@ export interface TextBlockMetrics {
   readonly width: number;
   readonly height: number;
   readonly lineCount?: number;
-}
-
-/** 变换控制手柄定义 */
-export interface NodeControlHandle {
-  id: string;
-  label?: string;
-  cursor?: string;
-  getPosition(node: NodeEntity): Point;
 }
 
 /** 节点类型为新节点提供的部分；id、类型、位置、旋转、层级与锁定由引擎填写 */
@@ -164,7 +156,4 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 写成方法签名：各类型的选项结构不同，实现方可收窄参数类型 (选项表见 NodeCreateOptionsMap)。
    */
   createContent?(options: object): NodeCreateContent<TData, TStyle>;
-
-  /** 控制手柄列表提供器 (选填) 【尚未实现】交互插件落地前不会调用该函数 */
-  getHandles?: (node: NodeEntity<TData, TStyle>) => NodeControlHandle[];
 }

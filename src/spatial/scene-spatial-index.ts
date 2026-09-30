@@ -18,7 +18,7 @@
  * 7. 每个容器的索引由工厂创建 (默认 R-Tree)，算法仍可热插拔。
  */
 
-import type { Point } from '../types/canvas';
+import type { Point, RectBounds } from '../types/geometry';
 import type { NodeChanges } from '../types/change-set';
 import type { NodeEntity } from '../types/node';
 import type { EntityReader } from '../state/entity-store';
@@ -28,10 +28,8 @@ import {
   computeNodeWorldBounds,
   doBoundsIntersect,
   invertMatrix,
-  nodeLocalBox,
   transformBounds,
-  unionBounds,
-  type RectBounds
+  unionBounds
 } from '../utils/geometry';
 
 /** 容器键：节点 id，undefined 为根层级 (含父节点缺失而回落根层级的孤儿) */
@@ -83,14 +81,7 @@ function touchesEdge(entry: RectBounds, union: RectBounds): boolean {
 /** 自身框在父容器局部坐标中的外接矩形；未旋转时直接由 x / y / 尺寸得出 */
 function computeOwnBounds(node: Readonly<NodeEntity>): RectBounds {
   if (!node.rotation) {
-    return {
-      left: node.x,
-      top: node.y,
-      right: node.x + node.width,
-      bottom: node.y + node.height,
-      width: node.width,
-      height: node.height
-    };
+    return { left: node.x, top: node.y, right: node.x + node.width, bottom: node.y + node.height };
   }
   return computeNodeWorldBounds(node, computeNodeLocalMatrix(node));
 }
@@ -148,7 +139,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
 
   /**
    * 按节点变更集增量维护：自身几何变化、新增、改挂的节点重新登记，然后沿容器链向上刷新子树包围盒
-   * 容器移动只改动它在父容器中的一个条目，后代零开销
+   * 容器移动只改动它在父容器中的一个条目，后代无需更新
    */
   applyChanges(changes: NodeChanges): void {
     const dirty = new Set<string>();
@@ -193,7 +184,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
   }
 
   hitTest(point: Point): readonly string[] {
-    return this.search({ left: point.x, top: point.y, right: point.x, bottom: point.y, width: 0, height: 0 });
+    return this.search({ left: point.x, top: point.y, right: point.x, bottom: point.y });
   }
 
   getBounds(nodeId: string): RectBounds | undefined {
@@ -272,7 +263,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
       state.union = union;
       state.stale = false;
     }
-    const subtree = unionBounds(nodeLocalBox(node), state.union!);
+    const subtree = unionBounds({ left: 0, top: 0, right: node.width, bottom: node.height }, state.union!);
     return { container, entry: transformBounds(subtree, computeNodeLocalMatrix(node)), own, hasChildren: true };
   }
 

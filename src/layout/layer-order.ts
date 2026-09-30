@@ -9,14 +9,10 @@
  * 3. 容错：若相邻未选中节点的键因并发写入而相同或逆序，退化为对整组兄弟重新编号，仍在同一事务内完成。
  */
 
+import type { FractionalIndex } from '../types/canvas';
 import type { NodeEntity } from '../types/node';
 import type { CanvasPatch } from '../types/operation';
-import {
-  compareFractionalIndex,
-  generateNKeysBetween,
-  isValidFractionalIndex,
-  type FractionalIndex
-} from '../utils/fractional-index';
+import { compareFractionalIndex, generateNKeysBetween, isValidFractionalIndex } from '../utils/fractional-index';
 
 /** 层级调整方式 */
 export type LayerMove = 'forward' | 'backward' | 'front' | 'back';

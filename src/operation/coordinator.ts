@@ -7,7 +7,7 @@
  * 2. 撤销栈协同隔离：严格遵守 origin === 'local' 才准入撤销栈，远端协同同步来的 patch 绝不污染本地用户的 Undo 历史。
  * 3. 连续操作智能折叠 (Squashing)：支持连续拖拽/微调共用同一个 groupId，自动将其合并为单个历史步长，杜绝一次拖拽产生数百步撤销；
  *    合并时再对同一路径的整值覆盖做压缩（正向留最后一次、逆向留最早一次），一次拖拽无论多长都只保留常数条补丁。
- * 4. 极致性能与零套娃：纯扁平数组历史栈，定长截断防内存泄漏，事件通知精简直接。
+ * 4. 扁平数组历史栈，定长截断防内存泄漏，事件通知精简直接。
  * 5. 历史不可变：提交入口深拷贝补丁，调用方事后修改自己持有的补丁对象不会篡改撤销栈与广播出去的记录。
  * 6. 冲突即丢弃：撤销/重做若因远端并发改动而无法执行（如目标实体已被删除），该条目整体作废并通知历史栈变化，
  *    不做部分回放，保证每一步撤销都是完整的原子事务。
@@ -184,98 +184,14 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     return record;
   }
 
-  /**
-   * 撤销上一步操作
-   */
+  /** 撤销上一步操作；冲突时该条目作废 */
   undo(): boolean {
-    if (!this.canUndo || this.isApplyingHistory) {
-      return false;
-    }
-
-    const entry = this.undoStack.pop();
-    if (!entry) {
-      return false;
-    }
-
-    this.isApplyingHistory = true;
-    try {
-      // 倒序应用逆向补丁
-      const reversedInverse = [...entry.inversePatches].reverse();
-      const result = applyPatches(this.targetDoc, reversedInverse);
-
-      if (!result.success) {
-        console.error('[OperationCoordinator] 撤销冲突，已作废该历史条目:', result.error);
-        this.notifyHistoryChanged();
-        return false;
-      }
-
-      // 撤销成功，将原操作推入 redo 栈
-      this.redoStack.push(entry);
-
-      // 广播虚拟操作记录供外部感知
-      const undoRecord: CanvasOperationRecord = {
-        id: generateId('op_undo'),
-        label: `撤销: ${entry.label}`,
-        timestamp: Date.now(),
-        origin: 'local',
-        source: 'system',
-        undoable: false,
-        patches: reversedInverse,
-        inversePatches: entry.patches
-      };
-
-      this.notifyOperationCommitted(undoRecord);
-      this.notifyHistoryChanged();
-      return true;
-    } finally {
-      this.isApplyingHistory = false;
-    }
+    return this.replay('undo');
   }
 
-  /**
-   * 重做上一步撤销的操作
-   */
+  /** 重做上一步撤销的操作；冲突时该条目作废 */
   redo(): boolean {
-    if (!this.canRedo || this.isApplyingHistory) {
-      return false;
-    }
-
-    const entry = this.redoStack.pop();
-    if (!entry) {
-      return false;
-    }
-
-    this.isApplyingHistory = true;
-    try {
-      // 重新执行正向补丁
-      const result = applyPatches(this.targetDoc, entry.patches);
-
-      if (!result.success) {
-        console.error('[OperationCoordinator] 重做冲突，已作废该历史条目:', result.error);
-        this.notifyHistoryChanged();
-        return false;
-      }
-
-      // 重新推回 undo 栈
-      this.undoStack.push(entry);
-
-      const redoRecord: CanvasOperationRecord = {
-        id: generateId('op_redo'),
-        label: `重做: ${entry.label}`,
-        timestamp: Date.now(),
-        origin: 'local',
-        source: 'system',
-        undoable: false,
-        patches: entry.patches,
-        inversePatches: entry.inversePatches
-      };
-
-      this.notifyOperationCommitted(redoRecord);
-      this.notifyHistoryChanged();
-      return true;
-    } finally {
-      this.isApplyingHistory = false;
-    }
+    return this.replay('redo');
   }
 
   /**
@@ -309,14 +225,48 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     };
   }
 
-  /** 获取当前撤销栈快照（调试与持久化用途） */
-  getUndoEntries(): readonly CanvasHistoryEntry[] {
+  /** 撤销栈 (旧 → 新)，供调试与界面展示 */
+  get undoEntries(): readonly CanvasHistoryEntry[] {
     return this.undoStack;
   }
 
-  /** 获取当前重做栈快照 */
-  getRedoEntries(): readonly CanvasHistoryEntry[] {
-    return this.redoStack;
+  /**
+   * 回放一个历史条目：撤销倒序应用逆向补丁，重做顺序应用正向补丁，成功后移入另一个栈并广播系统记录
+   * 回放期间提交的事务不入栈，防止循环记录
+   */
+  private replay(direction: 'undo' | 'redo'): boolean {
+    const [from, to] = direction === 'undo' ? [this.undoStack, this.redoStack] : [this.redoStack, this.undoStack];
+    if (from.length === 0 || this.isApplyingHistory) return false;
+    const entry = from.pop()!;
+    const patches = direction === 'undo' ? [...entry.inversePatches].reverse() : entry.patches;
+
+    this.isApplyingHistory = true;
+    try {
+      const result = applyPatches(this.targetDoc, patches);
+      if (!result.success) {
+        console.error(
+          `[OperationCoordinator] ${direction === 'undo' ? '撤销' : '重做'}冲突，已作废该历史条目:`,
+          result.error
+        );
+        this.notifyHistoryChanged();
+        return false;
+      }
+      to.push(entry);
+      this.notifyOperationCommitted({
+        id: generateId(`op_${direction}`),
+        label: `${direction === 'undo' ? '撤销' : '重做'}: ${entry.label}`,
+        timestamp: Date.now(),
+        origin: 'local',
+        source: 'system',
+        undoable: false,
+        patches,
+        inversePatches: direction === 'undo' ? entry.patches : entry.inversePatches
+      });
+      this.notifyHistoryChanged();
+      return true;
+    } finally {
+      this.isApplyingHistory = false;
+    }
   }
 
   /**

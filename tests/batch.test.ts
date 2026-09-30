@@ -40,7 +40,7 @@ describe('DocumentStore.batch', () => {
     }, '新建并调整');
 
     expect(store.getNode('a')).toMatchObject({ x: 50, width: 30 });
-    expect(store.coordinator.getUndoEntries().at(-1)!.label).toBe('新建并调整');
+    expect(store.undoEntries.at(-1)!.label).toBe('新建并调整');
 
     store.undo();
     expect(store.getNode('a')).toBeUndefined();
@@ -57,7 +57,7 @@ describe('DocumentStore.batch', () => {
       store.moveNodes(['a'], { x: 1, y: 0 }, { groupId: 'drag' });
       store.moveNodes(['a'], { x: 1, y: 0 }, { groupId: 'drag' });
     });
-    expect(store.coordinator.getUndoEntries()).toHaveLength(1);
+    expect(store.undoEntries).toHaveLength(1);
     store.undo();
     expect(store.getNode('a')).toBeUndefined();
     expect(store.getNode('b')).toBeUndefined();
@@ -78,10 +78,10 @@ describe('DocumentStore.batch', () => {
     expect(store.getNode('a')).toBeUndefined();
     expect(store.getNode('before')).toBeDefined();
     expect(store.canRedo).toBe(false);
-    expect(store.coordinator.getUndoEntries()).toHaveLength(1);
+    expect(store.undoEntries).toHaveLength(1);
 
     // 批处理结束后恢复独立记录
     store.addNode(makeNode('c'));
-    expect(store.coordinator.getUndoEntries()).toHaveLength(2);
+    expect(store.undoEntries).toHaveLength(2);
   });
 });

@@ -112,6 +112,6 @@ describe('会话主题', () => {
     expect(() => engine.session.setTheme({ seed: { ...LIGHT_CANVAS_THEME_SEED, background: 'white' } })).toThrow();
     expect(engine.session.theme).toBe(current);
     // 主题不进入文档
-    expect('theme' in engine.getView()).toBe(false);
+    expect('theme' in engine.documentStore.getView()).toBe(false);
   });
 });

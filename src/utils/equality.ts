@@ -1,9 +1,9 @@
 /**
  * @file equality.ts
- * @description 极速结构值等价性比对工具 (替代外部庞大的 lodash.isEqual)
+ * @description 结构值等价比较 (替代外部庞大的 lodash.isEqual)
  *
  * 设计考量 (Why):
- * 1. 极简依赖红线：手写收敛，支持循环引用保护、TypedArray 内存块极速校验、Map/Set/Date/RegExp 特殊内置对象处理。
+ * 1. 极简依赖红线：手写收敛，支持循环引用保护、TypedArray 内存块逐字节比较、Map/Set/Date/RegExp 特殊内置对象处理。
  * 2. 脏检查加速：在 Patch 生成与 Diff 阶段，避免无变化的属性产生无意义的原子操作，节约 80% 的协同广播流量。
  */
 

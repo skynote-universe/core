@@ -28,15 +28,15 @@ describe('SessionStore', () => {
   it('视口变化不产生事务、不入撤销栈、不刷新文档更新时间', () => {
     const engine = new SkyNoteEngine({ initialViewport: { zoom: 2 } });
     const operationSpy = vi.fn();
-    engine.documentStore.coordinator.onOperation(operationSpy);
-    const updatedAt = engine.getView().meta.updatedAt;
+    engine.documentStore.subscribe(operationSpy);
+    const updatedAt = engine.documentStore.getView().meta.updatedAt;
 
     engine.session.setViewport({ x: 100, y: 50 });
 
     expect(engine.session.viewport).toEqual({ x: 100, y: 50, zoom: 2 });
     expect(operationSpy).not.toHaveBeenCalled();
     expect(engine.documentStore.canUndo).toBe(false);
-    expect(engine.getView().meta.updatedAt).toBe(updatedAt);
+    expect(engine.documentStore.getView().meta.updatedAt).toBe(updatedAt);
   });
 
   it('非法视口参数被拒绝，无变化的更新不广播', () => {
@@ -142,5 +142,53 @@ describe('视口缩放范围', () => {
     expect(new SessionStore({ viewport: { zoom: 50 } }).viewport.zoom).toBe(8);
     expect(() => new SessionStore({ zoomRange: { min: 0, max: 1 } })).toThrow();
     expect(() => new SessionStore({ zoomRange: { min: 2, max: 1 } })).toThrow();
+  });
+});
+
+describe('视口命令', () => {
+  function node(id: string, x: number, y: number, width: number, height: number): NodeEntity {
+    return { id, type: 'node', nodeType: 'rect', x, y, width, height, rotation: 0, zIndex: 'a0', locked: false };
+  }
+
+  it('fitBounds 让内容居中容纳在视口内，内容很少时不超过原始尺寸，空画布回到原点', () => {
+    const engine = new SkyNoteEngine();
+    const { session, documentStore, spatialIndex } = engine;
+    session.setViewportSize({ width: 1000, height: 800 });
+
+    session.setViewport({ x: 300, y: -200, zoom: 3 });
+    session.fitBounds(spatialIndex.getContentBounds());
+    expect(session.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
+
+    documentStore.addNode(node('a', 0, 0, 4000, 1000));
+    documentStore.addNode(node('b', 3000, 1500, 1000, 500));
+    session.fitBounds(spatialIndex.getContentBounds(), { padding: 100 });
+    const { x, y, zoom } = session.viewport;
+    // 内容 4000 x 2000，可用区域 800 x 600
+    expect(zoom).toBeCloseTo(0.2);
+    expect(x + 2000 * zoom).toBeCloseTo(500);
+    expect(y + 1000 * zoom).toBeCloseTo(400);
+
+    documentStore.removeNodes(['a', 'b']);
+    documentStore.addNode(node('small', 0, 0, 10, 10));
+    session.fitBounds(spatialIndex.getContentBounds());
+    expect(session.viewport.zoom).toBe(1);
+    engine.destroy();
+  });
+
+  it('zoomAt 缺省以视口中心为不动点，结果受缩放范围约束', () => {
+    const session = new SessionStore({ zoomRange: { min: 0.5, max: 2 } });
+    session.setViewportSize({ width: 1000, height: 800 });
+
+    session.zoomAt(2);
+    const { x, y, zoom } = session.viewport;
+    expect(zoom).toBe(2);
+    // 视口中心 (500, 400) 对应的世界点 (500, 400) 屏幕位置不变
+    expect(500 * zoom + x).toBeCloseTo(500);
+    expect(400 * zoom + y).toBeCloseTo(400);
+
+    session.zoomAt(100);
+    expect(session.viewport.zoom).toBe(2);
+    session.zoomAt(0.001);
+    expect(session.viewport.zoom).toBe(0.5);
   });
 });

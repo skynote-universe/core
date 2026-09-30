@@ -3,7 +3,7 @@
  * @description 现代化正交原子补丁执行引擎与逆向对偶推导器
  *
  * 设计考量 (Why):
- * 1. 正交原子设计：精简为 'set' | 'unset' | 'splice' | 'text' 四大基础动词，彻底消除 add/replace 二义性。
+ * 1. 正交原子设计：精简为 'set' | 'unset' | 'splice' | 'text' 四大基础动词，消除 add/replace 二义性。
  * 2. 严格对偶逆向推导：
  *    - set (直接覆盖) -> 若原属性不存在，逆向自动推导为 unset；若存在，推导为 set 旧值。
  *    - set (merge: true) -> 逆向推导为「旧字段快照的 merge set + 新增键的 unset」，确保撤销后不残留新键。

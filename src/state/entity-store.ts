@@ -3,23 +3,19 @@
  * @description 纯内存实体索引仓储与运行时信封管理器
  *
  * 设计考量 (Why):
- * 1. O(1) 瞬时索引：避免在大规模节点画布中通过遍历查找实体，维护纯内存 Map 映射。
- * 2. 双版本号守卫 (AGENTS.md 性能军规)：拖拽移动只改变 geomVersion，样式/文本变动自增 dataVersion，
- *    渲染器借此实现微秒级 Diff，跳过昂贵的图元重新计算。
- * 3. 内存与持久化彻底解耦：仅持久化 NodeEntity/ConnectorEntity，运行时元数据 (computedRoute、包围盒)
- *    收敛于此纯内存信封，GC 友好。
- * 4. 节点-连线邻接索引：节点移动/删除时 O(度数) 定位依附连线，避免每帧全量扫描连线。
- * 6. 容器父子索引：级联移动与级联删除按子树规模定位后代，不扫描全部节点。
- * 7. 世界矩阵缓存 (ADR-114)：节点坐标相对父容器，世界矩阵按需自顶向下复合并缓存。缓存以「自身 geomVersion +
- *    父级世界矩阵引用 + parentId」校验，祖先移动或改挂后下次读取自动重算，无需显式失效，也不产生任何补丁。
- * 5. 读写分离：写入方法只供 DocumentStore 在事务提交后调用；引擎、渲染器与插件只拿到 EntityReader，
- *    类型层面既无法调用 sync/notify 让索引与文档失配，也无法就地改写实体字段绕过事务。
+ * 1. 双版本号：移动只递增 geomVersion，样式与文本递增 dataVersion，渲染器据此跳过不必要的图元重建。
+ * 2. 邻接与父子索引：节点移动或删除时按度数定位依附连线，级联操作按子树规模定位后代，都不扫描全部实体。
+ * 3. 世界矩阵缓存 (ADR-114)：按需自顶向下复合，以「自身 geomVersion + 父级矩阵引用 + parentId」校验，
+ *    祖先移动或改挂后下次读取自动重算，无需显式失效。
+ * 4. 读写分离：写入方法只供 DocumentStore 在事务提交后调用；其他模块只拿到 EntityReader，
+ *    类型上既不能让索引与文档失配，也不能就地改写实体绕过事务。
  */
 
+import type { Matrix2D } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity } from '../types/connector';
 import type { RuntimeNode, RuntimeConnector, RuntimeNodeView, RuntimeConnectorView } from '../types/runtime';
-import { computeNodeLocalMatrix, multiplyMatrix, type Matrix2D } from '../utils/geometry';
+import { computeNodeLocalMatrix, multiplyMatrix } from '../utils/geometry';
 
 /** 实体运行时索引的只读视图 (对内核之外暴露的唯一形态) */
 export interface EntityReader {
@@ -39,6 +35,8 @@ export interface EntityReader {
   getChildIds(parentId: string | undefined): ReadonlySet<string>;
   /** 全部后代节点 id (广度优先，自带防环) */
   collectDescendantIds(nodeId: string): string[];
+  /** 祖先节点 id，由近及远；父节点缺失 (如远端删除容器) 时到此为止 */
+  getAncestorIds(nodeId: string): string[];
   /** 节点世界矩阵 (节点局部坐标 → 世界坐标)；父节点缺失 (如远端删除容器) 时按根层级处理 */
   getWorldTransform(nodeId: string): Matrix2D | undefined;
 }
@@ -139,6 +137,18 @@ export class EntityStore implements EntityReader {
     return result;
   }
 
+  getAncestorIds(nodeId: string): string[] {
+    const ancestors: string[] = [];
+    // 提交守卫保证容器无环
+    for (let parentId = this.nodes.get(nodeId)?.entity.parentId; parentId !== undefined;) {
+      const parent = this.nodes.get(parentId);
+      if (!parent) break;
+      ancestors.push(parentId);
+      parentId = parent.entity.parentId;
+    }
+    return ancestors;
+  }
+
   getWorldTransform(nodeId: string): Matrix2D | undefined {
     const runtimeNode = this.nodes.get(nodeId);
     return runtimeNode ? this.resolveWorldTransform(nodeId, runtimeNode) : undefined;
@@ -234,47 +244,31 @@ export class EntityStore implements EntityReader {
   }
 
   /**
-   * 几何变更通知：递增几何版本号 (geomVersion)
-   * 触发时机：移动、缩放尺寸、旋转
+   * 字段级补丁就地修改实体后递增版本号 (geom：位置、尺寸、旋转；data：样式、文本、业务数据)
+   * @returns 节点是否存在 (已被删除的实体不再计入变更)
    */
-  notifyNodeGeometryChanged(id: string): void {
+  bumpNodeVersion(id: string, kind: 'geom' | 'data'): boolean {
     const node = this.nodes.get(id);
-    if (node) {
-      node.runtime.geomVersion = ++this.versionClock;
-    }
+    if (!node) return false;
+    if (kind === 'geom') node.runtime.geomVersion = ++this.versionClock;
+    else node.runtime.dataVersion = ++this.versionClock;
+    return true;
   }
 
   /**
-   * 数据内容变更通知：递增数据版本号 (dataVersion)
-   * 触发时机：修改填充色、边框、阴影、富文本内容、业务附加数据
+   * 连线版本号递增 (geom 含两端节点移动导致的路由失效)；端点可能被就地改绑到其他节点，几何变更时顺带刷新邻接索引
+   * @returns 连线是否存在
    */
-  notifyNodeDataChanged(id: string): void {
-    const node = this.nodes.get(id);
-    if (node) {
-      node.runtime.dataVersion = ++this.versionClock;
-    }
-  }
-
-  /**
-   * 连线几何与路由变更通知 (含两端节点移动导致的路由失效)
-   * 端点可能被就地改绑到其他节点，顺带刷新邻接索引
-   */
-  notifyConnectorGeometryChanged(id: string): void {
+  bumpConnectorVersion(id: string, kind: 'geom' | 'data'): boolean {
     const connector = this.connectors.get(id);
-    if (connector) {
+    if (!connector) return false;
+    if (kind === 'geom') {
       connector.runtime.geomVersion = ++this.versionClock;
       this.indexConnectorEndpoints(id, connector.entity);
-    }
-  }
-
-  /**
-   * 连线样式与数据变更通知
-   */
-  notifyConnectorDataChanged(id: string): void {
-    const connector = this.connectors.get(id);
-    if (connector) {
+    } else {
       connector.runtime.dataVersion = ++this.versionClock;
     }
+    return true;
   }
 
   /**

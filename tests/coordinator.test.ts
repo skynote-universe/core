@@ -62,7 +62,7 @@ describe('OperationCoordinator', () => {
 
     expect(doc.x).toBe(50);
     // 历史栈中只有 1 个折叠后的 entry
-    expect(coordinator.getUndoEntries().length).toBe(1);
+    expect(coordinator.undoEntries.length).toBe(1);
 
     // 单次撤销即可直接倒退回拖拽前的原始状态 0
     coordinator.undo();
@@ -143,8 +143,8 @@ describe('OperationCoordinator', () => {
       });
     }
 
-    expect(coordinator.getUndoEntries().length).toBe(3);
-    const entries = coordinator.getUndoEntries();
+    expect(coordinator.undoEntries.length).toBe(3);
+    const entries = coordinator.undoEntries;
     expect(entries[0].label).toBe('步长 3');
     expect(entries[1].label).toBe('步长 4');
     expect(entries[2].label).toBe('步长 5');
@@ -164,7 +164,7 @@ describe('OperationCoordinator', () => {
       });
     }
 
-    const [entry] = coordinator.getUndoEntries();
+    const [entry] = coordinator.undoEntries;
     expect(entry.patches).toHaveLength(2);
     expect(entry.inversePatches).toHaveLength(2);
 

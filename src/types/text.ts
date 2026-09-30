@@ -3,9 +3,9 @@
  * @description 统一富文本数据模型与排版规范
  *
  * 设计考量 (Why):
- * 1. 彻底消灭文本双轨制：废除旧版中并存的 value: string 与 runs: RichTextRun[]。
+ * 1. 消除文本双轨制：废除旧版中并存的 value: string 与 runs: RichTextRun[]。
  *    单一事实源铁律：纯文本本质上就是仅含 1 个无修饰 run 的特例。
- * 2. 测量与渲染管线 100% 复用：测量引擎与渲染器只需针对 RichTextRun[] 进行处理。
+ * 2. 测量与渲染管线复用：测量引擎与渲染器只需针对 RichTextRun[] 进行处理。
  * 3. 对齐行业排版三态：支持 auto-height (固定宽度/自动向下撑高)、auto-width (双向自适应)、fixed (完全固定)。
  */
 
@@ -115,7 +115,7 @@ export interface SimpleTextBlockOptions {
 }
 
 /**
- * 纯函数：极速提取文本块中的纯文本内容 (用于全文搜索、无样式导出)
+ * 纯函数：提取文本块中的纯文本内容 (用于全文搜索、无样式导出)
  */
 export function getPlainText(block: TextBlock): string {
   if (!block.runs || block.runs.length === 0) return '';
@@ -123,7 +123,7 @@ export function getPlainText(block: TextBlock): string {
 }
 
 /**
- * 纯函数：判断文本块是否为单段纯文本 (供渲染器与测量管线快速走极速渲染分支)
+ * 纯函数：判断文本块是否为单段纯文本 (供渲染器与测量管线走单段文本的简化分支)
  */
 export function isSimpleText(block: TextBlock): boolean {
   return block.runs.length === 1 && !block.runs[0].link && !block.runs[0].code;
@@ -144,7 +144,7 @@ export function createSimpleTextBlock(id: string, text: string, options?: Simple
 }
 
 /**
- * 纯函数：判断文本装饰线是否包含指定样式 (零正则开销，极速 O(1) ~ O(n) 判断)
+ * 纯函数：判断文本装饰线是否包含指定样式
  */
 export function hasTextDecoration(decoration: TextDecoration | undefined, target: TextDecorationLine): boolean {
   if (!decoration || decoration === 'none') return false;

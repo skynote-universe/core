@@ -9,8 +9,7 @@
  * 3. 渐进式消费：既支持返回纯关键折点 points: Point[]，也支持直接输出带贝塞尔曲线的 SVG pathData。
  */
 
-import type { Point } from '../types/canvas';
-import type { RectBounds } from '../utils/geometry';
+import type { Point, RectBounds } from '../types/geometry';
 import type { ConnectorEntity, ConnectorStyle } from '../types/connector';
 
 /** 端点连接几何朝向/法线 */

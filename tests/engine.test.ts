@@ -6,7 +6,6 @@
 import { describe, it, expect } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { RTreeSpatialIndex } from '../src/spatial/r-tree';
-import { SpatialGridIndex } from '../src/spatial/spatial-grid-index';
 import { InputScopeManager } from '../src/input/input-scope-manager';
 import type { CanvasKeyboardEvent } from '../src/protocols/input-scope.protocol';
 import { SyntheticPointerEvent, SyntheticWheelEvent } from '../src/input/synthetic-events';
@@ -19,14 +18,14 @@ describe('RTreeSpatialIndex (默认底层层次包围盒索引)', () => {
     const rtree = new RTreeSpatialIndex();
 
     // 跨越 10000 像素的巨型画框
-    rtree.update('huge_frame', { left: 0, top: 0, right: 10000, bottom: 8000, width: 10000, height: 8000 });
+    rtree.update('huge_frame', { left: 0, top: 0, right: 10000, bottom: 8000 });
     // 位于 [100, 100] 的普通便签
-    rtree.update('note_1', { left: 100, top: 100, right: 250, bottom: 200, width: 150, height: 100 });
+    rtree.update('note_1', { left: 100, top: 100, right: 250, bottom: 200 });
     // 画外极远节点
-    rtree.update('far_away', { left: 50000, top: 50000, right: 50100, bottom: 50100, width: 100, height: 100 });
+    rtree.update('far_away', { left: 50000, top: 50000, right: 50100, bottom: 50100 });
 
     // 检索屏幕视口 [0, 0] ~ [800, 600]
-    const visible = rtree.search({ left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600 });
+    const visible = rtree.search({ left: 0, top: 0, right: 800, bottom: 600 });
     expect(visible).toContain('huge_frame');
     expect(visible).toContain('note_1');
     expect(visible).not.toContain('far_away');
@@ -39,11 +38,11 @@ describe('RTreeSpatialIndex (默认底层层次包围盒索引)', () => {
 
   it('移动与删除更新', () => {
     const rtree = new RTreeSpatialIndex();
-    rtree.update('node_1', { left: 10, top: 10, right: 50, bottom: 50, width: 40, height: 40 });
+    rtree.update('node_1', { left: 10, top: 10, right: 50, bottom: 50 });
     expect(rtree.hitTest({ x: 30, y: 30 })).toEqual(['node_1']);
 
     // 移动
-    rtree.update('node_1', { left: 500, top: 500, right: 540, bottom: 540, width: 40, height: 40 });
+    rtree.update('node_1', { left: 500, top: 500, right: 540, bottom: 540 });
     expect(rtree.hitTest({ x: 30, y: 30 })).toEqual([]);
     expect(rtree.hitTest({ x: 520, y: 520 })).toEqual(['node_1']);
 
@@ -51,36 +50,6 @@ describe('RTreeSpatialIndex (默认底层层次包围盒索引)', () => {
     rtree.remove('node_1');
     expect(rtree.size).toBe(0);
     expect(rtree.hitTest({ x: 520, y: 520 })).toEqual([]);
-  });
-});
-
-describe('SpatialIndex 抽象接口与底层随意热插拔', () => {
-  it('上层 SkyNoteEngine 调用完全不变，底层可随意切换算法', () => {
-    // 默认使用 R-Tree；分层索引的每个容器都由工厂创建，可热插拔为网格哈希
-    const engineWithRTree = new SkyNoteEngine({ createNodeSpatialIndex: () => new RTreeSpatialIndex() });
-    const engineWithGrid = new SkyNoteEngine({
-      createNodeSpatialIndex: () => new SpatialGridIndex({ cellSize: 256 })
-    });
-
-    for (const engine of [engineWithRTree, engineWithGrid]) {
-      const node = {
-        id: 'n1',
-        type: 'node',
-        nodeType: 'rect',
-        x: 0,
-        y: 0,
-        width: 100,
-        height: 100,
-        rotation: 0,
-        zIndex: 'a0',
-        locked: false
-      } as const;
-      engine.documentStore.addNode({ ...node });
-      engine.documentStore.addNode({ ...node, id: 'child', x: 10, y: 10, width: 20, height: 20, parentId: 'n1' });
-      // 上层调用 API 完全一致
-      expect([...engine.spatialIndex.hitTest({ x: 50, y: 50 })]).toEqual(['n1']);
-      expect([...engine.spatialIndex.hitTest({ x: 15, y: 15 })].sort()).toEqual(['child', 'n1']);
-    }
   });
 });
 
@@ -199,7 +168,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
           zIndex: 'a1',
           locked: false
         };
-        ctx.commitOperation({
+        ctx.document.commit({
           label: '插件添加节点',
           patches: [
             {
@@ -219,7 +188,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     expect(pluginInstalled).toBe(true);
 
     // 验证文档中节点已增加
-    const view = engine.getView();
+    const view = engine.documentStore.getView();
     expect(Object.keys(view.content.nodes)).toEqual(['plugin_node_1']);
 
     // 验证空间索引自动联动生效！
@@ -261,18 +230,21 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       }
     };
 
-    // 普通画布拖拽插件 (通过自带 onPointerDown 挂载)
+    // 普通画布拖拽插件 (默认优先级 0)
     let dragMoveCount = 0;
     const dragPlugin: SkyNotePlugin = {
       id: 'drag-plugin',
       name: '拖拽插件',
       version: '1.0.0',
-      install: () => {},
-      onPointerDown: () => {
-        eventSequence.push('drag');
-      },
-      onPointerMove: () => {
-        dragMoveCount++;
+      install: (ctx) => {
+        ctx.registerPointerHooks({
+          onPointerDown: () => {
+            eventSequence.push('drag');
+          },
+          onPointerMove: () => {
+            dragMoveCount++;
+          }
+        });
       }
     };
 
@@ -530,7 +502,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
       name: '查询插件',
       version: '1.0.0',
       install: (ctx) => {
-        const target = ctx.getNode('node_alpha');
+        const target = ctx.document.getNode('node_alpha');
         if (target && target.x === 50) {
           foundInPlugin = true;
         }
@@ -561,8 +533,8 @@ describe('SkyNoteEngine.createNode (新建节点统一入口)', () => {
   it('节点类型只给内容，公共字段由引擎补齐；新节点置于目标容器最上层，一步撤销', () => {
     const engine = setup();
     const store = engine.documentStore;
-    const first = engine.createNode({ nodeType: 'badge', x: 10, y: 20, options: { text: 'A' } })!;
-    const second = engine.createNode({ nodeType: 'badge', id: 'b', x: 0, y: 0, label: '添加徽章' });
+    const first = engine.documentStore.createNode({ nodeType: 'badge', x: 10, y: 20, options: { text: 'A' } })!;
+    const second = engine.documentStore.createNode({ nodeType: 'badge', id: 'b', x: 0, y: 0, label: '添加徽章' });
 
     expect(second).toBe('b');
     expect(store.getNode(first)).toMatchObject({
@@ -586,8 +558,16 @@ describe('SkyNoteEngine.createNode (新建节点统一入口)', () => {
 
   it('按中心放置并覆盖默认尺寸；挂到容器下时层级只在容器内比较', () => {
     const engine = setup();
-    engine.createNode({ nodeType: 'badge', id: 'frame', x: 0, y: 0, width: 400, height: 300 });
-    engine.createNode({ nodeType: 'badge', id: 'c', parentId: 'frame', x: 100, y: 100, origin: 'center', width: 20 });
+    engine.documentStore.createNode({ nodeType: 'badge', id: 'frame', x: 0, y: 0, width: 400, height: 300 });
+    engine.documentStore.createNode({
+      nodeType: 'badge',
+      id: 'c',
+      parentId: 'frame',
+      x: 100,
+      y: 100,
+      origin: 'center',
+      width: 20
+    });
 
     expect(engine.documentStore.getNode('frame')).toMatchObject({ width: 400, height: 300 });
     expect(engine.documentStore.getNode('c')).toMatchObject({ parentId: 'frame', x: 90, y: 80, width: 20, height: 40 });
@@ -596,10 +576,10 @@ describe('SkyNoteEngine.createNode (新建节点统一入口)', () => {
 
   it('未注册或不支持新建的类型直接报错 (调用方编程错误)，id 冲突时拒绝提交', () => {
     const engine = setup();
-    expect(() => engine.createNode({ nodeType: 'missing', x: 0, y: 0 })).toThrow();
-    expect(() => engine.createNode({ nodeType: 'static', x: 0, y: 0 })).toThrow();
-    engine.createNode({ nodeType: 'badge', id: 'dup', x: 0, y: 0 });
-    expect(engine.createNode({ nodeType: 'badge', id: 'dup', x: 5, y: 5 })).toBeNull();
+    expect(() => engine.documentStore.createNode({ nodeType: 'missing', x: 0, y: 0 })).toThrow();
+    expect(() => engine.documentStore.createNode({ nodeType: 'static', x: 0, y: 0 })).toThrow();
+    engine.documentStore.createNode({ nodeType: 'badge', id: 'dup', x: 0, y: 0 });
+    expect(engine.documentStore.createNode({ nodeType: 'badge', id: 'dup', x: 5, y: 5 })).toBeNull();
     engine.destroy();
   });
 });

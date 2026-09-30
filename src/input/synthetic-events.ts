@@ -10,14 +10,14 @@
  * 3. 命中节点按需计算：多数移动监听者不读 target，拾取延迟到首次读取，且同一事件只算一次。
  */
 
-import type { Point } from '../types/canvas';
+import type { Point } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
 import type { CanvasPointerEvent, CanvasWheelEvent, EventModifiers } from '../protocols/events.protocol';
 
 interface PointerEventState {
   /** 首个认领者 (便于排查认领冲突)；null 表示未被认领 */
   claimedBy: string | null;
-  target: NodeEntity | undefined;
+  target: Readonly<NodeEntity> | undefined;
   targetResolved: boolean;
 }
 
@@ -30,9 +30,9 @@ export interface SyntheticPointerEventInit {
   modifiers?: Partial<EventModifiers>;
   pressure?: number;
   /** 已知的命中节点；与 resolveTarget 二选一 */
-  target?: NodeEntity;
+  target?: Readonly<NodeEntity>;
   /** 延迟拾取：首次读取 target 时调用 */
-  resolveTarget?: () => NodeEntity | undefined;
+  resolveTarget?: () => Readonly<NodeEntity> | undefined;
   /** 转发到宿主原生事件的 stopPropagation */
   onStopPropagation?: () => void;
 }
@@ -65,7 +65,7 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
     this.state = { claimedBy: null, target: init.target, targetResolved: init.resolveTarget === undefined };
   }
 
-  get target(): NodeEntity | undefined {
+  get target(): Readonly<NodeEntity> | undefined {
     const { state } = this;
     if (!state.targetResolved) {
       state.target = this.resolveTarget!();

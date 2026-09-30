@@ -4,7 +4,7 @@
  *
  * 设计考量 (Why):
  * 1. 平台中立红线：插件严禁感知原生 clientX/Y，事件直接派发已解算完成的世界逻辑坐标 point。
- * 2. 交互绝对零耦合 (Pointer Claiming)：通过 claimPointer() 实现独占指针会话，单元格或导图节点认领后，外部通用拖拽/框选自动短路放弃，无需跨插件探测状态。
+ * 2. 交互零耦合 (Pointer Claiming)：通过 claimPointer() 实现独占指针会话，单元格或导图节点认领后，外部通用拖拽/框选自动短路放弃，无需跨插件探测状态。
  */
 
 import type { Point, NodeEntity } from '../types';
@@ -28,7 +28,7 @@ export interface CanvasPointerEvent {
   readonly clientPoint: Point;
 
   /** 拾取命中的节点实体引用 (若点击在空白处则为 undefined) */
-  readonly target?: NodeEntity;
+  readonly target?: Readonly<NodeEntity>;
 
   /** 原始指针唯一 ID */
   readonly pointerId: number;

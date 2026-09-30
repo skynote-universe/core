@@ -4,7 +4,7 @@
  *
  * 设计考量 (Why):
  * 1. 防原型链污染 (AGENTS.md 铁律)：严格过滤 `__proto__`、`prototype`、`constructor`，防止外部不安全数据注入。
- * 2. 零冗余解析：对数组形式的分段路径直接消费，点号分割路径快速分词，兼顾 API 易用性与微秒级高频执行性能。
+ * 2. 零冗余解析：对数组形式的分段路径直接消费，点号分割路径快速分词。
  */
 
 import type { CanvasPatchPath } from '../types/operation';

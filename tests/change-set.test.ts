@@ -62,7 +62,7 @@ describe('数据一致性底线', () => {
     });
 
     expect(record).toBeNull();
-    expect(Object.hasOwn(engine.getView().content.nodes, 'ghost')).toBe(false);
+    expect(Object.hasOwn(engine.documentStore.getView().content.nodes, 'ghost')).toBe(false);
     expect(engine.spatialIndex.size).toBe(0);
   });
 
@@ -73,7 +73,7 @@ describe('数据一致性底线', () => {
     store.commit({ origin: 'remote', patches: [{ op: 'unset', path: ['content', 'nodes', 'b'] }] });
 
     const historyStates: boolean[] = [];
-    store.coordinator.onHistoryChange((state) => historyStates.push(state.canUndo));
+    store.onHistoryChange((state) => historyStates.push(state.canUndo));
 
     expect(store.undo()).toBe(false);
     expect(Object.hasOwn(store.getView().content.nodes, 'b')).toBe(false);
@@ -91,14 +91,14 @@ describe('数据一致性底线', () => {
     node.x = 999;
     (node.style as Record<string, unknown>).fill = 'red';
 
-    expect(engine.getView().content.nodes.a.x).toBe(0);
-    expect(engine.getView().content.nodes.a.style).toEqual({});
+    expect(engine.documentStore.getView().content.nodes.a.x).toBe(0);
+    expect(engine.documentStore.getView().content.nodes.a.style).toEqual({});
   });
 
   it('文档后续的就地修改不会回写撤销栈中的历史补丁', () => {
     const store = new DocumentStore();
     store.addNode(makeNode('a'));
-    const addEntry = store.coordinator.getUndoEntries()[0];
+    const addEntry = store.undoEntries[0];
 
     store.moveNodes(['a'], { x: 50 });
     store.updateNode('a', { style: { fill: 'red' } });
@@ -155,7 +155,7 @@ describe('数据一致性底线', () => {
     engine.session.setSelection({ nodeIds: ['a', 'b'], connectorIds: ['c1'] });
 
     store.removeNodes(['a']);
-    const view = engine.getView();
+    const view = engine.documentStore.getView();
     expect(Object.keys(view.content.connectors)).toEqual([]);
     expect([...engine.session.selectedNodeIds]).toEqual(['b']);
     expect(engine.session.selectedConnectorIds.size).toBe(0);
@@ -163,7 +163,7 @@ describe('数据一致性底线', () => {
     expect(store.entityStore.getConnectorIdsOfNode('b').size).toBe(0);
 
     store.undo();
-    expect(Object.keys(engine.getView().content.connectors)).toEqual(['c1']);
+    expect(Object.keys(engine.documentStore.getView().content.connectors)).toEqual(['c1']);
     expect(store.entityStore.getConnectorIdsOfNode('a').has('c1')).toBe(true);
     expect(engine.connectorSpatialIndex.size).toBe(1);
   });

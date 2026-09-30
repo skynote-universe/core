@@ -7,10 +7,10 @@
  * 2. 文本块继承统一 TextBlock：连线标注与节点文字共享同一套排版渲染管线。
  */
 
-import type { Point } from './canvas';
+import type { Point } from './geometry';
+import type { FractionalIndex } from './canvas';
 import type { TextBlock } from './text';
 import type { StrokeCap, StrokeJoin } from './style';
-import type { FractionalIndex } from '../utils/fractional-index';
 
 /** 连线端点绑定位置描述 */
 export interface ConnectorEndpoint {

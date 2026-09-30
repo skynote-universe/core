@@ -3,7 +3,7 @@
  * @description 文档事务提交前的结构性守卫 (纯函数)
  *
  * 设计考量 (Why):
- * 1. 零 Base64 红线落地：文档只允许通过 assetId 引用媒体。data: 内联数据会让撤销栈深拷贝与协同广播内存雪崩；
+ * 1. 零 Base64 红线落地：文档只允许通过 assetId 引用媒体。data: 内联数据会让撤销栈深拷贝与协同广播内存暴涨；
  *    blob: 地址只在当前页面会话有效，持久化后必然失效。两者在提交入口一律拒绝，本地、插件与远端补丁同等对待。
  * 2. 容器无环：parentId 形成环会让层级排序、级联移动与级联删除全部失控，必须在写入前拦截，
  *    且要把同一事务内的多处 parentId 变更合并考虑 (如先后交换两个节点的父子关系)。
@@ -47,6 +47,16 @@ function findInlineMediaSegments(value: unknown): (string | number)[] | null {
     }
   }
   return null;
+}
+
+/**
+ * 提交前的全部结构性守卫 (零 Base64、容器无环、层级索引合法)，返回首个违规描述；合法返回 null
+ * @param doc 补丁应用前的文档 (成环判定需要现有的父子关系)
+ */
+export function findCommitViolation(doc: CanvasDocument, patches: readonly CanvasPatch[]): string | null {
+  const inlineMedia = findInlineMediaInPatches(patches);
+  if (inlineMedia) return `${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`;
+  return findParentCycle(doc, patches) ?? findInvalidZIndex(patches);
 }
 
 /**

@@ -6,9 +6,10 @@
  * 1. 策略模式解耦：将各种寻路算法（直线、正交、贝塞尔、思维导图曲线）收敛为统一注册表，
  *    渲染器和连线交互仅需 routerRegistry.get(type).route(input) 即可，无任何硬编码 if/else。
  * 2. 默认开箱即用：内置 'straight'、'orthogonal'、'curved' 三大高频算法，无需外部插件也能即刻运行。
- * 3. 严格纯函数：内置算法保持绝对数学纯净，0 依赖，0 状态副作用。
+ * 3. 严格纯函数：内置算法为纯函数，无依赖、无副作用。
  */
 
+import type { Point } from '../types/geometry';
 import {
   ConnectorRouter,
   type ConnectorRouterDefinition,
@@ -16,7 +17,6 @@ import {
   type ConnectorRouterResult,
   type ConnectorDirection
 } from '../protocols/connector-router.protocol';
-import type { Point } from '../types/canvas';
 import { buildRoundedPolylinePath } from '../utils/geometry';
 
 /** 直线路由算法类 */

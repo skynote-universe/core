@@ -79,7 +79,7 @@ describe('文本驱动的自动尺寸', () => {
     const engine = createEngine();
     // 可用宽度 100 - 2×10 = 80 → 每行 8 字；20 字折 3 行 × 行高 30 = 90，再加上下 padding 20
     engine.documentStore.addNode(makeNode('s', 'sticky', 'a'.repeat(20)));
-    const node = engine.getView().content.nodes.s;
+    const node = engine.documentStore.getView().content.nodes.s;
     expect(node.width).toBe(100);
     expect(node.height).toBe(110);
   });
@@ -102,13 +102,14 @@ describe('文本驱动的自动尺寸', () => {
     });
     // 25 字 → 每行 8 字折 4 行 × 30 + padding 20
     expect(store.getNode('s')?.height).toBe(140);
-    expect(store.coordinator.getUndoEntries()).toHaveLength(2);
+    expect(store.undoEntries).toHaveLength(2);
 
     store.undo();
     expect(store.getNode('s')?.textBlocks?.[0].runs[0].text).toBe('short');
     expect(store.getNode('s')?.height).toBe(50);
     // 空间索引随派生尺寸同步更新
-    expect(engine.spatialIndex.getBounds('s')?.height).toBe(50);
+    const bounds = engine.spatialIndex.getBounds('s')!;
+    expect(bounds.bottom - bounds.top).toBe(50);
   });
 
   it('调整宽度会重新折行并派生高度', () => {
@@ -122,7 +123,7 @@ describe('文本驱动的自动尺寸', () => {
   it('content-driven：宽高双向随内容，不折行', () => {
     const engine = createEngine();
     engine.documentStore.addNode(makeNode('l', 'label', 'hello world'));
-    const node = engine.getView().content.nodes.l;
+    const node = engine.documentStore.getView().content.nodes.l;
     expect(node.width).toBe(110);
     expect(node.height).toBe(15);
   });
@@ -182,11 +183,11 @@ describe('文本驱动的自动尺寸', () => {
     engine.documentStore.addNode(makeNode('s', 'sticky', 'a'.repeat(20)));
     expect(engine.documentStore.getNode('s')?.height).toBe(10);
 
-    engine.setTextMeasurer(createFakeMeasurer());
-    const undoDepth = engine.documentStore.coordinator.getUndoEntries().length;
-    engine.relayoutText();
+    engine.documentStore.setTextMeasurer(createFakeMeasurer());
+    const undoDepth = engine.documentStore.undoEntries.length;
+    engine.documentStore.relayoutText();
     expect(engine.documentStore.getNode('s')?.height).toBe(110);
-    expect(engine.documentStore.coordinator.getUndoEntries()).toHaveLength(undoDepth);
+    expect(engine.documentStore.undoEntries).toHaveLength(undoDepth);
   });
 
   it('createTextBlockPrimitive 是文本块到图元的唯一映射：拼接富文本段落并携带块级样式', () => {

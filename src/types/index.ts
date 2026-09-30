@@ -3,6 +3,7 @@
  * @description SkyNote 核心纯类型定义统一导出入口 (领域细分与双层架构)
  */
 
+export * from './geometry';
 export * from './canvas';
 export * from './node';
 export * from './connector';

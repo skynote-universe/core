@@ -8,11 +8,11 @@
  * 2. 包围盒取真实路由点集：正交/避障路由拐出两端节点范围时，视锥裁剪与拾取依旧准确。
  */
 
-import type { Point } from '../types/canvas';
+import type { Matrix2D, Point } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity, ConnectorEndpoint } from '../types/connector';
 import type { ComputedRoute } from '../types/runtime';
-import { applyMatrix, type Matrix2D } from '../utils/geometry';
+import { applyMatrix } from '../utils/geometry';
 import type { ConnectorRouterRegistry } from '../registry/connector-router-registry';
 
 /** 端点绑定的节点及其世界矩阵 (节点坐标相对父容器，ADR-114) */
@@ -91,6 +91,6 @@ export function computeConnectorRoute(
     points,
     pathData: result.pathData,
     totalLength,
-    bounds: { left, top, right, bottom, width: right - left, height: bottom - top }
+    bounds: { left, top, right, bottom }
   };
 }

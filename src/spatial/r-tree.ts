@@ -3,9 +3,9 @@
  * @description 专为无限画布定制的高性能 R-Tree (层次包围盒) 空间拓扑索引
  *
  * 设计考量 (Why):
- * 1. 完美适应极端图元尺寸：自适应分层包络，无论是 10px 的小图标还是 10000px 的超大画框 Frame，
+ * 1. 适应悬殊的图元尺寸：自适应分层包络，无论是 10px 的小图标还是 10000px 的超大画框 Frame，
  *    内存占用严格为 O(1)，无网格哈希的格子膨胀与退化问题。
- * 2. 0 依赖纯数学实现：100% 遵守 AGENTS.md 极简依赖红线，跨平台零壁垒。
+ * 2. 0 依赖纯数学实现：遵守极简依赖红线。
  * 3. 内存与删除加速：内部维护叶子节点直达映射，将传统 R-Tree 最慢的删除遍历加速至 O(树高)。
  * 4. 长时编辑不退化：删除时执行 CondenseTree（解散欠载节点并重插其条目、收缩单子根），
  *    空节点包围盒取「反向无穷」不参与并集；拖拽小步移动在原叶子范围内就地更新，免去删插。
@@ -13,8 +13,8 @@
  * 5. STR 批量装载：初次加载或大批量变更时整体排序打包，建树速度与树形质量均优于逐条插入。
  */
 
-import type { Point } from '../types/canvas';
-import { type RectBounds, doBoundsIntersect, isPointInBounds } from '../utils/geometry';
+import type { Point, RectBounds } from '../types/geometry';
+import { doBoundsIntersect, isPointInBounds, unionBounds } from '../utils/geometry';
 import type { SpatialIndex, SpatialIndexEntry } from './spatial-index';
 
 interface RTreeEntry {
@@ -31,23 +31,7 @@ interface RTreeNode {
 
 /** 空节点包围盒：与任何矩形求并集都不产生影响，也不与任何查询相交 */
 function createEmptyBounds(): RectBounds {
-  return { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, width: 0, height: 0 };
-}
-
-/** 计算两个矩形包围盒的最小联合外包矩形 (MBR) */
-function unionBounds(a: RectBounds, b: RectBounds): RectBounds {
-  const left = Math.min(a.left, b.left);
-  const top = Math.min(a.top, b.top);
-  const right = Math.max(a.right, b.right);
-  const bottom = Math.max(a.bottom, b.bottom);
-  return {
-    left,
-    top,
-    right,
-    bottom,
-    width: right - left,
-    height: bottom - top
-  };
+  return { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
 }
 
 function computeChildrenBounds(children: readonly (RTreeNode | RTreeEntry)[]): RectBounds {
@@ -64,9 +48,9 @@ function containsBounds(outer: RectBounds, inner: RectBounds): boolean {
   );
 }
 
-/** 计算包围盒面积 */
+/** 包围盒面积 (空包围盒为 0) */
 function calcArea(b: RectBounds): number {
-  return Math.max(0, b.width) * Math.max(0, b.height);
+  return Math.max(0, b.right - b.left) * Math.max(0, b.bottom - b.top);
 }
 
 /** 计算若合并两个包围盒所需的面积增量 (Enlargement) */
@@ -95,7 +79,7 @@ export class RTreeSpatialIndex implements SpatialIndex {
   private readonly minEntries: number;
 
   private root: RTreeNode;
-  /** 节点 ID 到所属条目及所在叶子节点的直接索引 (实现删除 O(树高) 极速定位) */
+  /** 节点 ID 到所属条目及所在叶子节点的直接索引 (删除时 O(树高) 定位) */
   private readonly itemMap = new Map<string, { entry: RTreeEntry; leaf: RTreeNode }>();
 
   constructor(options?: RTreeOptions) {
@@ -496,7 +480,7 @@ export class RTreeSpatialIndex implements SpatialIndex {
     if (current.left === left && current.top === top && current.right === right && current.bottom === bottom) {
       return false;
     }
-    node.bounds = { left, top, right, bottom, width: right - left, height: bottom - top };
+    node.bounds = { left, top, right, bottom };
     return true;
   }
 

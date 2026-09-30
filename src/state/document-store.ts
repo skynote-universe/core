@@ -1,26 +1,34 @@
 /**
  * @file document-store.ts
- * @description 画布文档状态中心 (单一事实源聚合器)
+ * @description 画布文档状态中心：唯一的写入口 (事务、语义命令、新建节点、文本自动尺寸) 与增量变更集广播
  *
  * 设计考量 (Why):
- * 1. 深度只读投影 (CanvasDocumentView)：对外暴露的文档对象强锁 readonly，防止外部直接属性赋值绕过事务机制。
- * 2. 状态与事务闭环：内聚集成 EntityStore 与 OperationCoordinator，当补丁应用时自动完成双版本号更新与实体索引刷新。
- * 3. 极速响应：提供便捷的高频语义操作 (addNode、updateNode、moveNodes、reparentNodes、removeNodes 等)，自动封装规范补丁并走事务提交。
- *    视口与选区属于本地会话状态，由 SessionStore 管理，不在此处。
- * 4. 增量变更集：每次提交把补丁路径按实体语义归类为 DocumentChangeSet 一并广播，下游全部增量消费。
+ * 1. 只读投影：对外暴露的文档在类型上是深度只读的，写入只能经事务提交。
+ * 2. 语义命令：移动、删除、改挂、层级、新建都在这里封装为规范补丁并走同一提交入口，自动满足守卫、派生排版与撤销合并。
+ * 3. 增量变更集：每次提交把补丁路径按实体语义归类为 DocumentChangeSet 广播一次，下游 (索引、渲染、插件) 全部增量消费。
+ * 4. 文本驱动的自动尺寸：注入测量器后，本地事务中的文本或宽度变更在同一事务内派生尺寸补丁，撤销时一并回退。
  */
 
-import type { CanvasDocument, CanvasDocumentView } from '../types/canvas';
+import type { CanvasDocument, CanvasDocumentView, FractionalIndex } from '../types/canvas';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity } from '../types/connector';
-import type { CanvasOperationRecord, CommitOperationOptions, CanvasPatch } from '../types/operation';
+import type {
+  CanvasHistoryEntry,
+  CanvasOperationRecord,
+  CommitOperationOptions,
+  CanvasPatch
+} from '../types/operation';
 import type { DocumentChangeSet, EntityChanges } from '../types/change-set';
-import type { EntitySyncResult, EntityReader } from './entity-store';
-import { EntityStore } from './entity-store';
-import { OperationCoordinator } from '../operation/coordinator';
+import type { CreateNodeRequest } from '../protocols/node-type.protocol';
+import type { TextMeasurer } from '../protocols/text-measurer.protocol';
+import { EntityStore, type EntityReader, type EntitySyncResult } from './entity-store';
+import { OperationCoordinator, type HistoryChangeListener } from '../operation/coordinator';
 import { normalizePatchPath } from '../operation/patch-path';
+import { NodeTypeRegistry } from '../registry/node-type-registry';
 import { clonePlainData } from '../utils/clone';
-import { findInlineMediaUrl, findInlineMediaInPatches, findParentCycle, findInvalidZIndex } from './commit-guards';
+import { generateId } from '../utils/id';
+import { findCommitViolation, findInlineMediaUrl } from './commit-guards';
+import { collectTextLayoutTargets, deriveTextLayoutPatches } from '../layout/text-layout';
 import {
   compareHierarchicalNodes,
   computeLayerOrder,
@@ -29,24 +37,17 @@ import {
   sortSiblingsByLayer,
   type LayerMove
 } from '../layout/layer-order';
-import { generateKeyBetween, generateNKeysBetween, type FractionalIndex } from '../utils/fractional-index';
+import { generateKeyBetween, generateNKeysBetween } from '../utils/fractional-index';
 import { applyMatrixToVector, decomposeNodeMatrix, invertMatrix, multiplyMatrix } from '../utils/geometry';
 
-/** 创建纯净空文档初始数据 */
+/** 创建空文档 */
 export function createEmptyCanvasDocument(id = 'doc_root', name = '未命名画布'): CanvasDocument {
   const now = Date.now();
   return {
     id,
     name,
-    meta: {
-      version: 1,
-      createdAt: now,
-      updatedAt: now
-    },
-    content: {
-      nodes: {},
-      connectors: {}
-    }
+    meta: { version: 1, createdAt: now, updatedAt: now },
+    content: { nodes: {}, connectors: {} }
   };
 }
 
@@ -55,20 +56,41 @@ const NODE_GEOM_FIELDS: ReadonlySet<string | number> = new Set(['x', 'y', 'width
 const CONNECTOR_GEOM_FIELDS: ReadonlySet<string | number> = new Set(['from', 'to', 'controlPoints', 'style']);
 const NODE_ORDER_FIELDS: ReadonlySet<string | number> = new Set(['zIndex', 'parentId']);
 const CONNECTOR_ORDER_FIELDS: ReadonlySet<string | number> = new Set(['zIndex', 'from', 'to']);
+const LAYER_MOVE_LABELS: Record<LayerMove, string> = {
+  forward: '上移一层',
+  backward: '下移一层',
+  front: '置顶',
+  back: '置底'
+};
+
+/** 语义命令的公共选项 */
+export interface CommandOptions {
+  /** 撤销记录名称 */
+  label?: string;
+  /** 默认 true；false 时不进入撤销栈 (系统整理、载入) */
+  undoable?: boolean;
+  /** 同组的连续提交折叠为一步撤销 (拖拽逐帧提交) */
+  groupId?: string;
+}
 
 /**
- * 暴露给插件的语义化文档命令：全部经事务提交，自动满足守卫、派生排版与撤销合并
- * 插件只拿到这些命令，拿不到 DocumentStore 本身 (订阅、历史清空等宿主级能力不对插件开放)
+ * 插件可用的文档能力：只读查询与语义命令，全部经事务提交
+ * 订阅、清空历史、替换测量器等宿主级能力不对插件开放
  */
-export type DocumentCommands = Pick<
+export type DocumentApi = Pick<
   DocumentStore,
+  | 'getView'
+  | 'getNode'
+  | 'getConnector'
+  | 'commit'
+  | 'createNode'
   | 'addNode'
   | 'updateNode'
+  | 'updateConnector'
   | 'moveNodes'
   | 'removeNodes'
   | 'reparentNodes'
   | 'moveLayers'
-  | 'createTopZIndex'
   | 'batch'
   | 'undo'
   | 'redo'
@@ -76,12 +98,19 @@ export type DocumentCommands = Pick<
   | 'canRedo'
 >;
 
-/** 文档视图订阅回调 */
+/** 文档变更订阅回调 */
 export type DocumentSubscriber = (
   view: CanvasDocumentView,
   record: CanvasOperationRecord,
   changes: DocumentChangeSet
 ) => void;
+
+export interface DocumentStoreOptions {
+  /** 节点类型注册表：新建节点与文本排版据此取节点定义 */
+  nodeTypes?: NodeTypeRegistry;
+  /** 文本测量器 (渲染适配层提供)，缺省时不做文本驱动的自动尺寸 */
+  textMeasurer?: TextMeasurer;
+}
 
 interface MutableEntityChanges extends EntityChanges {
   readonly added: Set<string>;
@@ -115,84 +144,84 @@ function recordSyncResult(changes: MutableEntityChanges, id: string, result: Ent
 }
 
 export class DocumentStore {
+  readonly nodeTypes: NodeTypeRegistry;
   private readonly document: CanvasDocument;
-  /** 对外只读的实体运行时索引；写入只经由本类的事务提交回调 */
-  readonly entityStore: EntityReader;
-  private readonly entityIndex: EntityStore;
-  readonly coordinator: OperationCoordinator<CanvasDocument>;
-
+  private readonly entities = new EntityStore();
+  private readonly coordinator: OperationCoordinator<CanvasDocument>;
   private readonly subscribers = new Set<DocumentSubscriber>();
+  private textMeasurer: TextMeasurer | null = null;
 
-  constructor(initialDoc?: CanvasDocument) {
+  constructor(initialDoc?: CanvasDocument, options?: DocumentStoreOptions) {
     // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
     this.document = initialDoc ? clonePlainData(initialDoc) : createEmptyCanvasDocument();
+    // 资产表等 content 之外的字段同样不允许内联媒体，因此整份文档扫描一次
     const inlineMedia = findInlineMediaUrl(this.document);
-    if (inlineMedia) {
-      throw new Error(`[DocumentStore] 文档 ${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`);
-    }
-    const cycle = findParentCycle(createEmptyCanvasDocument(), [
-      { op: 'set', path: ['content', 'nodes'], value: this.document.content.nodes }
-    ]);
-    if (cycle) {
-      throw new Error(`[DocumentStore] 文档容器层级非法：${cycle}`);
-    }
-    const invalidZIndex = findInvalidZIndex([{ op: 'set', path: ['content'], value: this.document.content }]);
-    if (invalidZIndex) {
-      throw new Error(`[DocumentStore] 文档层级索引非法：${invalidZIndex}`);
-    }
-    this.entityIndex = new EntityStore();
-    this.entityStore = this.entityIndex;
-    this.coordinator = new OperationCoordinator<CanvasDocument>(this.document);
+    const violation = inlineMedia
+      ? `${inlineMedia} 内联了 data:/blob: 媒体地址`
+      : findCommitViolation(createEmptyCanvasDocument(), [
+          { op: 'set', path: ['content'], value: this.document.content }
+        ]);
+    if (violation) throw new Error(`[DocumentStore] 文档非法：${violation}`);
 
+    this.nodeTypes = options?.nodeTypes ?? new NodeTypeRegistry();
+    this.coordinator = new OperationCoordinator(this.document);
     const { nodes, connectors } = this.document.content;
-    for (const id in nodes) {
-      this.entityIndex.syncNode(id, nodes[id]);
-    }
-    for (const id in connectors) {
-      this.entityIndex.syncConnector(id, connectors[id]);
-    }
-
-    // 监听事务提交，自动调度实体更新与广播
-    this.coordinator.onOperation((record, doc) => {
-      this.handleOperationCommitted(record, doc);
-    });
+    for (const id in nodes) this.entities.syncNode(id, nodes[id]);
+    for (const id in connectors) this.entities.syncConnector(id, connectors[id]);
+    this.coordinator.onOperation((record, doc) => this.handleOperationCommitted(record, doc));
+    this.setTextMeasurer(options?.textMeasurer ?? null);
   }
 
-  /** 获取当前只读投影视图 */
+  /** 实体运行时索引 (只读视图；写入只经本类的事务提交回调) */
+  get entityStore(): EntityReader {
+    return this.entities;
+  }
+
   getView(): CanvasDocumentView {
     return this.document as CanvasDocumentView;
   }
 
-  /** 是否可撤销 */
+  getNode(id: string): Readonly<NodeEntity> | undefined {
+    return this.entities.getNode(id)?.entity;
+  }
+
+  getConnector(id: string): Readonly<ConnectorEntity> | undefined {
+    return this.entities.getConnector(id)?.entity;
+  }
+
   get canUndo(): boolean {
     return this.coordinator.canUndo;
   }
 
-  /** 是否可重做 */
   get canRedo(): boolean {
     return this.coordinator.canRedo;
   }
 
+  /** 撤销栈 (旧 → 新)，供调试与界面展示 */
+  get undoEntries(): readonly CanvasHistoryEntry[] {
+    return this.coordinator.undoEntries;
+  }
+
+  /** 订阅撤销 / 重做可用状态 (订阅时立即回调一次当前状态) */
+  onHistoryChange(listener: HistoryChangeListener): () => void {
+    return this.coordinator.onHistoryChange(listener);
+  }
+
+  subscribe(listener: DocumentSubscriber): () => void {
+    this.subscribers.add(listener);
+    return () => {
+      this.subscribers.delete(listener);
+    };
+  }
+
   /**
-   * 提交原子事务
-   * 先经结构性守卫 (零 Base64、容器无环)，违规时整个事务拒绝执行并返回 null
+   * 提交原子事务：先经结构性守卫 (零 Base64、容器无环、层级索引合法)，违规时整体拒绝
+   * @returns 事务记录；被拒绝或补丁冲突时返回 null
    */
   commit(options: CommitOperationOptions): CanvasOperationRecord | null {
-    const inlineMedia = findInlineMediaInPatches(options.patches);
-    if (inlineMedia) {
-      console.error(
-        `[DocumentStore] 事务被拒绝：${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`
-      );
-      return null;
-    }
-    const cycle = findParentCycle(this.document, options.patches);
-    if (cycle) {
-      console.error(`[DocumentStore] 事务被拒绝：${cycle}`);
-      return null;
-    }
-    const invalidZIndex = findInvalidZIndex(options.patches);
-    if (invalidZIndex) {
-      console.error(`[DocumentStore] 事务被拒绝：${invalidZIndex}`);
+    const violation = findCommitViolation(this.document, options.patches);
+    if (violation) {
+      console.error(`[DocumentStore] 事务被拒绝：${violation}`);
       return null;
     }
     return this.coordinator.commitOperation(options);
@@ -206,98 +235,115 @@ export class DocumentStore {
     return this.coordinator.batch(fn, label);
   }
 
-  /** 撤销一步操作 */
   undo(): boolean {
     return this.coordinator.undo();
   }
 
-  /** 重做一步操作 */
   redo(): boolean {
     return this.coordinator.redo();
   }
 
-  /** 清空历史栈 */
   clearHistory(): void {
     this.coordinator.clearHistory();
   }
 
-  /** 订阅文档视图变更 */
-  subscribe(listener: DocumentSubscriber): () => void {
-    this.subscribers.add(listener);
-    return () => {
-      this.subscribers.delete(listener);
+  // ================= 文本自动尺寸 =================
+
+  /** 注入或移除文本测量器：注入后本地事务中的文本与宽度变更会在同一事务内派生节点尺寸 */
+  setTextMeasurer(measurer: TextMeasurer | null): void {
+    this.textMeasurer = measurer;
+    this.coordinator.setPatchDerivation(
+      measurer
+        ? (doc, patches) => deriveTextLayoutPatches(doc, collectTextLayoutTargets(patches), measurer, this.nodeTypes)
+        : null
+    );
+  }
+
+  /**
+   * 按当前测量器重新排版节点 (默认全部)，以非撤销的系统事务写回尺寸
+   * 用于 Web 字体加载完成、测量器替换等测量基准变化的时机
+   */
+  relayoutText(nodeIds: Iterable<string> = Object.keys(this.document.content.nodes)): CanvasOperationRecord | null {
+    if (!this.textMeasurer) return null;
+    const patches = deriveTextLayoutPatches(this.document, nodeIds, this.textMeasurer, this.nodeTypes);
+    return this.commit({ label: '重新排版文本', source: 'system', undoable: false, patches });
+  }
+
+  // ================= 语义命令 =================
+
+  /**
+   * 新建节点：由已注册节点类型的 createContent 给出内容，这里补齐 id、位置、层级等公共字段后提交
+   * 新节点置于目标容器最上层
+   * @returns 新节点 id；提交被拒绝时返回 null
+   * @throws 节点类型未注册或不支持新建 (属调用方编程错误)
+   */
+  createNode<T extends string>(request: CreateNodeRequest<T>): string | null {
+    const definition = this.nodeTypes.get(request.nodeType);
+    if (!definition?.createContent) {
+      throw new Error(`[DocumentStore] 节点类型 "${request.nodeType}" 未注册或不支持新建`);
+    }
+    const content = definition.createContent(request.options ?? {});
+    const width = request.width ?? content.width;
+    const height = request.height ?? content.height;
+    // 内容驱动尺寸的节点 (如自由文本) 以 0 尺寸创建、提交时才测量，居中放置时退化为左上角对准
+    const centered = request.origin === 'center';
+    const node: NodeEntity = {
+      ...content,
+      id: request.id ?? generateId('node'),
+      type: 'node',
+      nodeType: request.nodeType,
+      ...(request.parentId !== undefined && { parentId: request.parentId }),
+      x: centered ? request.x - width / 2 : request.x,
+      y: centered ? request.y - height / 2 : request.y,
+      width,
+      height,
+      rotation: request.rotation ?? 0,
+      zIndex: this.createTopZIndex(request.parentId),
+      locked: false
     };
+    return this.addNode(node, { label: request.label }) ? node.id : null;
   }
 
-  /**
-   * O(1) 瞬时查询单个节点实体 (只读引用)
-   */
-  getNode(id: string): Readonly<NodeEntity> | undefined {
-    return this.entityStore.getNode(id)?.entity;
-  }
-
-  /**
-   * O(1) 瞬时查询单个连线实体 (只读引用)
-   */
-  getConnector(id: string): Readonly<ConnectorEntity> | undefined {
-    return this.entityStore.getConnector(id)?.entity;
-  }
-
-  // ================= 便捷语义操作辅助函数 =================
-
-  /**
-   * 添加节点
-   */
-  addNode(node: NodeEntity, options?: { undoable?: boolean; label?: string }): CanvasOperationRecord | null {
+  /** 添加完整节点实体 (粘贴、导入)；id 已存在时拒绝 */
+  addNode(node: NodeEntity, options?: CommandOptions): CanvasOperationRecord | null {
     if (Object.hasOwn(this.document.content.nodes, node.id)) {
       console.error(`[DocumentStore] 节点 id 已存在，拒绝覆盖: ${node.id}`);
       return null;
     }
     return this.commit({
-      label: options?.label ?? `添加${node.nodeType}节点`,
-      undoable: options?.undoable ?? true,
+      ...options,
+      label: options?.label ?? '添加节点',
       patches: [{ op: 'set', path: ['content', 'nodes', node.id], value: node }]
     });
   }
 
-  /**
-   * 过滤出「祖先不在集合中」的节点：后代坐标相对容器，随容器一起移动、改挂或删除；
-   * 否则同时选中容器与其子节点时，子节点会被重复移动 (随容器一次 + 自身一次)
-   */
-  private collectTopmost(nodeIds: Iterable<string>): string[] {
-    const { nodes } = this.document.content;
-    const selected = new Set<string>();
-    for (const id of nodeIds) {
-      if (Object.hasOwn(nodes, id)) selected.add(id);
-    }
-    const topmost: string[] = [];
-    for (const id of selected) {
-      let parentId = nodes[id].parentId;
-      let covered = false;
-      while (parentId !== undefined && Object.hasOwn(nodes, parentId)) {
-        if (selected.has(parentId)) {
-          covered = true;
-          break;
-        }
-        parentId = nodes[parentId].parentId;
-      }
-      if (!covered) topmost.push(id);
-    }
-    return topmost;
+  /** 更新节点字段：style / data 默认浅合并，其余字段直接覆盖；id 与 type 不可修改 */
+  updateNode(
+    nodeId: string,
+    partial: Partial<NodeEntity>,
+    options?: CommandOptions & { merge?: boolean }
+  ): CanvasOperationRecord | null {
+    return this.updateEntity('nodes', nodeId, partial, { label: '更新节点属性', ...options });
+  }
+
+  /** 更新连线字段，规则同 updateNode */
+  updateConnector(
+    connectorId: string,
+    partial: Partial<ConnectorEntity>,
+    options?: CommandOptions & { merge?: boolean }
+  ): CanvasOperationRecord | null {
+    return this.updateEntity('connectors', connectorId, partial, { label: '更新连线属性', ...options });
   }
 
   /**
    * 删除节点 (支持多选)：同一事务内级联删除全部后代 (容器语义) 与这些节点上的依附连线，撤销一步整体恢复
    * 选区中的失效项由引擎在收到变更集后统一剔除，本地删除与远端删除走同一条路径
    */
-  removeNodes(
-    nodeIds: Iterable<string>,
-    options?: { undoable?: boolean; label?: string }
-  ): CanvasOperationRecord | null {
+  removeNodes(nodeIds: Iterable<string>, options?: CommandOptions): CanvasOperationRecord | null {
     const removed = new Set<string>();
     for (const id of this.collectTopmost(nodeIds)) {
       removed.add(id);
-      for (const descendantId of this.entityStore.collectDescendantIds(id)) removed.add(descendantId);
+      for (const descendantId of this.entities.collectDescendantIds(id)) removed.add(descendantId);
     }
     if (removed.size === 0) return null;
 
@@ -305,13 +351,12 @@ export class DocumentStore {
     const patches: CanvasPatch[] = [];
     for (const id of removed) {
       patches.push({ op: 'unset', path: ['content', 'nodes', id] });
-      for (const connectorId of this.entityStore.getConnectorIdsOfNode(id)) connectorIds.add(connectorId);
+      for (const connectorId of this.entities.getConnectorIdsOfNode(id)) connectorIds.add(connectorId);
     }
     for (const connectorId of connectorIds) {
       patches.push({ op: 'unset', path: ['content', 'connectors', connectorId] });
     }
-
-    return this.commit({ label: options?.label ?? '删除节点', undoable: options?.undoable ?? true, patches });
+    return this.commit({ ...options, label: options?.label ?? '删除节点', patches });
   }
 
   /**
@@ -321,28 +366,22 @@ export class DocumentStore {
   moveNodes(
     nodeIds: Iterable<string>,
     delta: { x?: number; y?: number },
-    options?: { undoable?: boolean; groupId?: string; label?: string }
+    options?: CommandOptions
   ): CanvasOperationRecord | null {
-    if (!delta.x && !delta.y) return null;
+    const dx = delta.x ?? 0;
+    const dy = delta.y ?? 0;
+    if (!dx && !dy) return null;
     const { nodes } = this.document.content;
     const patches: CanvasPatch[] = [];
     for (const id of this.collectTopmost(nodeIds)) {
       const node = nodes[id];
-      const parentMatrix = node.parentId === undefined ? undefined : this.entityStore.getWorldTransform(node.parentId);
-      const local = parentMatrix
-        ? applyMatrixToVector(invertMatrix(parentMatrix), delta.x ?? 0, delta.y ?? 0)
-        : { x: delta.x ?? 0, y: delta.y ?? 0 };
+      const parentMatrix = node.parentId === undefined ? undefined : this.entities.getWorldTransform(node.parentId);
+      const local = parentMatrix ? applyMatrixToVector(invertMatrix(parentMatrix), dx, dy) : { x: dx, y: dy };
       if (local.x) patches.push({ op: 'set', path: ['content', 'nodes', id, 'x'], value: node.x + local.x });
       if (local.y) patches.push({ op: 'set', path: ['content', 'nodes', id, 'y'], value: node.y + local.y });
     }
     if (patches.length === 0) return null;
-
-    return this.commit({
-      label: options?.label ?? '移动节点',
-      undoable: options?.undoable ?? true,
-      groupId: options?.groupId,
-      patches
-    });
+    return this.commit({ ...options, label: options?.label ?? '移动节点', patches });
   }
 
   /**
@@ -352,7 +391,7 @@ export class DocumentStore {
   reparentNodes(
     nodeIds: Iterable<string>,
     parentId: string | undefined,
-    options?: { undoable?: boolean; groupId?: string; label?: string }
+    options?: CommandOptions
   ): CanvasOperationRecord | null {
     const { nodes } = this.document.content;
     if (parentId !== undefined && !Object.hasOwn(nodes, parentId)) return null;
@@ -365,13 +404,13 @@ export class DocumentStore {
       .sort((a, b) => compareHierarchicalNodes(a, b, getNode, chainCache));
     if (targets.length === 0) return null;
 
-    const parentMatrix = parentId === undefined ? undefined : this.entityStore.getWorldTransform(parentId);
-    const toParentLocal = parentMatrix ? invertMatrix(parentMatrix) : undefined;
+    const parentMatrix = parentId === undefined ? undefined : this.entities.getWorldTransform(parentId);
+    const toParentLocal = parentMatrix && invertMatrix(parentMatrix);
     const keys = generateNKeysBetween(this.findTopZIndex(parentId), null, targets.length);
     const patches: CanvasPatch[] = [];
     for (let i = 0; i < targets.length; i++) {
       const node = targets[i];
-      const world = this.entityStore.getWorldTransform(node.id)!;
+      const world = this.entities.getWorldTransform(node.id)!;
       const pose = decomposeNodeMatrix(
         toParentLocal ? multiplyMatrix(toParentLocal, world) : world,
         node.width,
@@ -388,39 +427,19 @@ export class DocumentStore {
         { op: 'set', path: [...base, 'zIndex'], value: keys[i] }
       );
     }
-    return this.commit({
-      label: options?.label ?? '移入容器',
-      undoable: options?.undoable ?? true,
-      groupId: options?.groupId,
-      patches
-    });
+    return this.commit({ ...options, label: options?.label ?? '移入容器', patches });
   }
 
-  /**
-   * 生成指定容器 (undefined 为根层级) 中位于最上层的新层级索引，用于新建节点
-   */
+  /** 指定容器 (undefined 为根层级) 中位于最上层的新层级索引 */
   createTopZIndex(parentId?: string): FractionalIndex {
     return generateKeyBetween(this.findTopZIndex(parentId), null);
-  }
-
-  private findTopZIndex(parentId: string | undefined): FractionalIndex | null {
-    let top: FractionalIndex | null = null;
-    for (const id of this.entityStore.getChildIds(parentId)) {
-      const key = this.document.content.nodes[id].zIndex;
-      if (top === null || key > top) top = key;
-    }
-    return top;
   }
 
   /**
    * 调整层级 (上移一层 / 下移一层 / 置顶 / 置底)，按列表顺序在各自容器的兄弟之间移动
    * 只为被移动的节点生成新索引，多选时保持相对顺序；顺序无变化时返回 null
    */
-  moveLayers(
-    nodeIds: Iterable<string>,
-    move: LayerMove,
-    options?: { undoable?: boolean; label?: string }
-  ): CanvasOperationRecord | null {
+  moveLayers(nodeIds: Iterable<string>, move: LayerMove, options?: CommandOptions): CanvasOperationRecord | null {
     const { nodes } = this.document.content;
     const groups = new Map<string | undefined, Set<string>>();
     for (const id of nodeIds) {
@@ -436,21 +455,14 @@ export class DocumentStore {
 
     const patches: CanvasPatch[] = [];
     for (const [parentId, selected] of groups) {
-      const siblings = sortSiblingsByLayer([...this.entityStore.getChildIds(parentId)].map((id) => nodes[id]));
+      const siblings = this.siblingsInLayerOrder(parentId);
       const order = siblings.map((node) => node.id);
       const newOrder = computeLayerOrder(order, selected, move);
       if (newOrder.every((id, i) => id === order[i])) continue;
       patches.push(...deriveLayerOrderPatches(siblings, newOrder, selected));
     }
     if (patches.length === 0) return null;
-
-    const labels: Record<LayerMove, string> = {
-      forward: '上移一层',
-      backward: '下移一层',
-      front: '置顶',
-      back: '置底'
-    };
-    return this.commit({ label: options?.label ?? labels[move], undoable: options?.undoable ?? true, patches });
+    return this.commit({ ...options, label: options?.label ?? LAYER_MOVE_LABELS[move], patches });
   }
 
   /**
@@ -458,8 +470,7 @@ export class DocumentStore {
    * 用于同一位置反复插入导致索引过长时整理，以非撤销的系统事务提交
    */
   renumberLayers(parentId?: string): CanvasOperationRecord | null {
-    const { nodes } = this.document.content;
-    const siblings = sortSiblingsByLayer([...this.entityStore.getChildIds(parentId)].map((id) => nodes[id]));
+    const siblings = this.siblingsInLayerOrder(parentId);
     const patches = renumberLayerOrder(
       siblings,
       siblings.map((node) => node.id)
@@ -467,95 +478,59 @@ export class DocumentStore {
     return this.commit({ label: '整理层级索引', source: 'system', undoable: false, patches });
   }
 
-  /**
-   * 更新节点属性 (语义化高频更新通道，自动定位与生成正交原子补丁)
-   * 支持 style/data 的 merge: true 增量浅合并或直接覆盖赋值
-   */
-  updateNode(
-    nodeId: string,
-    partial: Partial<NodeEntity>,
-    options?: { undoable?: boolean; label?: string; merge?: boolean }
+  // ================= 内部 =================
+
+  private updateEntity(
+    collection: 'nodes' | 'connectors',
+    id: string,
+    partial: Partial<NodeEntity> | Partial<ConnectorEntity>,
+    options: CommandOptions & { merge?: boolean }
   ): CanvasOperationRecord | null {
-    if (!Object.hasOwn(this.document.content.nodes, nodeId)) return null;
-
+    if (!Object.hasOwn(this.document.content[collection], id)) return null;
+    const merge = options.merge ?? true;
     const patches: CanvasPatch[] = [];
-    const entries = Object.entries(partial);
-    const shouldMerge = options?.merge ?? true;
-
-    for (let i = 0; i < entries.length; i++) {
-      const [key, value] = entries[i];
-      if (key === 'id' || key === 'type') continue; // 核心不可变主键禁止篡改
-
-      if ((key === 'style' || key === 'data') && typeof value === 'object' && value !== null && shouldMerge) {
-        patches.push({
-          op: 'set',
-          path: ['content', 'nodes', nodeId, key],
-          value,
-          merge: true
-        });
-      } else {
-        patches.push({
-          op: 'set',
-          path: ['content', 'nodes', nodeId, key],
-          value
-        });
-      }
-    }
-
-    if (patches.length === 0) return null;
-
-    return this.commit({
-      label: options?.label ?? '更新节点属性',
-      undoable: options?.undoable ?? true,
-      patches
-    });
-  }
-
-  /**
-   * 更新连线属性
-   */
-  updateConnector(
-    connectorId: string,
-    partial: Partial<ConnectorEntity>,
-    options?: { undoable?: boolean; label?: string; merge?: boolean }
-  ): CanvasOperationRecord | null {
-    if (!Object.hasOwn(this.document.content.connectors, connectorId)) return null;
-
-    const patches: CanvasPatch[] = [];
-    const entries = Object.entries(partial);
-    const shouldMerge = options?.merge ?? true;
-
-    for (let i = 0; i < entries.length; i++) {
-      const [key, value] = entries[i];
+    for (const [key, value] of Object.entries(partial)) {
+      // 主键与实体类别不可修改
       if (key === 'id' || key === 'type') continue;
-
-      if ((key === 'style' || key === 'data') && typeof value === 'object' && value !== null && shouldMerge) {
-        patches.push({
-          op: 'set',
-          path: ['content', 'connectors', connectorId, key],
-          value,
-          merge: true
-        });
-      } else {
-        patches.push({
-          op: 'set',
-          path: ['content', 'connectors', connectorId, key],
-          value
-        });
-      }
+      const mergeable = merge && (key === 'style' || key === 'data') && typeof value === 'object' && value !== null;
+      patches.push({ op: 'set', path: ['content', collection, id, key], value, ...(mergeable && { merge: true }) });
     }
-
     if (patches.length === 0) return null;
-
-    return this.commit({
-      label: options?.label ?? '更新连线属性',
-      undoable: options?.undoable ?? true,
-      patches
-    });
+    return this.commit({ label: options.label, undoable: options.undoable, groupId: options.groupId, patches });
   }
 
   /**
-   * 统一处理补丁提交后的双版本号、实体增量同步，并产出结构化变更集
+   * 过滤出「祖先不在集合中」的节点：后代坐标相对容器，随容器一起移动、改挂或删除；
+   * 否则同时选中容器与其子节点时，子节点会被重复处理
+   */
+  private collectTopmost(nodeIds: Iterable<string>): string[] {
+    const selected = new Set<string>();
+    for (const id of nodeIds) {
+      if (this.entities.hasNode(id)) selected.add(id);
+    }
+    const topmost: string[] = [];
+    for (const id of selected) {
+      if (!this.entities.getAncestorIds(id).some((ancestorId) => selected.has(ancestorId))) topmost.push(id);
+    }
+    return topmost;
+  }
+
+  private findTopZIndex(parentId: string | undefined): FractionalIndex | null {
+    let top: FractionalIndex | null = null;
+    for (const id of this.entities.getChildIds(parentId)) {
+      const key = this.document.content.nodes[id].zIndex;
+      if (top === null || key > top) top = key;
+    }
+    return top;
+  }
+
+  private siblingsInLayerOrder(parentId: string | undefined): Readonly<NodeEntity>[] {
+    const { nodes } = this.document.content;
+    return sortSiblingsByLayer([...this.entities.getChildIds(parentId)].map((id) => nodes[id]));
+  }
+
+  /**
+   * 事务提交后：对齐实体索引、递增双版本号，并把补丁按实体语义归类为变更集广播
    */
   private handleOperationCommitted(record: CanvasOperationRecord, doc: CanvasDocument): void {
     const nodeChanges = createEntityChanges();
@@ -612,7 +587,7 @@ export class DocumentStore {
     }
 
     const { nodes, connectors } = doc.content;
-    const store = this.entityIndex;
+    const store = this.entities;
 
     if (fullSync) {
       for (const runtimeNode of store.getAllNodes()) syncNodeIds.add(runtimeNode.entity.id);
@@ -636,24 +611,16 @@ export class DocumentStore {
 
     // 事务内单次统一递增版本号；同一事务先改字段再删除实体时，已删除的实体不再计入变更
     for (const id of nodeGeomIds) {
-      if (!store.hasNode(id)) continue;
-      store.notifyNodeGeometryChanged(id);
-      nodeChanges.geometry.add(id);
+      if (store.bumpNodeVersion(id, 'geom')) nodeChanges.geometry.add(id);
     }
     for (const id of nodeDataIds) {
-      if (!store.hasNode(id)) continue;
-      store.notifyNodeDataChanged(id);
-      nodeChanges.data.add(id);
+      if (store.bumpNodeVersion(id, 'data')) nodeChanges.data.add(id);
     }
     for (const id of connectorGeomIds) {
-      if (!store.hasConnector(id)) continue;
-      store.notifyConnectorGeometryChanged(id);
-      connectorChanges.geometry.add(id);
+      if (store.bumpConnectorVersion(id, 'geom')) connectorChanges.geometry.add(id);
     }
     for (const id of connectorDataIds) {
-      if (!store.hasConnector(id)) continue;
-      store.notifyConnectorDataChanged(id);
-      connectorChanges.data.add(id);
+      if (store.bumpConnectorVersion(id, 'data')) connectorChanges.data.add(id);
     }
 
     // 世界几何失效：自身几何变化、改挂容器的节点连同全部后代；被删除容器遗留的子节点回落到根层级，同样失效
@@ -678,9 +645,8 @@ export class DocumentStore {
     for (const affected of [worldGeometry, nodeChanges.removed]) {
       for (const nodeId of affected) {
         for (const connectorId of store.getConnectorIdsOfNode(nodeId)) {
-          if (connectorChanges.geometry.has(connectorId) || !store.hasConnector(connectorId)) continue;
-          store.notifyConnectorGeometryChanged(connectorId);
-          connectorChanges.geometry.add(connectorId);
+          if (connectorChanges.geometry.has(connectorId)) continue;
+          if (store.bumpConnectorVersion(connectorId, 'geom')) connectorChanges.geometry.add(connectorId);
         }
       }
     }
@@ -690,14 +656,12 @@ export class DocumentStore {
       connectors: connectorChanges,
       orderChanged
     };
-
-    // 广播只读视图
     const view = this.getView();
     for (const subscriber of this.subscribers) {
       try {
         subscriber(view, record, changes);
       } catch (err) {
-        console.error('[DocumentStore] 视图订阅监听异常:', err);
+        console.error('[DocumentStore] 变更订阅回调异常:', err);
       }
     }
   }

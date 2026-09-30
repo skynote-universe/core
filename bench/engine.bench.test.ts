@@ -3,7 +3,7 @@
  * @description 大画布性能基准：单次提交开销必须与画布总规模无关
  *
  * 运行：pnpm --filter @skynote/core bench（不随 pnpm test 执行，避免机器负载导致单测抖动）
- * 预算按实测值 (约 5~20µs) 放宽约 50 倍：一旦超出，几乎可以断定某处重新引入了 O(N) 全量扫描。
+ * 预算按实测值 (约 10~100µs，随机器负载波动) 放宽约 10 倍：一旦超出，几乎可以断定某处重新引入了 O(N) 全量扫描。
  */
 
 import { describe, it, expect } from 'vitest';

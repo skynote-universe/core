@@ -4,10 +4,11 @@
  *              移动容器只更新一个条目
  */
 
+import type { RectBounds } from '../src/types/geometry';
 import { describe, it, expect, vi } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { RTreeSpatialIndex } from '../src/spatial';
-import { applyMatrix, computeNodeWorldBounds, doBoundsIntersect, type RectBounds } from '../src/utils/geometry';
+import { applyMatrix, computeNodeWorldBounds, doBoundsIntersect } from '../src/utils/geometry';
 import type { NodeEntity } from '../src/types/node';
 
 function createRandom(seed: number): () => number {
@@ -64,7 +65,7 @@ function randomRect(random: () => number): RectBounds {
   const top = random() * 3000 - 500;
   const width = random() * 800;
   const height = random() * 800;
-  return { left, top, right: left + width, bottom: top + height, width, height };
+  return { left, top, right: left + width, bottom: top + height };
 }
 
 describe('SceneSpatialIndex 分层空间索引', () => {
@@ -73,7 +74,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
       const random = createRandom(seed);
       const engine = new SkyNoteEngine();
       const store = engine.documentStore;
-      const ids = () => Object.keys(engine.getView().content.nodes);
+      const ids = () => Object.keys(engine.documentStore.getView().content.nodes);
       const pick = () => {
         const all = ids();
         return all[Math.floor(random() * all.length)];
@@ -242,7 +243,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
       locked: false,
       parentId: 'frame'
     });
-    const far = { left: 990, top: -5, right: 1020, bottom: 20, width: 30, height: 25 };
+    const far = { left: 990, top: -5, right: 1020, bottom: 20 };
 
     expect(engine.spatialIndex.search(far)).toEqual(['child']);
     store.moveNodes(['child'], { x: -990 });
@@ -284,9 +285,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
       left: 100,
       top: 50,
       right: 260,
-      bottom: 150,
-      width: 160,
-      height: 100
+      bottom: 150
     });
   });
 });

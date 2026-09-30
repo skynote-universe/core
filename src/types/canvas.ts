@@ -11,14 +11,11 @@ import type { NodeEntity } from './node';
 import type { ConnectorEntity } from './connector';
 import type { CanvasAssetMeta } from './asset';
 
-/** 基础 2D 坐标点（纯逻辑坐标） */
-export interface Point {
-  x: number;
-  y: number;
-}
-
-/** 画布实体内容类型：目前分为独立图元节点与连线 */
-export type CanvasContentType = 'node' | 'connector';
+/**
+ * 分数索引：同一容器内兄弟之间的层叠顺序，按字符串字典序比较，越大越靠上
+ * 在两个键之间插入新键只改动被移动的实体自身 (生成与校验见 utils/fractional-index)
+ */
+export type FractionalIndex = string;
 
 /** 文档元数据 */
 export interface CanvasMeta {
@@ -88,5 +85,3 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
 
 /** 文档零拷贝只读投影视图 */
 export type CanvasDocumentView = DeepReadonly<CanvasDocument>;
-export type NodeEntityView = CanvasDocumentView['content']['nodes'][string];
-export type ConnectorEntityView = CanvasDocumentView['content']['connectors'][string];

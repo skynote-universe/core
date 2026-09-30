@@ -3,7 +3,7 @@
  * @description 节点类型注册表 (NodeTypeRegistry)
  *
  * 设计考量 (Why):
- * 1. 节点与渲染器彻底解耦：渲染器通过 nodeType.compose(node) 获取声明式图元，
+ * 1. 节点与渲染器解耦：渲染器通过 nodeType.compose(node) 获取声明式图元，
  *    通过此注册表实现动态即插即用，杜绝在内核或渲染器内硬编码 nodeType 判断。
  * 2. 安全与防重：禁止空类型注册，提供类型安全的检索与遍历。
  */

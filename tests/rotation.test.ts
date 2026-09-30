@@ -3,14 +3,9 @@
  * @description 旋转约定：绕节点中心旋转，x/y/width/height 描述未旋转的框
  */
 
+import type { RotatableBox } from '../src/types/geometry';
 import { describe, it, expect } from 'vitest';
-import {
-  applyMatrix,
-  computeNodeLocalMatrix,
-  computeNodeWorldBounds,
-  isPointInNode,
-  type RotatableBox
-} from '../src/utils/geometry';
+import { applyMatrix, computeNodeLocalMatrix, computeNodeWorldBounds, isPointInNode } from '../src/utils/geometry';
 import { resolveConnectorEndpoint } from '../src/routing/connector-route';
 import { SkyNoteEngine } from '../src/engine';
 import type { NodeEntity } from '../src/types/node';
@@ -25,8 +20,8 @@ describe('绕中心旋转的几何', () => {
     const bounds = computeNodeBounds({ ...box, rotation: 90 });
     expect(bounds.left).toBeCloseTo(150);
     expect(bounds.top).toBeCloseTo(50);
-    expect(bounds.width).toBeCloseTo(100);
-    expect(bounds.height).toBeCloseTo(200);
+    expect(bounds.right - bounds.left).toBeCloseTo(100);
+    expect(bounds.bottom - bounds.top).toBeCloseTo(200);
   });
 
   it('旋转 45° 的外接矩形覆盖四角，未旋转时与原框一致', () => {
@@ -34,7 +29,7 @@ describe('绕中心旋转的几何', () => {
     const half = (200 + 100) / Math.SQRT2 / 2;
     expect(bounds.left).toBeCloseTo(200 - half);
     expect(bounds.right).toBeCloseTo(200 + half);
-    expect(computeNodeBounds(box)).toEqual({ left: 100, top: 100, right: 300, bottom: 200, width: 200, height: 100 });
+    expect(computeNodeBounds(box)).toEqual({ left: 100, top: 100, right: 300, bottom: 200 });
   });
 
   it('点选精判：外接矩形的空角不算命中，旋转后的框内算命中', () => {
@@ -81,6 +76,6 @@ describe('绕中心旋转的几何', () => {
     engine.documentStore.updateNode('n', { rotation: 90 });
     const bounds = engine.spatialIndex.getBounds('n')!;
     expect(bounds.top).toBeCloseTo(50);
-    expect(bounds.height).toBeCloseTo(200);
+    expect(bounds.bottom - bounds.top).toBeCloseTo(200);
   });
 });

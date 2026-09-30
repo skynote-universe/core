@@ -5,5 +5,4 @@
 
 export * from './spatial-index';
 export * from './r-tree';
-export * from './spatial-grid-index';
 export * from './scene-spatial-index';

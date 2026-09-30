@@ -3,14 +3,14 @@
  * @description 通用图元节点实体 (NodeEntity) 与样式模型
  *
  * 设计考量 (Why):
- * 1. 纯净持久化模型：仅包含 100% 存入 JSON 的业务数据，脏检查版本号已彻底剥离至 RuntimeNode 信封中。
+ * 1. 纯净持久化模型：仅包含 存入 JSON 的业务数据，脏检查版本号已剥离至 RuntimeNode 信封中。
  * 2. 消费统一 TextBlock：节点内所有文字排版统一收敛，消灭多套排版逻辑。
  */
 
-import type { Point } from './canvas';
+import type { Point } from './geometry';
+import type { FractionalIndex } from './canvas';
 import type { TextBlock, NodeTextStyle } from './text';
 import type { CornerRadius, StrokeCap, StrokeJoin, StrokeAlign } from './style';
-import type { FractionalIndex } from '../utils/fractional-index';
 
 /** 渐变停靠点 */
 export interface NodeGradientStop {
@@ -57,23 +57,20 @@ export interface NodeAnchor {
   direction?: Point;
 }
 
-/**
- * 通用图元节点实体 (NodeEntity)
- * 纯内存不可变实体数据源
- */
+/** 节点实体：持久化的纯数据，只经事务修改 */
 export interface NodeEntity<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> {
   id: string;
   type: 'node';
-  /** 节点具体业务类型，如 free-text, card, rect, mindmap 等 */
+  /** 节点业务类型，对应已注册的 NodeTypeDefinition.type */
   nodeType: string;
-  /** 所属容器或父节点 ID (用于画框嵌套、导图父子树等) */
+  /** 所属容器 (画框嵌套、导图父子树)；缺省为根层级 */
   parentId?: string;
-  /** 纯逻辑世界坐标 x */
+  /** 左上角，父容器局部坐标 (ADR-114)；世界位置见 EntityReader.getWorldTransform */
   x: number;
-  /** 纯逻辑世界坐标 y */
   y: number;
   width: number;
   height: number;
+  /** 绕自身中心旋转的角度 (度)，相对父容器 */
   rotation: number;
   /**
    * 同一容器 (相同 parentId) 兄弟之间的层叠顺序：分数索引字符串，越大越靠上

@@ -14,9 +14,6 @@ const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 const ZERO = DIGITS[0];
 const SMALLEST_INTEGER = 'A' + ZERO.repeat(26);
 
-/** 分数索引字符串 */
-export type FractionalIndex = string;
-
 /** 首个键：空序列中的第一个元素使用 */
 export const FIRST_FRACTIONAL_INDEX: FractionalIndex = 'a0';
 
@@ -195,3 +192,4 @@ export function compareFractionalIndex(
   if (leftId === rightId) return 0;
   return leftId < rightId ? -1 : 1;
 }
+import type { FractionalIndex } from '../types/canvas';

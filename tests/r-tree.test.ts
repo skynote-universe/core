@@ -3,9 +3,9 @@
  * @description R-Tree 结构不变量与长时编辑不退化：随机增删改对拍暴力检索，并逐步校验树形
  */
 
+import type { RectBounds } from '../src/types/geometry';
 import { describe, it, expect } from 'vitest';
 import { RTreeSpatialIndex } from '../src/spatial/r-tree';
-import type { RectBounds } from '../src/utils/geometry';
 
 interface InspectableNode {
   isLeaf: boolean;
@@ -20,7 +20,7 @@ function inspect(tree: RTreeSpatialIndex): { root: InspectableNode; itemMap: Map
 }
 
 function rect(x: number, y: number, w = 20, h = 20): RectBounds {
-  return { left: x, top: y, right: x + w, bottom: y + h, width: w, height: h };
+  return { left: x, top: y, right: x + w, bottom: y + h };
 }
 
 function intersects(a: RectBounds, b: RectBounds): boolean {

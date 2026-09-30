@@ -3,7 +3,7 @@
  * @description 虚拟指针与手势交互调度器 (PointerDispatcher)
  *
  * 设计考量 (Why):
- * 1. 职责单一原则 (SRP)：从 PluginManager 中彻底剥离高频指针事件，与键盘 InputScopeManager
+ * 1. 职责单一原则 (SRP)：从 PluginManager 中剥离高频指针事件，与键盘 InputScopeManager
  *    共同构成 core 的标准【输入子系统 (src/input)】。
  * 2. 独占指针会话裁判 (claimPointer)：支持优先级链与会话独占状态拦截，防止拉连线与画框选发生交互冲突。
  * 3. 内存安全：提供完善的监听者注销回收机制，插件 unmount 时自动解绑，杜绝事件监听泄漏。

@@ -4,13 +4,13 @@
  *
  * 设计考量 (Why):
  * 1. 状态流转红线：严禁在外部就地对实体对象进行属性赋值（如 node.x = 100），所有改动必须通过 commitOperation() 提交。
- * 2. 现代正交原子四元组：彻底消灭 RFC 6902 中 add/replace 的二义性，收敛为 'set' | 'unset' | 'splice' | 'text'。
+ * 2. 现代正交原子四元组：消除 RFC 6902 中 add/replace 的二义性，收敛为 'set' | 'unset' | 'splice' | 'text'。
  *    - set:    属性赋值/更新 (存在则替换，不存在则新增；支持 merge: true 字典增量浅合并)
  *    - unset:  属性/字段移除
  *    - splice: 有序列表切片 (增删插，针对 Array)
  *    - text:   文本差量 (Delta 级操作，防止多人协同打字冲刷)
  * 3. 协同 Undo 隔离：引入 origin 字段 ('local' | 'remote')，协同网络同步来的远端 Patch 绝不污染本地 Undo 历史栈。
- * 4. 严格对偶可逆性：每条原子 Patch 均具备精准的 inversePatch，实现微秒级瞬时回滚，杜绝深拷贝内存雪崩。
+ * 4. 严格对偶可逆性：每条原子 Patch 均具备精准的 inversePatch，实现瞬时回滚，杜绝深拷贝内存暴涨。
  */
 
 /** 操作发起来源分类 */

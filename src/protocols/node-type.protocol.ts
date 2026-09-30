@@ -68,7 +68,7 @@ export interface NodeResizeRequest {
 export interface NodeFitContext {
   /**
    * 按文本块最终样式测量内容盒 (不含 padding)；maxWidth 缺省时不折行，与排版派生走同一测量器
-   * 未注入文本测量器时返回 null，需要测量的节点类型应视为无法适应
+   * 未注入字体测量器时返回 null，需要测量的节点类型应视为无法适应
    */
   measureText(block: Readonly<TextBlock>, maxWidth?: number): TextBlockMetrics | null;
 }
@@ -132,7 +132,7 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
 
   /**
    * 节点的几何外框自适应策略 (默认为 'fixed')
-   * 引擎注入 TextMeasurer 后生效：文本或宽度变化时在同一事务内派生尺寸 (见 layout/text-layout)。
+   * 引擎注入 FontMeasurer 后生效：文本或宽度变化时在同一事务内派生尺寸 (见 layout/text-layout)。
    */
   readonly sizingPolicy?: NodeSizingPolicy;
 
@@ -174,6 +174,10 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 所有节点都可以自由调整宽高，锁定只改变结果为等比，不限制可拖动的控制柄
    */
   readonly defaultAspectLocked?: boolean;
+  /**
+   * 文字删空后退出编辑即删除节点 (如自由文本：没有文字的文本节点既看不见也无法再选中)
+   */
+  readonly removeWhenEmpty?: boolean;
   /**
    * 拖角时等比缩放内容 (如自由文本按比例缩放字号)，与比例锁定无关；边控制柄不受影响
    */

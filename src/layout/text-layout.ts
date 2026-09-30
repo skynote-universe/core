@@ -13,7 +13,6 @@
 import type { CanvasDocument } from '../types/canvas';
 import type { NodeEntity } from '../types/node';
 import type { NodeTextStyle, TextBlock, TextSizingMode } from '../types/text';
-import { getPlainText } from '../types/text';
 import type { TextPrimitive } from '../protocols/primitives.protocol';
 import type { TextPadding } from '../types/style';
 import type { CanvasPatch } from '../types/operation';
@@ -23,9 +22,10 @@ import type {
   NodeTypeDefinition,
   TextBlockMetrics
 } from '../protocols/node-type.protocol';
-import type { TextMeasurer } from '../protocols/text-measurer.protocol';
+import type { FontMeasurer } from '../protocols/font-measurer.protocol';
 import type { NodeTypeRegistry } from '../registry/node-type-registry';
 import { normalizePatchPath } from '../operation/patch-path';
+import { layoutText } from './rich-text-layout';
 
 /**
  * 这些字段变化后需要重新派生尺寸：文本与宽度改变排版结果 (宽度影响折行)；
@@ -58,15 +58,16 @@ export function resolveTextPadding(padding: TextPadding | undefined): ResolvedPa
 }
 
 /**
- * 文本块 → 文本图元的唯一映射
- * 节点 compose() 绘制文字与测量器测量文字必须共用此函数，保证测得的尺寸与实际绘制一致
- * @param box 图元位置；width 缺省表示不折行 (auto-width)，height 缺省为内容自然高度 (测量时必须缺省)
+ * 文本块 → 文本图元的唯一映射：节点 compose() 统一经此输出文字
+ * 渲染器按图元排版绘制，测量走同一个 layoutText，量出的尺寸即画出的尺寸
+ * @param box 图元位置；width 缺省表示不折行 (auto-width)，height 缺省为内容高度
  */
 export function createTextBlockPrimitive(
   block: Readonly<TextBlock>,
   style: Readonly<NodeTextStyle>,
   box: { x: number; y: number; width?: number; height?: number }
 ): TextPrimitive {
+  const { padding: _padding, ...blockStyle } = style;
   return {
     kind: 'text',
     id: block.id,
@@ -74,21 +75,20 @@ export function createTextBlockPrimitive(
     y: box.y,
     width: box.width,
     height: box.height,
-    text: getPlainText(block as TextBlock),
-    fill: style.color,
-    fontSize: style.fontSize,
-    fontFamily: style.fontFamily,
-    fontWeight: style.fontWeight,
-    fontStyle: style.fontStyle,
-    lineHeight: style.lineHeight,
-    letterSpacing: style.letterSpacing,
-    textAlign: style.textAlign,
-    verticalAlign: style.verticalAlign,
-    textBaseline: style.textBaseline,
-    textOverflow: style.textOverflow,
-    textDecoration: style.textDecoration,
-    textWrap: style.textWrap
+    runs: block.runs,
+    style: blockStyle
   };
+}
+
+/** 按文本块最终样式排版并返回内容盒 (不含 padding)；maxWidth 缺省时不折行 */
+export function measureTextBlock(
+  block: Readonly<TextBlock>,
+  style: Readonly<NodeTextStyle>,
+  maxWidth: number | undefined,
+  fonts: FontMeasurer
+): TextBlockMetrics {
+  const layout = layoutText(block.runs, style, { width: maxWidth }, fonts);
+  return { width: layout.width, height: layout.height, lineCount: layout.lines.length };
 }
 
 function findTextSlot(
@@ -114,17 +114,11 @@ export function resolveTextBlockStyle(
 export function createFitContext(
   node: Readonly<NodeEntity>,
   definition: NodeTypeDefinition,
-  measurer: TextMeasurer | null
+  fonts: FontMeasurer | null
 ): NodeFitContext {
   return {
     measureText: (block, maxWidth) =>
-      measurer &&
-      measurer.measure({
-        block,
-        style: resolveTextBlockStyle(node, block, definition),
-        sizing: maxWidth === undefined ? 'auto-width' : 'auto-height',
-        maxWidth
-      })
+      fonts && measureTextBlock(block, resolveTextBlockStyle(node, block, definition), maxWidth, fonts)
   };
 }
 
@@ -159,7 +153,7 @@ export function collectTextLayoutTargets(patches: readonly CanvasPatch[]): Set<s
 export function computeTextLayout(
   node: Readonly<NodeEntity>,
   definition: NodeTypeDefinition | undefined,
-  measurer: TextMeasurer
+  fonts: FontMeasurer
 ): { width: number; height: number } | null {
   const policy = definition?.sizingPolicy ?? 'fixed';
   if (policy === 'fixed' && !definition?.computeBounds) return null;
@@ -181,7 +175,7 @@ export function computeTextLayout(
         ? undefined
         : Math.max(0, (block.explicitWidth ?? node.width) - padding.left - padding.right);
 
-    const measured = measurer.measure({ block, style, sizing, maxWidth });
+    const measured = measureTextBlock(block, style, maxWidth, fonts);
     metrics.set(block.slot ?? block.id, measured);
 
     if (slot?.expandsContainer === false) continue;
@@ -205,7 +199,7 @@ export function computeTextLayout(
 export function deriveTextLayoutPatches(
   doc: Readonly<CanvasDocument>,
   nodeIds: Iterable<string>,
-  measurer: TextMeasurer,
+  fonts: FontMeasurer,
   nodeTypes: NodeTypeRegistry
 ): CanvasPatch[] {
   const patches: CanvasPatch[] = [];
@@ -215,7 +209,7 @@ export function deriveTextLayoutPatches(
 
     let size: { width: number; height: number } | null;
     try {
-      size = computeTextLayout(node, nodeTypes.get(node.nodeType), measurer);
+      size = computeTextLayout(node, nodeTypes.get(node.nodeType), fonts);
     } catch (err) {
       console.error(`[TextLayout] 节点 ${id} (${node.nodeType}) 排版失败，保持原尺寸:`, err);
       continue;

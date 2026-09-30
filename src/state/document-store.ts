@@ -6,7 +6,7 @@
  * 1. 只读投影：对外暴露的文档在类型上是深度只读的，写入只能经事务提交。
  * 2. 语义命令：移动、删除、改挂、层级、新建都在这里封装为规范补丁并走同一提交入口，自动满足守卫、派生排版与撤销合并。
  * 3. 增量变更集：每次提交把补丁路径按实体语义归类为 DocumentChangeSet 广播一次，下游 (索引、渲染、插件) 全部增量消费。
- * 4. 文本驱动的自动尺寸：注入测量器后，本地事务中的文本或宽度变更在同一事务内派生尺寸补丁，撤销时一并回退。
+ * 4. 文本驱动的自动尺寸：注入字体测量器后，本地事务中的文本或宽度变更在同一事务内派生尺寸补丁，撤销时一并回退。
  */
 
 import type { CanvasDocument, CanvasDocumentView, FractionalIndex } from '../types/canvas';
@@ -21,7 +21,7 @@ import type {
 import type { DocumentChangeSet, EntityChanges } from '../types/change-set';
 import type { CreateNodeRequest } from '../protocols/node-type.protocol';
 import type { WorldFrame } from '../utils/geometry';
-import type { TextMeasurer } from '../protocols/text-measurer.protocol';
+import type { FontMeasurer } from '../protocols/font-measurer.protocol';
 import { EntityStore, type EntityReader, type EntitySyncResult } from './entity-store';
 import { OperationCoordinator, type HistoryChangeListener } from '../operation/coordinator';
 import { normalizePatchPath } from '../operation/patch-path';
@@ -91,11 +91,12 @@ export interface CommandOptions {
 
 /**
  * 插件可用的文档能力：只读查询与语义命令，全部经事务提交
- * 订阅、清空历史、替换测量器等宿主级能力不对插件开放
+ * 订阅、清空历史、替换字体测量器等宿主级能力不对插件开放
  */
 export type DocumentApi = Pick<
   DocumentStore,
   | 'getView'
+  | 'fonts'
   | 'getNode'
   | 'getConnector'
   | 'commit'
@@ -128,8 +129,8 @@ export type DocumentSubscriber = (
 export interface DocumentStoreOptions {
   /** 节点类型注册表：新建节点与文本排版据此取节点定义 */
   nodeTypes?: NodeTypeRegistry;
-  /** 文本测量器 (渲染适配层提供)，缺省时不做文本驱动的自动尺寸 */
-  textMeasurer?: TextMeasurer;
+  /** 字体测量器 (渲染适配层提供)，缺省时不做文本驱动的自动尺寸 */
+  fonts?: FontMeasurer;
 }
 
 interface MutableEntityChanges extends EntityChanges {
@@ -169,7 +170,7 @@ export class DocumentStore {
   private readonly entities = new EntityStore();
   private readonly coordinator: OperationCoordinator<CanvasDocument>;
   private readonly subscribers = new Set<DocumentSubscriber>();
-  private textMeasurer: TextMeasurer | null = null;
+  private fontMeasurer: FontMeasurer | null = null;
 
   constructor(initialDoc?: CanvasDocument, options?: DocumentStoreOptions) {
     // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
@@ -189,7 +190,7 @@ export class DocumentStore {
     for (const id in nodes) this.entities.syncNode(id, nodes[id]);
     for (const id in connectors) this.entities.syncConnector(id, connectors[id]);
     this.coordinator.onOperation((record, doc) => this.handleOperationCommitted(record, doc));
-    this.setTextMeasurer(options?.textMeasurer ?? null);
+    this.setFontMeasurer(options?.fonts ?? null);
   }
 
   /** 实体运行时索引 (只读视图；写入只经本类的事务提交回调) */
@@ -269,9 +270,14 @@ export class DocumentStore {
 
   // ================= 文本自动尺寸 =================
 
-  /** 注入或移除文本测量器：注入后本地事务中的文本与宽度变更会在同一事务内派生节点尺寸 */
-  setTextMeasurer(measurer: TextMeasurer | null): void {
-    this.textMeasurer = measurer;
+  /** 当前字体测量器：文字排版 (光标、选区等) 与自动尺寸共用，未注入时为 null */
+  get fonts(): FontMeasurer | null {
+    return this.fontMeasurer;
+  }
+
+  /** 注入或移除字体测量器：注入后本地事务中的文本与宽度变更会在同一事务内派生节点尺寸 */
+  setFontMeasurer(measurer: FontMeasurer | null): void {
+    this.fontMeasurer = measurer;
     this.coordinator.setPatchDerivation(
       measurer
         ? (doc, patches) => deriveTextLayoutPatches(doc, collectTextLayoutTargets(patches), measurer, this.nodeTypes)
@@ -280,12 +286,12 @@ export class DocumentStore {
   }
 
   /**
-   * 按当前测量器重新排版节点 (默认全部)，以非撤销的系统事务写回尺寸
+   * 按当前字体测量器重新排版节点 (默认全部)，以非撤销的系统事务写回尺寸
    * 用于 Web 字体加载完成、测量器替换等测量基准变化的时机
    */
   relayoutText(nodeIds: Iterable<string> = Object.keys(this.document.content.nodes)): CanvasOperationRecord | null {
-    if (!this.textMeasurer) return null;
-    const patches = deriveTextLayoutPatches(this.document, nodeIds, this.textMeasurer, this.nodeTypes);
+    if (!this.fontMeasurer) return null;
+    const patches = deriveTextLayoutPatches(this.document, nodeIds, this.fontMeasurer, this.nodeTypes);
     return this.commit({ label: '重新排版文本', source: 'system', undoable: false, patches });
   }
 
@@ -563,7 +569,7 @@ export class DocumentStore {
     const node = this.getNode(id);
     const definition = node && this.nodeTypes.get(node.nodeType);
     if (!node || !definition?.fitContent) return null;
-    return definition.fitContent(node as NodeEntity, createFitContext(node, definition, this.textMeasurer));
+    return definition.fitContent(node as NodeEntity, createFitContext(node, definition, this.fontMeasurer));
   }
 
   private updateEntity(

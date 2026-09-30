@@ -23,8 +23,9 @@ import type {
   TextWrap,
   ImageFit,
   PathFillRule,
-  LineHeight,
-  OverflowMode
+  OverflowMode,
+  NodeTextStyle,
+  RichTextRun
 } from '../types';
 
 export type {
@@ -71,30 +72,24 @@ export interface RectPrimitive {
   opacity?: number;
 }
 
-/** 文本图元 */
+/**
+ * 文本图元：富文本分段 + 块级样式，由内核排版 (layoutText) 分行对齐后，渲染器逐片段绘制 (ADR-122)
+ * 绘制与测量共用同一份排版，自动尺寸与画面一致
+ */
 export interface TextPrimitive {
   kind: 'text';
   id?: string;
   x: number;
   y: number;
-  text: string;
-  fontSize?: number;
-  fontFamily?: string;
-  fontWeight?: FontWeight;
-  fontStyle?: FontStyle;
-  /** 数字为字号倍数，'24px' 为像素 */
-  lineHeight?: LineHeight;
-  letterSpacing?: number;
+  /** 排版宽度：缺省为不折行 */
   width?: number;
-  /** 文本框高度：配合 verticalAlign 垂直对齐，配合 textOverflow 截断超出的行；缺省为内容自然高度 */
+  /** 文本框高度：配合 verticalAlign 垂直对齐，配合 textOverflow 截断超出的行；缺省为内容高度 */
   height?: number;
-  fill?: string;
-  textAlign?: TextAlign;
-  verticalAlign?: VerticalAlign;
-  textBaseline?: TextBaseline;
-  textOverflow?: TextOverflow;
-  textDecoration?: TextDecoration;
-  textWrap?: TextWrap;
+  runs: readonly RichTextRun[];
+  /** 块级样式 (内边距已由位置与尺寸体现，这里不再处理) */
+  style: NodeTextStyle;
+  /** 画布内编辑时的滚动：内容上移 scrollY，并裁剪到文本框内 (需有 height) */
+  scrollY?: number;
   opacity?: number;
 }
 

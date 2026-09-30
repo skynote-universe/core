@@ -13,7 +13,14 @@ import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { ArrowMarkerDefinition } from '../protocols/arrow-marker.protocol';
 import type { ConnectorRouterDefinition } from '../protocols/connector-router.protocol';
 import type { InputScope } from '../protocols/input-scope.protocol';
-import type { CanvasHost, OverlayChannel, OverlayOptions, SystemCursor } from '../protocols/host.protocol';
+import type {
+  CanvasHost,
+  OverlayChannel,
+  OverlayOptions,
+  SystemCursor,
+  TextInputHandler,
+  TextInputSession
+} from '../protocols/host.protocol';
 import type { CanvasPrimitive } from '../protocols/primitives.protocol';
 import type { Point } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
@@ -30,10 +37,11 @@ import type { SkyNoteEngine } from '../engine';
 
 /**
  * 插件的宿主能力：每次调用读取引擎当前宿主 (插件无需关心渲染器挂载先后)，
- * 并记录用过的覆盖层会话，插件卸载时一并清除，避免残留图元
+ * 并记录用过的覆盖层会话与文字输入会话，插件卸载时一并清除，避免残留图元与悬空的输入通道
  */
 class PluginHost implements CanvasHost, OverlayChannel {
   private readonly sessions = new Set<string>();
+  private textInput: TextInputSession | null = null;
 
   constructor(private readonly engine: SkyNoteEngine) {}
 
@@ -63,9 +71,18 @@ class PluginHost implements CanvasHost, OverlayChannel {
     this.engine.host.releasePointer(pointerId);
   }
 
+  openTextInput(handler: TextInputHandler): TextInputSession {
+    this.textInput?.close();
+    const session = this.engine.host.openTextInput(handler);
+    this.textInput = session;
+    return session;
+  }
+
   dispose(): void {
     for (const sessionId of this.sessions) this.engine.host.overlay.clear(sessionId);
     this.sessions.clear();
+    this.textInput?.close();
+    this.textInput = null;
   }
 }
 

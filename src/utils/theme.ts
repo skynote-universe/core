@@ -29,7 +29,13 @@ export const CANVAS_PALETTE: Readonly<Record<string, string>> = Object.freeze({
   teal: '#9FE3D6',
   green: '#B8E6A0',
   gray: '#E3E6EA',
-  ink: '#1F2937'
+  ink: '#1F2937',
+  // 文字强调色：饱和度高于便签底色，浅色与深色画布上都清晰可读
+  red: '#E5484D',
+  amber: '#D97706',
+  emerald: '#16A34A',
+  sky: '#2563EB',
+  violet: '#7C3AED'
 });
 
 /** 浅色主题预设 */
@@ -123,7 +129,23 @@ export function applyThemeToPrimitives(primitives: readonly CanvasPrimitive[], t
   return primitives.map((primitive): CanvasPrimitive => {
     switch (primitive.kind) {
       case 'text':
-        return { ...primitive, fill: resolveThemeColor(primitive.fill, theme, theme.textColor) };
+        return {
+          ...primitive,
+          style: {
+            ...primitive.style,
+            color: resolveThemeColor(primitive.style.color, theme, theme.textColor),
+            backgroundColor: resolveThemeColor(primitive.style.backgroundColor ?? undefined, theme)
+          },
+          runs: primitive.runs.map((run) =>
+            run.color === undefined && !run.backgroundColor
+              ? run
+              : {
+                  ...run,
+                  color: resolveThemeColor(run.color, theme),
+                  backgroundColor: resolveThemeColor(run.backgroundColor ?? undefined, theme)
+                }
+          )
+        };
       case 'line':
         return { ...primitive, stroke: resolveThemeColor(primitive.stroke, theme, theme.foreground) };
       case 'image':

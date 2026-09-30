@@ -29,6 +29,8 @@ export interface SyntheticPointerEventInit {
   button?: number;
   modifiers?: Partial<EventModifiers>;
   pressure?: number;
+  /** 连击序号，缺省为 1 */
+  clickCount?: number;
   /** 已知的命中节点；与 resolveTarget 二选一 */
   target?: Readonly<NodeEntity>;
   /** 延迟拾取：首次读取 target 时调用 */
@@ -44,6 +46,7 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
   readonly button: number;
   readonly modifiers: EventModifiers;
   readonly pressure: number;
+  readonly clickCount: number;
   private readonly state: PointerEventState;
   private readonly resolveTarget: (() => NodeEntity | undefined) | undefined;
   private readonly onStopPropagation: (() => void) | undefined;
@@ -60,6 +63,7 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
       meta: init.modifiers?.meta ?? false
     };
     this.pressure = init.pressure ?? 0.5;
+    this.clickCount = init.clickCount ?? 1;
     this.resolveTarget = init.resolveTarget;
     this.onStopPropagation = init.onStopPropagation;
     this.state = { claimedBy: null, target: init.target, targetResolved: init.resolveTarget === undefined };

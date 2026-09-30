@@ -42,6 +42,9 @@ export interface CanvasPointerEvent {
   /** 笔压感 (0.0 ~ 1.0，手写笔专用，鼠标恒为 0.5) */
   readonly pressure: number;
 
+  /** 按下的连击序号：1 单击、2 双击、3 三击 (间隔与位移都在阈值内的连续按下)；移动与抬起沿用按下时的值 */
+  readonly clickCount: number;
+
   /** 当前事件是否已被某个上层交互认领 */
   readonly isClaimed: boolean;
 

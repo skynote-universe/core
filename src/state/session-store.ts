@@ -6,13 +6,15 @@
  * 1. 交互态与文档分离：视口和选区属于单个用户、单个窗口，不进入可持久化、可协同的 CanvasDocument，
  *    平移缩放不走事务与撤销栈，也不会同步给协作者 (他人的选区与视口走在线状态通道)。
  * 2. 增量通知：选区变化只广播选中态翻转的 id，渲染器据此只重绘受影响的实体。
- * 3. 视口命令只有一处实现：缩放、适配内容都经 setViewport 写入并受缩放范围约束；
+ * 3. 画布内文字编辑的目标、滚动与输入法组合文字同属本地交互态，放在这里供渲染器与编辑插件共读。
+ * 4. 视口命令只有一处实现：缩放、适配内容都经 setViewport 写入并受缩放范围约束；
  *    视口像素尺寸由渲染器上报到这里，插件与界面据此换算中心点，不再各自持有尺寸。
  */
 
 import type { Point, RectBounds } from '../types/geometry';
 import type { ViewportState } from '../types/canvas';
 import type { CanvasTheme, CanvasThemeConfig } from '../types/theme';
+import type { RichTextRunStyle } from '../types/text';
 import { deriveCanvasTheme, LIGHT_CANVAS_THEME_SEED } from '../utils/theme';
 import { clamp, computeFitViewport, screenToWorld } from '../utils/geometry';
 
@@ -21,10 +23,31 @@ export interface SessionChange {
   /** 视口平移、缩放或像素尺寸变化 */
   readonly viewportChanged: boolean;
   readonly themeChanged: boolean;
+  /** 正在编辑的文字块变化 (进入、退出或切换) */
+  readonly textEditingChanged: boolean;
   /** 选中态发生翻转的节点 id (新选中 ∪ 取消选中) */
   readonly toggledNodeIds: ReadonlySet<string>;
   /** 选中态发生翻转的连线 id */
   readonly toggledConnectorIds: ReadonlySet<string>;
+}
+
+/** 输入法组合中尚未确认的文字：只在本地显示 (插入到 offset 处并带下划线)，确认后才写入文档 */
+export interface TextComposition {
+  readonly offset: number;
+  readonly text: string;
+  readonly style: RichTextRunStyle;
+}
+
+/**
+ * 正在画布内编辑的文字块 (ADR-122)：渲染器与编辑插件据此得到同一份编辑视图 (editingTextPrimitive)
+ * 编辑块不截断，超出文本框的部分裁剪并按 scrollY 滚动；滚动与组合文字都是本地状态，不进入文档
+ */
+export interface TextEditingTarget {
+  readonly nodeId: string;
+  readonly blockId: string;
+  /** 文字超出文本框时向上滚动的距离 (文本框坐标) */
+  readonly scrollY: number;
+  readonly composition: TextComposition | null;
 }
 
 export type SessionListener = (change: SessionChange) => void;
@@ -65,12 +88,14 @@ export interface SessionController {
   readonly theme: CanvasTheme;
   readonly selectedNodeIds: ReadonlySet<string>;
   readonly selectedConnectorIds: ReadonlySet<string>;
+  readonly textEditing: TextEditingTarget | null;
   setViewport(viewport: Partial<ViewportState>): void;
   /** 以世界坐标 anchor (默认视口中心) 为不动点按倍率缩放 */
   zoomAt(factor: number, anchor?: Point): void;
   /** 缩放并平移使 bounds 居中容纳；null (空画布) 回到原点 */
   fitBounds(bounds: RectBounds | null, options?: FitOptions): void;
   setSelection(selection: SelectionUpdate): void;
+  setTextEditing(target: TextEditingTarget | null): void;
   /**
    * 显式切换主题
    * @throws 配置中含非法颜色
@@ -93,12 +118,21 @@ const EMPTY_ID_SET: ReadonlySet<string> = new Set();
 const VIEWPORT_CHANGE: SessionChange = Object.freeze({
   viewportChanged: true,
   themeChanged: false,
+  textEditingChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
 const THEME_CHANGE: SessionChange = Object.freeze({
   viewportChanged: false,
   themeChanged: true,
+  textEditingChanged: false,
+  toggledNodeIds: EMPTY_ID_SET,
+  toggledConnectorIds: EMPTY_ID_SET
+});
+const TEXT_EDITING_CHANGE: SessionChange = Object.freeze({
+  viewportChanged: false,
+  themeChanged: false,
+  textEditingChanged: true,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -122,6 +156,7 @@ export class SessionStore implements SessionController {
   private themeState: CanvasTheme;
   private nodeSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private connectorSelection: ReadonlySet<string> = EMPTY_ID_SET;
+  private editingTarget: TextEditingTarget | null = null;
   private readonly listeners = new Set<SessionListener>();
 
   constructor(options?: SessionStoreOptions) {
@@ -157,6 +192,25 @@ export class SessionStore implements SessionController {
 
   get selectedConnectorIds(): ReadonlySet<string> {
     return this.connectorSelection;
+  }
+
+  get textEditing(): TextEditingTarget | null {
+    return this.editingTarget;
+  }
+
+  setTextEditing(target: TextEditingTarget | null): void {
+    const current = this.editingTarget;
+    if (
+      current?.nodeId === target?.nodeId &&
+      current?.blockId === target?.blockId &&
+      current?.scrollY === target?.scrollY &&
+      current?.composition === target?.composition
+    ) {
+      return;
+    }
+    // 整体替换：渲染器按引用判断编辑视图是否变化
+    this.editingTarget = target && Object.freeze({ ...target });
+    this.notify(TEXT_EDITING_CHANGE);
   }
 
   setTheme(config: CanvasThemeConfig): void {
@@ -224,11 +278,17 @@ export class SessionStore implements SessionController {
     }
 
     if (toggledNodeIds.size === 0 && toggledConnectorIds.size === 0) return;
-    this.notify({ viewportChanged: false, themeChanged: false, toggledNodeIds, toggledConnectorIds });
+    this.notify({
+      viewportChanged: false,
+      themeChanged: false,
+      textEditingChanged: false,
+      toggledNodeIds,
+      toggledConnectorIds
+    });
   }
 
   /**
-   * 剔除已被删除实体的选中项 (由引擎在文档实体删除后调用，保证选区永不指向不存在的实体)
+   * 剔除已被删除实体的选中项与编辑目标 (由引擎在文档实体删除后调用，保证选区永不指向不存在的实体)
    */
   pruneSelection(removedNodeIds: ReadonlySet<string>, removedConnectorIds: ReadonlySet<string>): void {
     if (removedNodeIds.size === 0 && removedConnectorIds.size === 0) return;
@@ -236,6 +296,7 @@ export class SessionStore implements SessionController {
     const keptNodeIds = [...this.nodeSelection].filter((id) => !removedNodeIds.has(id));
     const keptConnectorIds = [...this.connectorSelection].filter((id) => !removedConnectorIds.has(id));
     this.setSelection({ nodeIds: keptNodeIds, connectorIds: keptConnectorIds });
+    if (this.editingTarget && removedNodeIds.has(this.editingTarget.nodeId)) this.setTextEditing(null);
   }
 
   subscribe(listener: SessionListener): () => void {

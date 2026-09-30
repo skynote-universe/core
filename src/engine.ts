@@ -17,7 +17,7 @@ import type { ConnectorEntity } from './types/connector';
 import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
 import type { DocumentChangeSet } from './types/change-set';
-import type { TextMeasurer } from './protocols/text-measurer.protocol';
+import type { FontMeasurer } from './protocols/font-measurer.protocol';
 import type { SkyNotePlugin } from './protocols/plugin.protocol';
 import { DETACHED_CANVAS_HOST, type CanvasHost } from './protocols/host.protocol';
 import {
@@ -56,8 +56,8 @@ export interface SkyNoteEngineOptions {
   zoomRange?: ZoomRange;
   /** 画布主题 (默认浅色预设)，运行时通过 engine.session.setTheme() 切换 */
   theme?: CanvasThemeConfig;
-  /** 文本测量器 (由渲染适配层提供，如 LeaferTextMeasurer)，缺省时不做文本驱动的自动尺寸 */
-  textMeasurer?: TextMeasurer;
+  /** 字体测量器 (由渲染适配层提供)，缺省时不做文本驱动的自动尺寸 */
+  fonts?: FontMeasurer;
   /** 节点空间索引工厂 (默认 R-Tree)：分层索引为每个容器各建一个实例 (ADR-114)；测试借此观测索引调用 */
   createNodeSpatialIndex?: () => SpatialIndex;
 }
@@ -88,7 +88,7 @@ export class SkyNoteEngine {
   constructor(options?: SkyNoteEngineOptions) {
     this.documentStore = new DocumentStore(options?.initialDoc, {
       nodeTypes: this.nodeTypes,
-      textMeasurer: options?.textMeasurer
+      fonts: options?.fonts
     });
     this.session = new SessionStore({
       viewport: options?.initialViewport,

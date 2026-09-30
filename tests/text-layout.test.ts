@@ -9,25 +9,17 @@ import { createTextBlockPrimitive } from '../src/layout/text-layout';
 import { createSimpleTextBlock } from '../src/types/text';
 import type { NodeEntity } from '../src/types/node';
 import type { NodeTextStyle } from '../src/types/text';
-import type { TextMeasurer, TextMeasureRequest } from '../src/protocols/text-measurer.protocol';
+import type { FontMeasurer } from '../src/protocols/font-measurer.protocol';
 import type { NodeTypeDefinition } from '../src/protocols/node-type.protocol';
 
-/** 确定性替身测量器：每字符宽 10，行高 = 字号 × 1.5，按 maxWidth 折行 */
-function createFakeMeasurer(): TextMeasurer & { calls: TextMeasureRequest[] } {
-  const calls: TextMeasureRequest[] = [];
+/** 确定性替身字体测量器：每字符宽 10 (行高由排版按字号 × 1.5 缺省计算) */
+function createFakeMeasurer(): FontMeasurer & { calls: string[] } {
+  const calls: string[] = [];
   return {
     calls,
-    measure(request) {
-      calls.push(request);
-      const text = request.block.runs.map((run) => run.text).join('');
-      const lineHeight = (request.style.fontSize ?? 10) * 1.5;
-      const naturalWidth = text.length * 10;
-      if (request.maxWidth === undefined || naturalWidth <= request.maxWidth) {
-        return { width: naturalWidth, height: lineHeight, lineCount: 1 };
-      }
-      const perLine = Math.max(1, Math.floor(request.maxWidth / 10));
-      const lineCount = Math.ceil(text.length / perLine);
-      return { width: perLine * 10, height: lineCount * lineHeight, lineCount };
+    measureWidth(text) {
+      calls.push(text);
+      return text.length * 10;
     }
   };
 }
@@ -64,7 +56,7 @@ function makeNode(id: string, nodeType: string, text: string, width = 100): Node
 }
 
 function createEngine(measurer = createFakeMeasurer()): SkyNoteEngine {
-  const engine = new SkyNoteEngine({ textMeasurer: measurer });
+  const engine = new SkyNoteEngine({ fonts: measurer });
   engine.nodeTypes.register(STICKY);
   engine.nodeTypes.register(LABEL);
   return engine;
@@ -136,8 +128,9 @@ describe('文本驱动的自动尺寸', () => {
     const engine = createEngine();
     engine.documentStore.addNode(makeNode('l', 'label', 'hello world'));
     const node = engine.documentStore.getView().content.nodes.l;
+    // 缺省字号 14 × 行高 1.5
     expect(node.width).toBe(110);
-    expect(node.height).toBe(15);
+    expect(node.height).toBe(21);
   });
 
   it('只影响几何或样式的修改不触发测量；fixed 类型与未注册类型不派生尺寸', () => {
@@ -178,8 +171,8 @@ describe('文本驱动的自动尺寸', () => {
   it('单个节点测量抛错时保持原尺寸，不阻断文本修改', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const engine = new SkyNoteEngine({
-      textMeasurer: {
-        measure: () => {
+      fonts: {
+        measureWidth: () => {
           throw new Error('字体尚未就绪');
         }
       }
@@ -195,14 +188,14 @@ describe('文本驱动的自动尺寸', () => {
     engine.documentStore.addNode(makeNode('s', 'sticky', 'a'.repeat(20)));
     expect(engine.documentStore.getNode('s')?.height).toBe(10);
 
-    engine.documentStore.setTextMeasurer(createFakeMeasurer());
+    engine.documentStore.setFontMeasurer(createFakeMeasurer());
     const undoDepth = engine.documentStore.undoEntries.length;
     engine.documentStore.relayoutText();
     expect(engine.documentStore.getNode('s')?.height).toBe(110);
     expect(engine.documentStore.undoEntries).toHaveLength(undoDepth);
   });
 
-  it('createTextBlockPrimitive 是文本块到图元的唯一映射：拼接富文本段落并携带块级样式', () => {
+  it('createTextBlockPrimitive 是文本块到图元的唯一映射：保留富文本分段并携带块级样式 (内边距不进入图元)', () => {
     const block = { id: 't1', runs: [{ text: 'Sky' }, { text: 'Note' }] };
     const primitive = createTextBlockPrimitive(
       block,
@@ -215,10 +208,8 @@ describe('文本驱动的自动尺寸', () => {
       x: 4,
       y: 6,
       width: 120,
-      text: 'SkyNote',
-      fontSize: 18,
-      fill: '$ink',
-      textAlign: 'center'
+      runs: [{ text: 'Sky' }, { text: 'Note' }],
+      style: { fontSize: 18, color: '$ink', textAlign: 'center' }
     });
   });
 

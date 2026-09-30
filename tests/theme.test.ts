@@ -13,7 +13,7 @@ import {
   DARK_CANVAS_THEME_SEED
 } from '../src/utils/theme';
 import { SkyNoteEngine } from '../src/engine';
-import type { CanvasPrimitive } from '../src/protocols/primitives.protocol';
+import type { CanvasPrimitive, TextPrimitive } from '../src/protocols/primitives.protocol';
 
 describe('颜色工具', () => {
   it('解析各种 hex 写法并按比例线性混合', () => {
@@ -74,9 +74,15 @@ describe('颜色引用解析与图元主题化', () => {
     expect(resolveThemeColor('#123456', theme, theme.nodeFill)).toBe('#123456');
   });
 
-  it('递归解析图元颜色并为文字、线条补齐主题缺省色，不修改入参', () => {
+  it('递归解析图元颜色 (含文字分段颜色与背景色) 并为文字、线条补齐主题缺省色，不修改入参', () => {
     const primitives: CanvasPrimitive[] = [
-      { kind: 'text', x: 0, y: 0, text: 'hi' },
+      {
+        kind: 'text',
+        x: 0,
+        y: 0,
+        runs: [{ text: 'h' }, { text: 'i', color: '$yellow', backgroundColor: '$yellow' }],
+        style: {}
+      },
       { kind: 'line', points: [0, 0, 10, 10] },
       {
         kind: 'group',
@@ -88,7 +94,10 @@ describe('颜色引用解析与图元主题化', () => {
     const snapshot = JSON.stringify(primitives);
 
     const themed = applyThemeToPrimitives(primitives, theme) as unknown as Record<string, unknown>[];
-    expect(themed[0].fill).toBe(theme.textColor);
+    const text = themed[0] as unknown as TextPrimitive;
+    expect(text.style.color).toBe(theme.textColor);
+    expect(text.runs[0]).toEqual({ text: 'h' });
+    expect(text.runs[1]).toMatchObject({ color: '#FDE68A', backgroundColor: '#FDE68A' });
     expect(themed[1].stroke).toBe(theme.foreground);
     expect((themed[2].children as Record<string, unknown>[])[0].fill).toBe('#FDE68A');
     expect(JSON.stringify(primitives)).toBe(snapshot);

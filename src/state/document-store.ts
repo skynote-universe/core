@@ -20,6 +20,7 @@ import type {
 } from '../types/operation';
 import type { DocumentChangeSet, EntityChanges } from '../types/change-set';
 import type { CreateNodeRequest } from '../protocols/node-type.protocol';
+import type { WorldFrame } from '../utils/geometry';
 import type { TextMeasurer } from '../protocols/text-measurer.protocol';
 import { EntityStore, type EntityReader, type EntitySyncResult } from './entity-store';
 import { OperationCoordinator, type HistoryChangeListener } from '../operation/coordinator';
@@ -28,7 +29,7 @@ import { NodeTypeRegistry } from '../registry/node-type-registry';
 import { clonePlainData } from '../utils/clone';
 import { generateId } from '../utils/id';
 import { findCommitViolation, findInlineMediaUrl } from './commit-guards';
-import { collectTextLayoutTargets, deriveTextLayoutPatches } from '../layout/text-layout';
+import { collectTextLayoutTargets, createFitContext, deriveTextLayoutPatches } from '../layout/text-layout';
 import {
   compareHierarchicalNodes,
   computeLayerOrder,
@@ -38,7 +39,14 @@ import {
   type LayerMove
 } from '../layout/layer-order';
 import { generateKeyBetween, generateNKeysBetween } from '../utils/fractional-index';
-import { applyMatrixToVector, decomposeNodeMatrix, invertMatrix, multiplyMatrix } from '../utils/geometry';
+import { areStructuredValuesEqual } from '../utils/equality';
+import {
+  applyMatrixToVector,
+  computeFrameMatrix,
+  decomposeNodeMatrix,
+  invertMatrix,
+  multiplyMatrix
+} from '../utils/geometry';
 
 /** 创建空文档 */
 export function createEmptyCanvasDocument(id = 'doc_root', name = '未命名画布'): CanvasDocument {
@@ -62,6 +70,14 @@ const LAYER_MOVE_LABELS: Record<LayerMove, string> = {
   front: '置顶',
   back: '置底'
 };
+
+/** 单个节点的变换：世界坐标中的新外框，以及同一事务写入的其他字段 */
+export interface NodeTransform {
+  id: string;
+  frame: WorldFrame;
+  /** 节点类型 applyResize 的结果 (如文本尺寸模式、字号)，与外框一并提交 */
+  fields?: Partial<NodeEntity>;
+}
 
 /** 语义命令的公共选项 */
 export interface CommandOptions {
@@ -88,6 +104,10 @@ export type DocumentApi = Pick<
   | 'updateNode'
   | 'updateConnector'
   | 'moveNodes'
+  | 'transformNodes'
+  | 'setAspectLocked'
+  | 'fitContent'
+  | 'canFitContent'
   | 'removeNodes'
   | 'reparentNodes'
   | 'moveLayers'
@@ -385,6 +405,65 @@ export class DocumentStore {
   }
 
   /**
+   * 变换节点 (缩放、旋转)：frame 为世界坐标中的新外框，换算为父容器局部坐标后一次提交，只写有变化的字段
+   * 后代坐标相对容器，随容器移动与旋转，不产生补丁 (ADR-114)；高频拖拽通过 groupId 折叠为一步撤销
+   */
+  transformNodes(transforms: readonly NodeTransform[], options?: CommandOptions): CanvasOperationRecord | null {
+    const { nodes } = this.document.content;
+    const patches: CanvasPatch[] = [];
+    for (const { id, frame, fields } of transforms) {
+      if (!Object.hasOwn(nodes, id)) continue;
+      const node = nodes[id];
+      const world = computeFrameMatrix(frame);
+      const parentMatrix = node.parentId === undefined ? undefined : this.entities.getWorldTransform(node.parentId);
+      const local = parentMatrix ? multiplyMatrix(invertMatrix(parentMatrix), world) : world;
+      const pose = decomposeNodeMatrix(local, frame.width, frame.height);
+      const next: Partial<NodeEntity> = { ...pose, width: frame.width, height: frame.height, ...fields };
+      for (const [key, value] of Object.entries(next)) {
+        if (key === 'id' || key === 'type') continue;
+        if (areStructuredValuesEqual(node[key as keyof NodeEntity], value)) continue;
+        patches.push({ op: 'set', path: ['content', 'nodes', id, key], value });
+      }
+    }
+    if (patches.length === 0) return null;
+    return this.commit({ ...options, label: options?.label ?? '变换节点', patches });
+  }
+
+  /**
+   * 设置比例锁定 (支持多选)：写入显式值，即使与节点类型默认值相同，用户的选择也不随默认值变化
+   * 值无变化的节点不产生补丁
+   */
+  setAspectLocked(nodeIds: Iterable<string>, locked: boolean, options?: CommandOptions): CanvasOperationRecord | null {
+    const { nodes } = this.document.content;
+    const patches: CanvasPatch[] = [];
+    for (const id of nodeIds) {
+      if (!Object.hasOwn(nodes, id) || nodes[id].aspectLocked === locked) continue;
+      patches.push({ op: 'set', path: ['content', 'nodes', id, 'aspectLocked'], value: locked });
+    }
+    if (patches.length === 0) return null;
+    return this.commit({ ...options, label: options?.label ?? (locked ? '锁定比例' : '解锁比例'), patches });
+  }
+
+  /** 让节点外框适应内容 (支持多选)：写入的字段由节点类型决定，已适应内容或不支持的节点跳过 */
+  fitContent(nodeIds: Iterable<string>, options?: CommandOptions): CanvasOperationRecord | null {
+    const patches: CanvasPatch[] = [];
+    for (const id of nodeIds) {
+      const fields = this.resolveFitContent(id);
+      if (!fields) continue;
+      for (const [key, value] of Object.entries(fields)) {
+        patches.push({ op: 'set', path: ['content', 'nodes', id, key], value });
+      }
+    }
+    if (patches.length === 0) return null;
+    return this.commit({ ...options, label: options?.label ?? '适应内容', patches });
+  }
+
+  /** 节点能否适应内容 (节点类型支持且尚未适应)：界面据此决定是否显示入口 */
+  canFitContent(nodeId: string): boolean {
+    return this.resolveFitContent(nodeId) !== null;
+  }
+
+  /**
    * 改挂容器 (支持多选，parentId 为 undefined 时移出到根层级)：保持节点在世界中的位置与朝向不变，
    * 换算为新容器的局部坐标，并按原有层叠顺序依次放到新容器最上层；会成环的改挂由提交守卫整体拒绝
    */
@@ -479,6 +558,13 @@ export class DocumentStore {
   }
 
   // ================= 内部 =================
+
+  private resolveFitContent(id: string): Partial<NodeEntity> | null {
+    const node = this.getNode(id);
+    const definition = node && this.nodeTypes.get(node.nodeType);
+    if (!node || !definition?.fitContent) return null;
+    return definition.fitContent(node as NodeEntity, createFitContext(node, definition, this.textMeasurer));
+  }
 
   private updateEntity(
     collection: 'nodes' | 'connectors',

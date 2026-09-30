@@ -17,13 +17,28 @@ import { getPlainText } from '../types/text';
 import type { TextPrimitive } from '../protocols/primitives.protocol';
 import type { TextPadding } from '../types/style';
 import type { CanvasPatch } from '../types/operation';
-import type { NodeTextSlotDefinition, NodeTypeDefinition, TextBlockMetrics } from '../protocols/node-type.protocol';
+import type {
+  NodeFitContext,
+  NodeTextSlotDefinition,
+  NodeTypeDefinition,
+  TextBlockMetrics
+} from '../protocols/node-type.protocol';
 import type { TextMeasurer } from '../protocols/text-measurer.protocol';
 import type { NodeTypeRegistry } from '../registry/node-type-registry';
 import { normalizePatchPath } from '../operation/patch-path';
 
-/** 这些字段变化会改变文本排版结果 (宽度变化会改变折行) */
-const LAYOUT_TRIGGER_FIELDS: ReadonlySet<string | number> = new Set(['textBlocks', 'textStyle', 'width', 'nodeType']);
+/**
+ * 这些字段变化后需要重新派生尺寸：文本与宽度改变排版结果 (宽度影响折行)；
+ * 高度由内容决定的节点被写入高度 (如缩放控制柄) 时也要在同一事务内纠正，否则会停在写入值上，
+ * 与下一次按内容派生的高度交替出现 (拖动时外框闪烁)
+ */
+const LAYOUT_TRIGGER_FIELDS: ReadonlySet<string | number> = new Set([
+  'textBlocks',
+  'textStyle',
+  'width',
+  'height',
+  'nodeType'
+]);
 /** 尺寸比较容差：浮点测量抖动不产生无意义的尺寸补丁 */
 const SIZE_EPSILON = 0.5;
 
@@ -93,6 +108,24 @@ export function resolveTextBlockStyle(
   definition: NodeTypeDefinition | undefined
 ): NodeTextStyle {
   return { ...findTextSlot(block, definition)?.defaultStyle, ...node.textStyle, ...block.style };
+}
+
+/** 节点类型 fitContent() 的测量上下文：样式解析与测量走排版派生的同一路径，适应结果与派生尺寸一致 */
+export function createFitContext(
+  node: Readonly<NodeEntity>,
+  definition: NodeTypeDefinition,
+  measurer: TextMeasurer | null
+): NodeFitContext {
+  return {
+    measureText: (block, maxWidth) =>
+      measurer &&
+      measurer.measure({
+        block,
+        style: resolveTextBlockStyle(node, block, definition),
+        sizing: maxWidth === undefined ? 'auto-width' : 'auto-height',
+        maxWidth
+      })
+  };
 }
 
 /**

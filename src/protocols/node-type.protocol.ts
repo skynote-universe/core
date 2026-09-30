@@ -8,7 +8,8 @@
  * 3. 严格类型约束：通过泛型严密绑定节点的私有 data 与 style，杜绝运行时属性未定义访问。
  */
 
-import type { NodeEntity, NodeStyle, TextSizingMode, NodeTextStyle } from '../types';
+import type { NodeEntity, NodeStyle, TextBlock, TextSizingMode, NodeTextStyle } from '../types';
+import type { Point } from '../types/geometry';
 import type { CanvasPrimitive } from './primitives.protocol';
 import type { CanvasTheme } from '../types/theme';
 
@@ -48,6 +49,33 @@ export interface TextBlockMetrics {
   readonly width: number;
   readonly height: number;
   readonly lineCount?: number;
+}
+
+/** 缩放控制柄：四边中点与四角 (按节点自身未旋转的方位) */
+export type ResizeHandle = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
+
+/** 用户拖动控制柄后的目标尺寸 */
+export interface NodeResizeRequest {
+  handle: ResizeHandle;
+  /** 用户拖出的外框尺寸 (已夹取最小值) */
+  width: number;
+  height: number;
+  /** 等比缩放时相对缩放开始时的倍数；非等比时为 1 */
+  scale: number;
+}
+
+/** fitContent() 的上下文 */
+export interface NodeFitContext {
+  /**
+   * 按文本块最终样式测量内容盒 (不含 padding)；maxWidth 缺省时不折行，与排版派生走同一测量器
+   * 未注入文本测量器时返回 null，需要测量的节点类型应视为无法适应
+   */
+  measureText(block: Readonly<TextBlock>, maxWidth?: number): TextBlockMetrics | null;
+}
+
+/** 节点当前是否锁定比例：节点上的显式值优先，否则取节点类型的默认值 */
+export function isAspectLocked(node: Readonly<NodeEntity>, definition: NodeTypeDefinition | undefined): boolean {
+  return node.aspectLocked ?? definition?.defaultAspectLocked ?? false;
 }
 
 /** 节点类型为新节点提供的部分；id、类型、位置、旋转、层级与锁定由引擎填写 */
@@ -140,6 +168,42 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 主题切换后会以新主题重新调用，严禁在图元中写死色值。
    */
   compose?: (node: NodeEntity<TData, TStyle>, context: NodeComposeContext) => CanvasPrimitive[];
+
+  /**
+   * 新建节点默认锁定比例 (如便签、图片、固定比例的容器)；用户可随时解锁，节点上的 aspectLocked 优先
+   * 所有节点都可以自由调整宽高，锁定只改变结果为等比，不限制可拖动的控制柄
+   */
+  readonly defaultAspectLocked?: boolean;
+  /**
+   * 拖角时等比缩放内容 (如自由文本按比例缩放字号)，与比例锁定无关；边控制柄不受影响
+   */
+  readonly scaleContentOnCorners?: boolean;
+  /**
+   * 裁剪超出外框的内容图元 (缺省 false，照常显示)
+   * 文字的溢出方式另由插槽样式 textOverflow 决定 (如便签、形状标签显示省略号)
+   */
+  readonly clipContent?: boolean;
+
+  /**
+   * 用户缩放后需要一并写入的字段 (缺省只写外框宽高)
+   * 例如自由文本拖边时切换为固定宽度 / 固定尺寸，拖角时按比例缩放字号。
+   * 写成方法签名：实现方可按自身数据结构收窄返回值。
+   * @param node 缩放开始时的节点 (同一次拖拽的每一帧都以它为基准，结果不累积误差)
+   */
+  applyResize?(node: NodeEntity<TData, TStyle>, request: NodeResizeRequest): Partial<NodeEntity<TData, TStyle>>;
+
+  /**
+   * 让外框适应内容 (浮动工具栏「适应内容」)
+   * 自适应类节点 (如自由文本) 恢复尺寸状态，外框交给排版派生；固定尺寸类节点 (如便签) 按测量结果一次性写入尺寸
+   * @returns 需要写入的字段；已经适应内容或不支持时返回 null (界面据此决定是否显示入口)
+   */
+  fitContent?(node: NodeEntity<TData, TStyle>, context: NodeFitContext): Partial<NodeEntity<TData, TStyle>> | null;
+
+  /**
+   * 节点轮廓：自身局部坐标系中的闭合多边形 (缺省为外框矩形)
+   * 用于精确拾取与悬停高亮，椭圆、菱形等非矩形节点点在外框空角时不会被选中
+   */
+  outline?(node: NodeEntity<TData, TStyle>): readonly Point[];
 
   /**
    * 【模式 B：DOM 浮层逃生舱】(选填)

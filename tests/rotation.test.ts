@@ -5,7 +5,7 @@
 
 import type { RotatableBox } from '../src/types/geometry';
 import { describe, it, expect } from 'vitest';
-import { applyMatrix, computeNodeLocalMatrix, computeNodeWorldBounds, isPointInNode } from '../src/utils/geometry';
+import { applyMatrix, computeNodeLocalMatrix, computeNodeWorldBounds } from '../src/utils/geometry';
 import { resolveConnectorEndpoint } from '../src/routing/connector-route';
 import { SkyNoteEngine } from '../src/engine';
 import type { NodeEntity } from '../src/types/node';
@@ -36,9 +36,19 @@ describe('绕中心旋转的几何', () => {
     const rotated = { ...box, rotation: 45 };
     const bounds = computeNodeBounds(rotated);
     const matrix = computeNodeLocalMatrix(rotated);
-    expect(isPointInNode({ x: bounds.left + 2, y: bounds.top + 2 }, rotated, matrix)).toBe(false);
-    expect(isPointInNode({ x: 200, y: 150 }, rotated, matrix)).toBe(true);
-    expect(isPointInNode(applyMatrix(matrix, 190, 50), rotated, matrix)).toBe(true);
+    const engine = new SkyNoteEngine();
+    engine.documentStore.addNode({
+      id: 'n',
+      type: 'node',
+      nodeType: 'rect',
+      ...rotated,
+      zIndex: 'a0',
+      locked: false
+    });
+    expect(engine.hitTestNode({ x: bounds.left + 2, y: bounds.top + 2 })).toBeUndefined();
+    expect(engine.hitTestNode({ x: 200, y: 150 })?.id).toBe('n');
+    expect(engine.hitTestNode(applyMatrix(matrix, 190, 50))?.id).toBe('n');
+    engine.destroy();
   });
 
   it('连线锚点随节点绕中心旋转，中心锚点不受影响', () => {

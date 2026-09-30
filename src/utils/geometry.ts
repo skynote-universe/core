@@ -140,6 +140,16 @@ export function computeNodeLocalMatrix(node: RotatableBox): Matrix2D {
 }
 
 /**
+ * 写入文档的几何值去除矩阵运算的浮点噪声 (如 7e-15、89.99999999999999)，
+ * 避免产生无意义的补丁与难读的数据；1e-9 远小于任何可见精度
+ */
+function roundPersisted(value: number): number {
+  const rounded = Math.round(value * 1e9) / 1e9;
+  // 顺带把 -0 规整为 0
+  return rounded === 0 ? 0 : rounded;
+}
+
+/**
  * computeNodeLocalMatrix 的逆运算：已知目标局部矩阵 (刚体) 与节点尺寸，求 x / y / rotation
  * 用于改挂容器时保持节点在世界中的位置与朝向不变
  */
@@ -149,14 +159,15 @@ export function decomposeNodeMatrix(
   height: number
 ): { x: number; y: number; rotation: number } {
   const rad = Math.atan2(m.b, m.a);
-  let rotation = (rad * 180) / Math.PI;
-  // 消除 atan2 带来的 -0 与浮点噪声，保证未旋转的节点得到整洁的 0
-  if (Math.abs(rotation) < 1e-9) rotation = 0;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
   const cx = width / 2;
   const cy = height / 2;
-  return { x: m.e - cx + cos * cx - sin * cy, y: m.f - cy + sin * cx + cos * cy, rotation };
+  return {
+    x: roundPersisted(m.e - cx + cos * cx - sin * cy),
+    y: roundPersisted(m.f - cy + sin * cx + cos * cy),
+    rotation: roundPersisted((rad * 180) / Math.PI)
+  };
 }
 
 /** 节点在世界坐标系中的轴对齐包围盒：自身框四角经世界矩阵变换后的外接矩形 */
@@ -164,13 +175,43 @@ export function computeNodeWorldBounds(size: { width: number; height: number }, 
   return transformBounds({ left: 0, top: 0, right: size.width, bottom: size.height }, worldMatrix);
 }
 
-/**
- * 点是否落在节点 (含自身与祖先旋转) 的矩形框内：把世界点反变换回节点局部坐标后判断
- * 空间索引只按外接矩形粗筛，旋转节点外接矩形的四个空角需要此函数精判
- */
-export function isPointInNode(point: Point, size: { width: number; height: number }, worldMatrix: Matrix2D): boolean {
-  const local = applyMatrix(invertMatrix(worldMatrix), point.x, point.y);
-  return local.x >= 0 && local.x <= size.width && local.y >= 0 && local.y <= size.height;
+/** 点是否在闭合多边形内 (射线法，边界上的点视为在内的判定不作保证) */
+export function isPointInPolygon(point: Point, polygon: readonly Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** 世界坐标中的节点外框：中心、尺寸与绕中心的旋转角 (度) */
+export interface WorldFrame {
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+  rotation: number;
+}
+
+/** 节点在世界坐标中的外框 (含自身与祖先旋转) */
+export function computeWorldFrame(size: { width: number; height: number }, worldMatrix: Matrix2D): WorldFrame {
+  const center = applyMatrix(worldMatrix, size.width / 2, size.height / 2);
+  return { cx: center.x, cy: center.y, width: size.width, height: size.height, rotation: matrixRotation(worldMatrix) };
+}
+
+/** 世界外框对应的矩阵 (框局部坐标 → 世界坐标)，与 computeNodeLocalMatrix 同一约定 */
+export function computeFrameMatrix(frame: WorldFrame): Matrix2D {
+  return computeNodeLocalMatrix({
+    x: frame.cx - frame.width / 2,
+    y: frame.cy - frame.height / 2,
+    width: frame.width,
+    height: frame.height,
+    rotation: frame.rotation
+  });
 }
 
 // ================= 视口 =================

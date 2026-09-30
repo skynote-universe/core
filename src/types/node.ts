@@ -78,6 +78,11 @@ export interface NodeEntity<TData = Record<string, unknown>, TStyle extends Node
    */
   zIndex: FractionalIndex;
   locked: boolean;
+  /**
+   * 比例锁定：锁定后缩放只能等比 (比例即当前宽高之比，不单独存储)
+   * 缺省时取节点类型的 defaultAspectLocked；用户切换后写入显式值
+   */
+  aspectLocked?: boolean;
 
   /** 绑定的统一文本块列表 (单一事实源) */
   textBlocks?: TextBlock[];

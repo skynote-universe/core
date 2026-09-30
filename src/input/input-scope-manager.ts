@@ -63,6 +63,11 @@ export class InputScopeManager {
     return this.dispatch(e, (scope) => scope.onKeyUp);
   }
 
+  /** 通知全部作用域画布已失焦 */
+  dispatchBlur(): void {
+    for (const scope of this.activeScopes) scope.onBlur?.();
+  }
+
   /**
    * 清空全部作用域
    */

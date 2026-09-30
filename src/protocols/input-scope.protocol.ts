@@ -33,4 +33,9 @@ export interface InputScope {
   /** 按键事件处理 */
   onKeyDown?(e: CanvasKeyboardEvent): boolean | void;
   onKeyUp?(e: CanvasKeyboardEvent): boolean | void;
+  /**
+   * 画布失去键盘焦点 (切换窗口、焦点移到其他元素)：此后的 keyup 不会到达，
+   * 按住空格、修饰键等状态必须在此复位；所有作用域都会收到，不存在消费
+   */
+  onBlur?(): void;
 }

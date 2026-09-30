@@ -11,6 +11,9 @@
 import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { NodeStyle } from '../types/node';
 
+/** 节点类型的只读查询 (插件据此读取其他节点类型声明的缩放行为、轮廓等) */
+export type NodeTypeReader = Pick<NodeTypeRegistry, 'get' | 'has' | 'getAll'>;
+
 export class NodeTypeRegistry {
   /** 各节点类型的 TData / TStyle 互不相同，存储时擦除泛型，取出时由调用方按类型标识还原 */
   private readonly definitions = new Map<string, NodeTypeDefinition<unknown, NodeStyle>>();

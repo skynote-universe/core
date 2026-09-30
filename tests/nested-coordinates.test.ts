@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import { compareHierarchicalNodes } from '../src/layout/layer-order';
-import { applyMatrix } from '../src/utils/geometry';
+import { applyMatrix, computeWorldFrame } from '../src/utils/geometry';
 import type { NodeEntity } from '../src/types/node';
 import type { ConnectorEntity } from '../src/types/connector';
 import type { DocumentChangeSet } from '../src/types/change-set';
@@ -177,5 +177,30 @@ describe('变更集与派生状态', () => {
     store.commit({ origin: 'remote', patches: [{ op: 'unset', path: ['content', 'nodes', 'frame'] }] });
     expect(engine.entityStore.getWorldTransform('card')!.e).toBe(10);
     expect(engine.spatialIndex.getBounds('card')!.left).toBe(10);
+  });
+});
+
+describe('变换节点 (transformNodes)', () => {
+  it('世界外框换算为旋转容器内的局部坐标；只写有变化的字段，后代不产生补丁', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('frame', { x: 100, y: 100, width: 400, height: 300, rotation: 90 }));
+    store.addNode(makeNode('card', { parentId: 'frame', x: 20, y: 30, width: 40, height: 20 }));
+    store.addNode(makeNode('inner', { parentId: 'card', x: 5, y: 5, width: 10, height: 10 }));
+
+    const before = computeWorldFrame(store.getNode('card')!, engine.entityStore.getWorldTransform('card')!);
+    const record = store.transformNodes([{ id: 'card', frame: { ...before, width: 80 } }], { label: '缩放' })!;
+
+    // 中心与朝向在世界中不变，局部坐标按容器旋转换算：宽度增加 40 → 局部 x 左移 20
+    expect(store.getNode('card')).toMatchObject({ x: 0, y: 30, width: 80, height: 20, rotation: 0 });
+    const after = computeWorldFrame(store.getNode('card')!, engine.entityStore.getWorldTransform('card')!);
+    expect(after.cx).toBeCloseTo(before.cx);
+    expect(after.cy).toBeCloseTo(before.cy);
+    expect(record.patches.map((p) => (p.path as string[]).at(-1)).sort()).toEqual(['width', 'x']);
+
+    // 同一事务写入节点类型给出的其他字段
+    store.transformNodes([{ id: 'card', frame: after, fields: { style: { fill: '#ff0000' } } }]);
+    expect(store.getNode('card')!.style).toEqual({ fill: '#ff0000' });
+    engine.destroy();
   });
 });

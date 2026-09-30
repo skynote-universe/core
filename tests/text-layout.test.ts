@@ -84,6 +84,18 @@ describe('文本驱动的自动尺寸', () => {
     expect(node.height).toBe(110);
   });
 
+  it('单独写入高度 (如缩放控制柄) 同样在同一事务内按内容纠正，不会停在写入值上', () => {
+    const engine = createEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('s', 'sticky', 'a'.repeat(20)));
+    expect(store.getNode('s')?.height).toBe(110);
+
+    store.updateNode('s', { height: 300 });
+    expect(store.getNode('s')?.height).toBe(110);
+    store.transformNodes([{ id: 's', frame: { cx: 50, cy: 100, width: 100, height: 200, rotation: 0 } }]);
+    expect(store.getNode('s')).toMatchObject({ width: 100, height: 110 });
+  });
+
   it('修改文本在同一事务内派生新高度，撤销一次即同时还原文本与尺寸', () => {
     const engine = createEngine();
     const store = engine.documentStore;

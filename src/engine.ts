@@ -20,7 +20,14 @@ import type { DocumentChangeSet } from './types/change-set';
 import type { TextMeasurer } from './protocols/text-measurer.protocol';
 import type { SkyNotePlugin } from './protocols/plugin.protocol';
 import { DETACHED_CANVAS_HOST, type CanvasHost } from './protocols/host.protocol';
-import { computeNodeWorldBounds, distanceToPolyline, expandBounds, isPointInNode } from './utils/geometry';
+import {
+  applyMatrix,
+  computeNodeWorldBounds,
+  distanceToPolyline,
+  expandBounds,
+  invertMatrix,
+  isPointInPolygon
+} from './utils/geometry';
 import { compareHierarchicalNodes } from './layout/layer-order';
 import { computeConnectorRoute } from './routing/connector-route';
 import { DocumentStore } from './state/document-store';
@@ -145,15 +152,20 @@ export class SkyNoteEngine {
   }
 
   /**
-   * 点选最上层节点：空间索引粗筛后按世界矩阵精判 (含自身与祖先旋转)；
+   * 点选最上层节点：空间索引粗筛后按世界矩阵精判 (含自身与祖先旋转)，节点类型声明了轮廓时按轮廓判断；
    * 落在裁剪型祖先 (画框) 之外的部分不可拾取；候选返回顺序与层叠无关，必须显式比较层级
    */
   hitTestNode(point: Point): Readonly<NodeEntity> | undefined {
     const { entityStore, nodeTypes } = this;
     const chainCache = new Map<string, Readonly<NodeEntity>[]>();
     const getNode = (id: string) => entityStore.getNode(id)?.entity;
-    const containsPoint = (node: Readonly<NodeEntity>) =>
-      isPointInNode(point, node, entityStore.getWorldTransform(node.id)!);
+    const containsPoint = (node: Readonly<NodeEntity>): boolean => {
+      const local = applyMatrix(invertMatrix(entityStore.getWorldTransform(node.id)!), point.x, point.y);
+      const definition = nodeTypes.get(node.nodeType);
+      return definition?.outline
+        ? isPointInPolygon(local, definition.outline(node as NodeEntity))
+        : local.x >= 0 && local.x <= node.width && local.y >= 0 && local.y <= node.height;
+    };
     const isClippedOut = (node: Readonly<NodeEntity>) =>
       entityStore.getAncestorIds(node.id).some((id) => {
         const ancestor = getNode(id)!;

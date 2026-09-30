@@ -23,6 +23,7 @@ import type { DocumentApi } from '../state/document-store';
 import type { EntityReader } from '../state/entity-store';
 import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
 import type { PointerHooks } from '../input/pointer-dispatcher';
+import type { NodeTypeReader } from '../registry/node-type-registry';
 
 /** 插件上下文：插件可用的全部内核能力 */
 export interface CanvasPluginContext {
@@ -32,6 +33,8 @@ export interface CanvasPluginContext {
   readonly entities: EntityReader;
   /** 节点空间检索 (世界坐标) */
   readonly spatial: NodeSpatialQuery;
+  /** 已注册的节点类型 (只读)：读取尺寸策略、缩放行为与轮廓 */
+  readonly nodeTypes: NodeTypeReader;
   /** 本地会话 (视口、选区、主题)：不进入文档、不入撤销栈、不参与协同 */
   readonly session: SessionController;
   /** 宿主能力 (覆盖层、光标、指针捕获)；渲染器挂载前为空实现，插件卸载时其覆盖层会话自动清除 */

@@ -25,6 +25,7 @@ import type { EntityReader } from '../state/entity-store';
 import type { SessionController, SessionChange } from '../state/session-store';
 import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
 import type { PointerHooks } from '../input/pointer-dispatcher';
+import type { NodeTypeReader } from '../registry/node-type-registry';
 import type { SkyNoteEngine } from '../engine';
 
 /**
@@ -73,6 +74,7 @@ class PluginContext implements CanvasPluginContext {
   readonly document: DocumentApi;
   readonly entities: EntityReader;
   readonly spatial: NodeSpatialQuery;
+  readonly nodeTypes: NodeTypeReader;
   readonly session: SessionController;
   readonly host: PluginHost;
   private readonly cleanups: Array<() => void> = [];
@@ -85,6 +87,7 @@ class PluginContext implements CanvasPluginContext {
     this.document = engine.documentStore;
     this.entities = engine.entityStore;
     this.spatial = engine.spatialIndex;
+    this.nodeTypes = engine.nodeTypes;
     this.session = engine.session;
     this.host = new PluginHost(engine);
     this.cleanups.push(() => this.host.dispose());

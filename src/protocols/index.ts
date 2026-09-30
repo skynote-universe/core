@@ -12,3 +12,4 @@ export * from './connector-router.protocol';
 export * from './plugin.protocol';
 export * from './text-measurer.protocol';
 export * from './host.protocol';
+export * from './renderer.protocol';

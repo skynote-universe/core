@@ -97,7 +97,8 @@ export class SkyNoteEngine {
     });
     this.nodeSpatialIndex = new SceneSpatialIndex(
       this.entityStore,
-      options?.createNodeSpatialIndex ?? (() => new RTreeSpatialIndex())
+      options?.createNodeSpatialIndex ?? (() => new RTreeSpatialIndex()),
+      (node) => this.nodeTypes.get(node.nodeType)?.extent?.(node as NodeEntity)
     );
     this.plugins = new PluginManager(this);
 
@@ -154,8 +155,9 @@ export class SkyNoteEngine {
   /**
    * 点选最上层节点：空间索引粗筛后按世界矩阵精判 (含自身与祖先旋转)，节点类型声明了轮廓时按轮廓判断；
    * 落在裁剪型祖先 (画框) 之外的部分不可拾取；候选返回顺序与层叠无关，必须显式比较层级
+   * @param accept 只在满足条件的节点中拾取 (如拖放时只找可接收子节点且不是被拖节点的容器)
    */
-  hitTestNode(point: Point): Readonly<NodeEntity> | undefined {
+  hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined {
     const { entityStore, nodeTypes } = this;
     const chainCache = new Map<string, Readonly<NodeEntity>[]>();
     const getNode = (id: string) => entityStore.getNode(id)?.entity;
@@ -166,17 +168,20 @@ export class SkyNoteEngine {
         ? isPointInPolygon(local, definition.outline(node as NodeEntity))
         : local.x >= 0 && local.x <= node.width && local.y >= 0 && local.y <= node.height;
     };
+    // 裁剪按容器外框判定 (框外标题不裁剪子节点)
     const isClippedOut = (node: Readonly<NodeEntity>) =>
       entityStore.getAncestorIds(node.id).some((id) => {
         const ancestor = getNode(id)!;
-        return nodeTypes.get(ancestor.nodeType)?.clipChildren && !containsPoint(ancestor);
+        if (!nodeTypes.get(ancestor.nodeType)?.clipChildren) return false;
+        const local = applyMatrix(invertMatrix(entityStore.getWorldTransform(id)!), point.x, point.y);
+        return local.x < 0 || local.y < 0 || local.x > ancestor.width || local.y > ancestor.height;
       });
 
     let top: Readonly<NodeEntity> | undefined;
     const candidateIds = this.nodeSpatialIndex.hitTest(point);
     for (let i = 0; i < candidateIds.length; i++) {
       const node = getNode(candidateIds[i]);
-      if (!node || node.style?.opacity === 0 || !containsPoint(node)) continue;
+      if (!node || node.style?.opacity === 0 || (accept && !accept(node)) || !containsPoint(node)) continue;
       if (top && compareHierarchicalNodes(node, top, getNode, chainCache) < 0) continue;
       if (isClippedOut(node)) continue;
       top = node;

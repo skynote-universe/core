@@ -9,7 +9,7 @@
  */
 
 import type { NodeEntity, NodeStyle, TextBlock, TextSizingMode, NodeTextStyle } from '../types';
-import type { Point } from '../types/geometry';
+import type { Point, RectBounds } from '../types/geometry';
 import type { CanvasPrimitive } from './primitives.protocol';
 import type { CanvasTheme } from '../types/theme';
 
@@ -143,6 +143,12 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
   readonly clipChildren?: boolean;
 
   /**
+   * 可经拖拽接收子节点 (画框等容器)：拖动节点松手时指针所在的最上层此类节点成为其新父容器，
+   * 落在空白处则移出到画布根层级 (ADR-123)
+   */
+  readonly acceptsChildren?: boolean;
+
+  /**
    * 静态文本插槽规则集合 (Blueprint)
    * 声明节点拥有哪些语义文本槽位及其是否撑开容器，纯静态配置，不入持久化文档。
    * 排版时插槽的 sizing 与 defaultStyle 作为该插槽文本块的默认值。
@@ -202,6 +208,12 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * @returns 需要写入的字段；已经适应内容或不支持时返回 null (界面据此决定是否显示入口)
    */
   fitContent?(node: NodeEntity<TData, TStyle>, context: NodeFitContext): Partial<NodeEntity<TData, TStyle>> | null;
+
+  /**
+   * 节点占据的局部范围 (缺省为外框)：框外的装饰 (如画框标题) 须包含在内，
+   * 空间索引据此登记，否则框外部分无法点选，平移时也会被提前剔除
+   */
+  extent?(node: NodeEntity<TData, TStyle>): RectBounds;
 
   /**
    * 节点轮廓：自身局部坐标系中的闭合多边形 (缺省为外框矩形)

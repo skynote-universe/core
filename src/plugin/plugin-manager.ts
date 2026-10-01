@@ -110,8 +110,8 @@ class PluginContext implements CanvasPluginContext {
     this.cleanups.push(() => this.host.dispose());
   }
 
-  hitTestNode(point: Point): Readonly<NodeEntity> | undefined {
-    return this.engine.hitTestNode(point);
+  hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined {
+    return this.engine.hitTestNode(point, accept);
   }
 
   hitTestConnector(point: Point, tolerancePx?: number): Readonly<ConnectorEntity> | undefined {

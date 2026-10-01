@@ -40,8 +40,8 @@ export interface CanvasPluginContext {
   /** 宿主能力 (覆盖层、光标、指针捕获)；渲染器挂载前为空实现，插件卸载时其覆盖层会话自动清除 */
   readonly host: CanvasHost;
 
-  /** 点选最上层节点：含旋转精判、裁剪型容器与层叠顺序 */
-  hitTestNode(point: Point): Readonly<NodeEntity> | undefined;
+  /** 点选最上层节点：含旋转精判、裁剪型容器与层叠顺序；accept 限定只在满足条件的节点中拾取 */
+  hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined;
   /** 连线拾取：点到路由的距离不超过 tolerancePx 屏幕像素 */
   hitTestConnector(point: Point, tolerancePx?: number): Readonly<ConnectorEntity> | undefined;
 

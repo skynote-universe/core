@@ -16,6 +16,7 @@
  * 6. 批量写入：一次变更中的条目按容器缓冲后以 load 一次写入，大批量新增 (导入、粘贴) 时 R-Tree 走 STR 整体装载，
  *    逐条插入会让树的装箱质量变差，之后每次更新与检索都更慢。
  * 7. 每个容器的索引由工厂创建 (默认 R-Tree)，算法仍可热插拔。
+ * 8. 登记的是节点占据的范围 (节点类型的 extent，缺省为外框)：框外装饰 (画框标题) 同样可被检出与拾取。
  */
 
 import type { Point, RectBounds } from '../types/geometry';
@@ -25,7 +26,6 @@ import type { EntityReader } from '../state/entity-store';
 import type { SpatialIndex, SpatialIndexEntry } from './spatial-index';
 import {
   computeNodeLocalMatrix,
-  computeNodeWorldBounds,
   doBoundsIntersect,
   invertMatrix,
   transformBounds,
@@ -78,12 +78,11 @@ function touchesEdge(entry: RectBounds, union: RectBounds): boolean {
   );
 }
 
-/** 自身框在父容器局部坐标中的外接矩形；未旋转时直接由 x / y / 尺寸得出 */
-function computeOwnBounds(node: Readonly<NodeEntity>): RectBounds {
-  if (!node.rotation) {
-    return { left: node.x, top: node.y, right: node.x + node.width, bottom: node.y + node.height };
-  }
-  return computeNodeWorldBounds(node, computeNodeLocalMatrix(node));
+/** 节点占据的局部范围：节点类型未声明时为外框 */
+export type NodeExtentResolver = (node: Readonly<NodeEntity>) => RectBounds | undefined;
+
+function boxExtent(node: Readonly<NodeEntity>): RectBounds {
+  return { left: 0, top: 0, right: node.width, bottom: node.height };
 }
 
 export class SceneSpatialIndex implements NodeSpatialQuery {
@@ -94,7 +93,8 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
 
   constructor(
     private readonly entities: EntityReader,
-    private readonly createIndex: () => SpatialIndex
+    private readonly createIndex: () => SpatialIndex,
+    private readonly resolveExtent: NodeExtentResolver = () => undefined
   ) {}
 
   get size(): number {
@@ -191,7 +191,10 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
     const placement = this.placements.get(nodeId);
     if (!placement) return undefined;
     if (placement.container === undefined) return placement.own;
-    return computeNodeWorldBounds(this.entities.getNode(nodeId)!.entity, this.entities.getWorldTransform(nodeId)!);
+    return transformBounds(
+      this.extentOf(this.entities.getNode(nodeId)!.entity),
+      this.entities.getWorldTransform(nodeId)!
+    );
   }
 
   getContentBounds(): RectBounds | null {
@@ -221,8 +224,8 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
       if (key === undefined) {
         if (!placement.hasChildren || doBoundsIntersect(placement.own, worldQuery)) result.push(id);
       } else if (doBoundsIntersect(placement.own, localQuery)) {
-        const worldBounds = computeNodeWorldBounds(
-          this.entities.getNode(id)!.entity,
+        const worldBounds = transformBounds(
+          this.extentOf(this.entities.getNode(id)!.entity),
           this.entities.getWorldTransform(id)!
         );
         if (doBoundsIntersect(worldBounds, worldQuery)) result.push(id);
@@ -232,6 +235,24 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
         this.collect(id, transformBounds(localQuery, invertMatrix(computeNodeLocalMatrix(node))), worldQuery, result);
       }
     }
+  }
+
+  private extentOf(node: Readonly<NodeEntity>): RectBounds {
+    return this.resolveExtent(node) ?? boxExtent(node);
+  }
+
+  /** 节点占据范围在父容器局部坐标中的外接矩形；未旋转时直接平移 */
+  private computeOwnBounds(node: Readonly<NodeEntity>): RectBounds {
+    const extent = this.extentOf(node);
+    if (!node.rotation) {
+      return {
+        left: node.x + extent.left,
+        top: node.y + extent.top,
+        right: node.x + extent.right,
+        bottom: node.y + extent.bottom
+      };
+    }
+    return transformBounds(extent, computeNodeLocalMatrix(node));
   }
 
   /** 父节点缺失 (如远端删除了容器) 时按根层级登记，与世界矩阵的回落规则一致 */
@@ -248,9 +269,9 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
     return state;
   }
 
-  /** 求节点条目：子树包围盒 (自身框 ∪ 直接子条目并集) 变换到父容器局部坐标 */
+  /** 求节点条目：子树包围盒 (自身占据范围 ∪ 直接子条目并集) 变换到父容器局部坐标 */
   private computePlacement(node: Readonly<NodeEntity>, container: ContainerKey): Placement {
-    const own = computeOwnBounds(node);
+    const own = this.computeOwnBounds(node);
     const state = this.containers.get(node.id);
     if (!state || state.members.size === 0) return { container, entry: own, own, hasChildren: false };
 
@@ -263,7 +284,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
       state.union = union;
       state.stale = false;
     }
-    const subtree = unionBounds({ left: 0, top: 0, right: node.width, bottom: node.height }, state.union!);
+    const subtree = unionBounds(this.extentOf(node), state.union!);
     return { container, entry: transformBounds(subtree, computeNodeLocalMatrix(node)), own, hasChildren: true };
   }
 

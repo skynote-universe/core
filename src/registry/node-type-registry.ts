@@ -29,7 +29,7 @@ export class NodeTypeRegistry {
     }
 
     if (this.definitions.has(definition.type)) {
-      console.warn(`[NodeTypeRegistry] 节点类型 "${definition.type}" 已存在，将被新定义覆盖`);
+      console.warn(`[SkyNote:NodeTypeRegistry] 节点类型 "${definition.type}" 已存在，将被新定义覆盖`);
     }
 
     this.definitions.set(definition.type, definition as unknown as NodeTypeDefinition<unknown, NodeStyle>);

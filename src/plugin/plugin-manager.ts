@@ -156,7 +156,7 @@ class PluginContext implements CanvasPluginContext {
       try {
         this.cleanups[i]();
       } catch (err) {
-        console.error(`[PluginManager] 插件 "${this.pluginId}" 资源清理异常:`, err);
+        console.error(`[SkyNote:PluginManager] 插件 "${this.pluginId}" 资源清理异常:`, err);
       }
     }
     this.cleanups.length = 0;
@@ -196,7 +196,7 @@ export class PluginManager {
     try {
       entry.plugin.unmount?.();
     } catch (err) {
-      console.error(`[PluginManager] 插件 "${pluginId}" 卸载时发生异常:`, err);
+      console.error(`[SkyNote:PluginManager] 插件 "${pluginId}" 卸载时发生异常:`, err);
     }
     return true;
   }

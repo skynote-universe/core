@@ -221,7 +221,7 @@ export class SessionStore implements SessionController {
   setViewport(viewport: Partial<ViewportState>): void {
     const next: ViewportState = { ...this.viewportState, ...viewport };
     if (!(next.zoom > 0) || !Number.isFinite(next.zoom) || !Number.isFinite(next.x) || !Number.isFinite(next.y)) {
-      console.error('[SessionStore] 非法视口参数，已忽略:', viewport);
+      console.error('[SkyNote:SessionStore] 非法视口参数，已忽略:', viewport);
       return;
     }
     next.zoom = clamp(next.zoom, this.zoomRange.min, this.zoomRange.max);
@@ -311,7 +311,7 @@ export class SessionStore implements SessionController {
       try {
         listener(change);
       } catch (err) {
-        console.error('[SessionStore] 会话监听回调异常:', err);
+        console.error('[SkyNote:SessionStore] 会话监听回调异常:', err);
       }
     }
   }

@@ -127,7 +127,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       const actual = getValueByPath(this.targetDoc, options.guard.path);
       if (!isEqual(actual, options.guard.expected)) {
         console.error(
-          `[OperationCoordinator] 事务前置守卫校验失败: 路径 ${JSON.stringify(options.guard.path)} 期望值 ${JSON.stringify(options.guard.expected)}, 实际值 ${JSON.stringify(actual)}`
+          `[SkyNote:OperationCoordinator] 事务前置守卫校验失败: 路径 ${JSON.stringify(options.guard.path)} 期望值 ${JSON.stringify(options.guard.expected)}, 实际值 ${JSON.stringify(actual)}`
         );
         return null;
       }
@@ -136,7 +136,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     const patches = clonePlainData(options.patches);
     const applyResult = applyPatches(this.targetDoc, patches);
     if (!applyResult.success) {
-      console.error('[OperationCoordinator] 补丁事务执行失败，已自动回滚:', applyResult.error);
+      console.error('[SkyNote:OperationCoordinator] 补丁事务执行失败，已自动回滚:', applyResult.error);
       return null;
     }
 
@@ -152,7 +152,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
         const derivedResult = applyPatches(this.targetDoc, derived);
         if (!derivedResult.success) {
           applyPatches(this.targetDoc, [...applyResult.inversePatches].reverse());
-          console.error('[OperationCoordinator] 派生补丁执行失败，整个事务已回滚:', derivedResult.error);
+          console.error('[SkyNote:OperationCoordinator] 派生补丁执行失败，整个事务已回滚:', derivedResult.error);
           return null;
         }
         finalPatches = [...patches, ...derived];
@@ -245,7 +245,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       const result = applyPatches(this.targetDoc, patches);
       if (!result.success) {
         console.error(
-          `[OperationCoordinator] ${direction === 'undo' ? '撤销' : '重做'}冲突，已作废该历史条目:`,
+          `[SkyNote:OperationCoordinator] ${direction === 'undo' ? '撤销' : '重做'}冲突，已作废该历史条目:`,
           result.error
         );
         this.notifyHistoryChanged();
@@ -330,7 +330,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       try {
         listener(record, this.targetDoc);
       } catch (err) {
-        console.error('[OperationCoordinator] 事务监听回调异常:', err);
+        console.error('[SkyNote:OperationCoordinator] 事务监听回调异常:', err);
       }
     }
   }
@@ -341,7 +341,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       try {
         listener(state);
       } catch (err) {
-        console.error('[OperationCoordinator] 历史栈监听回调异常:', err);
+        console.error('[SkyNote:OperationCoordinator] 历史栈监听回调异常:', err);
       }
     }
   }

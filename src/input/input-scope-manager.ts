@@ -15,6 +15,8 @@ export class InputScopeManager {
   /** 当前按优先级从高到低排序的活跃作用域列表 */
   private activeScopes: InputScope[] = [];
 
+  // ================= 作用域注册与查询 =================
+
   /**
    * 注册并激活焦点作用域
    */
@@ -48,6 +50,8 @@ export class InputScopeManager {
     return this.scopes.has(scopeId);
   }
 
+  // ================= 键盘事件分发 =================
+
   /**
    * 分发按键按下事件
    * @returns 是否被某个作用域消费 (返回 true 或调用 stopPropagation)
@@ -68,6 +72,8 @@ export class InputScopeManager {
     for (const scope of this.activeScopes) scope.onBlur?.();
   }
 
+  // ================= 清理与生命周期 =================
+
   /**
    * 清空全部作用域
    */
@@ -75,6 +81,8 @@ export class InputScopeManager {
     this.scopes.clear();
     this.activeScopes = [];
   }
+
+  // ================= 内部派生与调度辅助 =================
 
   /**
    * 自顶向下依序交给优先级最高的活跃作用域，任一作用域消费即停止
@@ -110,6 +118,7 @@ export class InputScopeManager {
     return false;
   }
 
+  /** 按优先级降序重建活跃作用域列表 */
   private rebuildActiveScopes(): void {
     this.activeScopes = Array.from(this.scopes.values()).sort((a, b) => b.priority - a.priority);
   }

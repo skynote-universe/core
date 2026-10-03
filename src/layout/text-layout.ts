@@ -26,6 +26,9 @@ import type { FontMeasurer } from '../protocols/font-measurer.protocol';
 import type { NodeTypeRegistry } from '../registry/node-type-registry';
 import { normalizePatchPath } from '../operation/patch-path';
 import { layoutText } from './rich-text-layout';
+import { SIZE_EPSILON } from './rich-text-constants';
+
+export { SIZE_EPSILON };
 
 /**
  * 这些字段变化后需要重新派生尺寸：文本与宽度改变排版结果 (宽度影响折行)；
@@ -39,8 +42,8 @@ const LAYOUT_TRIGGER_FIELDS: ReadonlySet<string | number> = new Set([
   'height',
   'nodeType'
 ]);
-/** 尺寸比较容差：浮点测量抖动不产生无意义的尺寸补丁 */
-const SIZE_EPSILON = 0.5;
+
+// ================= 样式与内边距解析 =================
 
 export interface ResolvedPadding {
   top: number;
@@ -56,6 +59,27 @@ export function resolveTextPadding(padding: TextPadding | undefined): ResolvedPa
   const [top, right = top, bottom = top, left = right] = padding;
   return { top, right, bottom, left };
 }
+
+function findTextSlot(
+  block: Readonly<TextBlock>,
+  definition: NodeTypeDefinition | undefined
+): NodeTextSlotDefinition | undefined {
+  return block.slot !== undefined ? definition?.slots?.find((slot) => slot.slot === block.slot) : undefined;
+}
+
+/**
+ * 文本块的最终样式：插槽默认样式 < 节点 textStyle < 文本块 style
+ * 节点 compose() 绘制与测量器测量必须用同一份解析结果，否则量出的尺寸与画面不一致
+ */
+export function resolveTextBlockStyle(
+  node: Readonly<NodeEntity>,
+  block: Readonly<TextBlock>,
+  definition: NodeTypeDefinition | undefined
+): NodeTextStyle {
+  return { ...findTextSlot(block, definition)?.defaultStyle, ...node.textStyle, ...block.style };
+}
+
+// ================= 文本图元生成与单块测量 =================
 
 /**
  * 文本块 → 文本图元的唯一映射：节点 compose() 统一经此输出文字
@@ -91,25 +115,6 @@ export function measureTextBlock(
   return { width: layout.width, height: layout.height, lineCount: layout.lines.length };
 }
 
-function findTextSlot(
-  block: Readonly<TextBlock>,
-  definition: NodeTypeDefinition | undefined
-): NodeTextSlotDefinition | undefined {
-  return block.slot !== undefined ? definition?.slots?.find((slot) => slot.slot === block.slot) : undefined;
-}
-
-/**
- * 文本块的最终样式：插槽默认样式 < 节点 textStyle < 文本块 style
- * 节点 compose() 绘制与测量器测量必须用同一份解析结果，否则量出的尺寸与画面不一致
- */
-export function resolveTextBlockStyle(
-  node: Readonly<NodeEntity>,
-  block: Readonly<TextBlock>,
-  definition: NodeTypeDefinition | undefined
-): NodeTextStyle {
-  return { ...findTextSlot(block, definition)?.defaultStyle, ...node.textStyle, ...block.style };
-}
-
 /** 节点类型 fitContent() 的测量上下文：样式解析与测量走排版派生的同一路径，适应结果与派生尺寸一致 */
 export function createFitContext(
   node: Readonly<NodeEntity>,
@@ -122,29 +127,7 @@ export function createFitContext(
   };
 }
 
-/**
- * 从一次提交的补丁中找出需要重新排版的节点
- * 整体替换 content / nodes (导入、全量同步) 不在此列：持久化文档中的尺寸即排版结果
- */
-export function collectTextLayoutTargets(patches: readonly CanvasPatch[]): Set<string> {
-  const targets = new Set<string>();
-  for (let i = 0; i < patches.length; i++) {
-    const patch = patches[i];
-    const segments = normalizePatchPath(patch.path);
-    if (segments[0] !== 'content' || segments[1] !== 'nodes' || segments.length < 3) continue;
-    const id = String(segments[2]);
-
-    if (segments.length === 3) {
-      if (patch.op !== 'set') continue;
-      if (!patch.merge || Object.keys(patch.value as object).some((key) => LAYOUT_TRIGGER_FIELDS.has(key))) {
-        targets.add(id);
-      }
-    } else if (LAYOUT_TRIGGER_FIELDS.has(segments[3])) {
-      targets.add(id);
-    }
-  }
-  return targets;
-}
+// ================= 节点自适应排版求解 =================
 
 /**
  * 计算节点在当前文本内容下应有的尺寸
@@ -192,6 +175,32 @@ export function computeTextLayout(
     : { width: node.width, height: Math.ceil(contentHeight) };
 }
 
+// ================= 事务内尺寸补丁派生 =================
+
+/**
+ * 从一次提交的补丁中找出需要重新排版的节点
+ * 整体替换 content / nodes (导入、全量同步) 不在此列：持久化文档中的尺寸即排版结果
+ */
+export function collectTextLayoutTargets(patches: readonly CanvasPatch[]): Set<string> {
+  const targets = new Set<string>();
+  for (let i = 0; i < patches.length; i++) {
+    const patch = patches[i];
+    const segments = normalizePatchPath(patch.path);
+    if (segments[0] !== 'content' || segments[1] !== 'nodes' || segments.length < 3) continue;
+    const id = String(segments[2]);
+
+    if (segments.length === 3) {
+      if (patch.op !== 'set') continue;
+      if (!patch.merge || Object.keys(patch.value as object).some((key) => LAYOUT_TRIGGER_FIELDS.has(key))) {
+        targets.add(id);
+      }
+    } else if (LAYOUT_TRIGGER_FIELDS.has(segments[3])) {
+      targets.add(id);
+    }
+  }
+  return targets;
+}
+
 /**
  * 为指定节点生成尺寸补丁 (与当前尺寸一致时不生成)
  * 单个节点测量或 computeBounds 抛错时跳过该节点，不阻断文本本身的修改
@@ -211,7 +220,7 @@ export function deriveTextLayoutPatches(
     try {
       size = computeTextLayout(node, nodeTypes.get(node.nodeType), fonts);
     } catch (err) {
-      console.error(`[TextLayout] 节点 ${id} (${node.nodeType}) 排版失败，保持原尺寸:`, err);
+      console.error(`[SkyNote:TextLayout] 节点 ${id} (${node.nodeType}) 排版失败，保持原尺寸:`, err);
       continue;
     }
     if (!size) continue;

@@ -242,7 +242,7 @@ export class DocumentStore {
   commit(options: CommitOperationOptions): CanvasOperationRecord | null {
     const violation = findCommitViolation(this.document, options.patches);
     if (violation) {
-      console.error(`[DocumentStore] 事务被拒绝：${violation}`);
+      console.error(`[SkyNote:DocumentStore] 事务被拒绝：${violation}`);
       return null;
     }
     return this.coordinator.commitOperation(options);
@@ -333,7 +333,7 @@ export class DocumentStore {
   /** 添加完整节点实体 (粘贴、导入)；id 已存在时拒绝 */
   addNode(node: NodeEntity, options?: CommandOptions): CanvasOperationRecord | null {
     if (Object.hasOwn(this.document.content.nodes, node.id)) {
-      console.error(`[DocumentStore] 节点 id 已存在，拒绝覆盖: ${node.id}`);
+      console.error(`[SkyNote:DocumentStore] 节点 id 已存在，拒绝覆盖: ${node.id}`);
       return null;
     }
     return this.commit({
@@ -753,7 +753,7 @@ export class DocumentStore {
       try {
         subscriber(view, record, changes);
       } catch (err) {
-        console.error('[DocumentStore] 变更订阅回调异常:', err);
+        console.error('[SkyNote:DocumentStore] 变更订阅回调异常:', err);
       }
     }
   }

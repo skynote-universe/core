@@ -237,7 +237,7 @@ export class ConnectorRouterRegistry {
       try {
         listener(routerId);
       } catch (err) {
-        console.error('[ConnectorRouterRegistry] 变更监听回调异常:', err);
+        console.error('[SkyNote:ConnectorRouterRegistry] 变更监听回调异常:', err);
       }
     }
   }

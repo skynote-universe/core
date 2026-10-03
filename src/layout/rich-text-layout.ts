@@ -18,21 +18,17 @@
 import type { FontMeasurer, FontSpec } from '../protocols/font-measurer.protocol';
 import type { LineHeight, TextAlign, TextDecoration } from '../types/style';
 import type { NodeTextStyle, RichTextRun, RichTextRunStyle } from '../types/text';
+import {
+  ASCENT_RATIO,
+  DEFAULT_FONT_SIZE,
+  DEFAULT_LINE_HEIGHT,
+  ELLIPSIS,
+  NO_LINE_END,
+  NO_LINE_START,
+  WIDTH_EPSILON
+} from './rich-text-constants';
 
-export const DEFAULT_FONT_SIZE = 14;
-/** 行高缺省为 1.5 倍字号 (与此前 Leafer 文字的缺省一致) */
-export const DEFAULT_LINE_HEIGHT = 1.5;
-const ASCENT_RATIO = 0.7;
-const ELLIPSIS = '…';
-/** 宽度比较容差：浮点测量误差不应导致多折一行 */
-const WIDTH_EPSILON = 0.01;
-
-/** 不能出现在行首的标点 */
-const NO_LINE_START = new Set(
-  '!),.:;?]}¢°·’”…‥、。〉》」』】〕〗〞︰︱︳﹐﹒﹔﹕﹖﹗﹚﹜﹞！），．：；？］｝～％'.split('')
-);
-/** 不能出现在行尾的标点 */
-const NO_LINE_END = new Set('([{£¥‘“〈《「『【〔〖〝﹙﹛﹝（［｛￡￥'.split(''));
+export { ASCENT_RATIO, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, ELLIPSIS, NO_LINE_END, NO_LINE_START, WIDTH_EPSILON };
 
 /** 片段的最终样式：块样式与分段样式合并后的结果 */
 export interface ResolvedRunStyle {
@@ -438,12 +434,14 @@ export function layoutText(
 ): TextLayout {
   const ctx = new LayoutContext(runs, style, fonts);
   const noRoom = (box.width !== undefined && box.width <= 0) || (box.height !== undefined && box.height <= 0);
+
+  // 1. [断行与初步测量] 贪心分行并初建每行片段
   const ranges = breakLines(ctx, box.width, style.textWrap === 'break-all', style.textWrap === 'none');
   const built = ranges.map((range) => buildLine(ctx, range));
   const contentWidth = built.reduce((max, line) => Math.max(max, line.width), 0);
   const contentHeight = built.reduce((sum, line) => sum + line.height, 0);
 
-  // 框高不足时按溢出方式截断：只保留完整可见的行，省略号补在最后一个可见行末
+  // 2. [溢出截断] 框高不足时按溢出方式截断：只保留完整可见的行，省略号补在最后一个可见行末
   let visibleCount = ranges.length;
   const overflow = style.textOverflow ?? 'none';
   if (noRoom) {
@@ -469,6 +467,7 @@ export function layoutText(
     ranges[last] = cut;
   }
 
+  // 3. [对齐与基线换算] 垂直与水平对齐计算，组装最终渲染行数据
   const visibleHeight = built.slice(0, visibleCount).reduce((sum, line) => sum + line.height, 0);
   const containerWidth = box.width ?? contentWidth;
   // 内容高于文本框时从顶部排起：超出部分向下延伸 (编辑时可滚动查看)，不向上越出文本框

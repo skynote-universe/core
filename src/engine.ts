@@ -224,7 +224,7 @@ export class SkyNoteEngine {
    * 常用于选区外框计算、工具栏定位与外部排他判定。节点不存在时返回 undefined
    */
   getNodeOccupiedBounds(nodeId: string): RectBounds | undefined {
-    return this.nodeSpatialIndex.getBounds(nodeId) ?? this.getNodeWorldBounds(nodeId);
+    return this.nodeSpatialIndex.getBounds(nodeId);
   }
 
   /** 连线的当前路由；悬空连线 (两端无法定位) 返回 undefined */

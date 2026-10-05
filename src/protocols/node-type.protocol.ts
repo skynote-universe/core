@@ -42,6 +42,13 @@ export interface NodeTextSlotDefinition {
   readonly expandsContainer?: boolean;
   /** 插槽默认外观样式 */
   readonly defaultStyle?: NodeTextStyle;
+  /**
+   * 纯文本插槽 (如画框标题)：外观由节点类型固定，不接受文字格式；
+   * 编辑时界面不显示格式工具栏，粘贴只取纯文本，选中节点时也不作为整块格式的目标
+   */
+  readonly plainText?: boolean;
+  /** 单行插槽：Enter 确认并退出编辑，粘贴的换行替换为空格 */
+  readonly singleLine?: boolean;
 }
 
 /** 单个文本块的实际测量排版包围盒快照 */
@@ -71,6 +78,11 @@ export interface NodeFitContext {
    * 未注入字体测量器时返回 null，需要测量的节点类型应视为无法适应
    */
   measureText(block: Readonly<TextBlock>, maxWidth?: number): TextBlockMetrics | null;
+}
+
+/** 节点的生效样式：节点类型的默认样式 < 节点自身样式 */
+export function resolveNodeStyle(node: Readonly<NodeEntity>, definition: NodeTypeDefinition | undefined): NodeStyle {
+  return { ...definition?.defaultStyle, ...node.style };
 }
 
 /** 节点当前是否锁定比例：节点上的显式值优先，否则取节点类型的默认值 */
@@ -127,7 +139,10 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
   readonly label: string;
   /** 默认初始业务载荷 */
   readonly defaultData: TData;
-  /** 默认初始几何样式 */
+  /**
+   * 节点未设置的样式项取此默认值 (如画框线宽 1、圆角 4)；颜色缺省跟随主题，不在此列。
+   * 绘制与界面面板经 resolveNodeStyle 读同一份生效样式，面板显示的值即画出的值
+   */
   readonly defaultStyle?: TStyle;
 
   /**
@@ -210,8 +225,9 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
   fitContent?(node: NodeEntity<TData, TStyle>, context: NodeFitContext): Partial<NodeEntity<TData, TStyle>> | null;
 
   /**
-   * 节点占据的局部范围 (缺省为外框)：框外的装饰 (如画框标题) 须包含在内，
-   * 空间索引据此登记，否则框外部分无法点选，平移时也会被提前剔除
+   * 节点占据的局部范围 (缺省为外框)：框外的装饰 (如画框标题) 须包含在内。
+   * 空间索引据此登记，拾取时落在轮廓 (outline) 之外但在此范围内的点同样命中节点；
+   * 可依赖节点的任意字段 (如标题文字)，节点数据变化时会重新登记
    */
   extent?(node: NodeEntity<TData, TStyle>): RectBounds;
 

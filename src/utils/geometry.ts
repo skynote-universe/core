@@ -7,6 +7,7 @@
 
 import type { Matrix2D, Point, RectBounds, RotatableBox } from '../types/geometry';
 import type { ViewportState } from '../types/canvas';
+import type { CornerRadius } from '../types/style';
 
 // ================= 数值与包围盒 =================
 
@@ -322,4 +323,20 @@ export function buildRoundedPolylinePath(points: readonly Point[], cornerRadius 
 
   const last = points[points.length - 1];
   return `${path} L ${last.x} ${last.y}`;
+}
+
+// ================= 圆角 =================
+
+/** 圆角的四个角，与 CornerRadius 数组顺序一致：左上、右上、右下、左下 */
+export type RadiusCorner = 0 | 1 | 2 | 3;
+
+/** 圆角展开为四角 (单值即四角相同) */
+export function expandCornerRadius(radius: CornerRadius | undefined): [number, number, number, number] {
+  const r = radius ?? 0;
+  return typeof r === 'number' ? [r, r, r, r] : [...r];
+}
+
+/** 四角圆角收拢：四角相同时存为单值，保持文档数据最简 */
+export function compactCornerRadius(corners: readonly [number, number, number, number]): CornerRadius {
+  return corners.every((r) => r === corners[0]) ? corners[0] : [...corners];
 }

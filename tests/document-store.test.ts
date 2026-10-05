@@ -323,4 +323,33 @@ describe('DocumentStore & EntityStore', () => {
     store.undo();
     expect(store.getView().meta.updatedAt).toBe(savedAt);
   });
+
+  it('updateNodes 一次提交写入多个节点：可按节点计算各自字段，样式按字段合并，一步撤销', () => {
+    const store = new DocumentStore();
+    const base = {
+      type: 'node',
+      nodeType: 'rect',
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+      rotation: 0,
+      locked: false
+    } as const;
+    store.addNode({ ...base, id: 'a', zIndex: 'a1', style: { radius: 4, fill: '$red' } });
+    store.addNode({ ...base, id: 'b', zIndex: 'a2', style: { radius: [1, 2, 3, 4] } });
+
+    store.updateNodes(['a', 'b'], (node) => {
+      const radius = node.style?.radius ?? 0;
+      const corners = typeof radius === 'number' ? [radius, radius, radius, radius] : [...radius];
+      corners[0] = 8;
+      return { style: { radius: corners as [number, number, number, number] } };
+    });
+    expect(store.getNode('a')!.style).toEqual({ radius: [8, 4, 4, 4], fill: '$red' });
+    expect(store.getNode('b')!.style).toEqual({ radius: [8, 2, 3, 4] });
+
+    store.undo();
+    expect(store.getNode('a')!.style).toEqual({ radius: 4, fill: '$red' });
+    expect(store.getNode('b')!.style).toEqual({ radius: [1, 2, 3, 4] });
+  });
 });

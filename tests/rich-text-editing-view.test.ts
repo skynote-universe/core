@@ -4,8 +4,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { caretRect, hitTestText, layoutText } from '../src/layout/rich-text-layout';
-import { applyRunStyle, editingTextPrimitive, paragraphsRange, parseRichTextRuns } from '../src/layout/rich-text-edit';
+import { caretRect, hitTestText, layoutText, type TextLayout } from '../src/layout/rich-text-layout';
+import {
+  applyRunStyle,
+  editingTextBounds,
+  editingTextPrimitive,
+  paragraphsRange,
+  parseRichTextRuns
+} from '../src/layout/rich-text-edit';
 import type { FontMeasurer } from '../src/protocols/font-measurer.protocol';
 import type { TextPrimitive } from '../src/protocols/primitives.protocol';
 
@@ -106,19 +112,15 @@ describe('编辑视图', () => {
     expect(singleLine.scrollY).toBeUndefined();
     expect(singleLine.style.textOverflow).toBe('none');
 
-    const explicitVisible = editingTextPrimitive(
-      { ...primitive, style: { ...primitive.style, editingOverflow: 'visible' } },
-      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
-    );
-    expect(explicitVisible.scrollY).toBeUndefined();
-    expect(explicitVisible.style.overflow).toBe('visible');
-
-    const explicitScroll = editingTextPrimitive(
-      { ...primitive, style: { ...primitive.style, textWrap: 'none', editingOverflow: 'scroll' } },
-      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
-    );
-    expect(explicitScroll.scrollY).toBe(12);
-    expect(explicitScroll.style.overflow).toBe('scroll');
+    // 可见范围：滚动的文字即文本框；不折行的文字取文本框与排版的较大者
+    const layout = { width: 300, height: 20 } as TextLayout;
+    expect(editingTextBounds(primitive, layout)).toEqual({
+      left: primitive.x,
+      top: primitive.y,
+      right: primitive.x + primitive.width!,
+      bottom: primitive.y + primitive.height!
+    });
+    expect(editingTextBounds(singleLine, layout)).toMatchObject({ right: primitive.x + 300 });
   });
 
   it('空文本设置样式写在承载样式的空分段上', () => {

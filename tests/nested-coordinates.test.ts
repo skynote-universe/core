@@ -204,3 +204,89 @@ describe('变换节点 (transformNodes)', () => {
     engine.destroy();
   });
 });
+
+describe('尺寸面板与增量旋转 (resizeNodes / rotateNodes)', () => {
+  it('resizeNodes 保持世界左上角不动 (含旋转节点)；比例锁定时只给一边另一边联动；一步撤销', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('a', { x: 100, y: 100, width: 100, height: 50, rotation: 30 }));
+    store.addNode(makeNode('b', { x: 0, y: 0, width: 100, height: 50, aspectLocked: true }));
+    const before = worldPoint(engine, 'a', 0, 0);
+
+    store.resizeNodes(['a', 'b'], { width: 200 });
+    expect(store.getNode('a')).toMatchObject({ width: 200, height: 50, rotation: 30 });
+    const after = worldPoint(engine, 'a', 0, 0);
+    expect(after.x).toBeCloseTo(before.x);
+    expect(after.y).toBeCloseTo(before.y);
+    expect(store.getNode('b')).toMatchObject({ x: 0, y: 0, width: 200, height: 100 });
+
+    store.undo();
+    expect(store.getNode('a')).toMatchObject({ width: 100, height: 50 });
+    expect(store.getNode('b')).toMatchObject({ width: 100, height: 50 });
+  });
+
+  it('rotateNodes 绕整体外接框中心旋转；只变换最顶层节点', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('l', { x: 0, y: 0 }));
+    store.addNode(makeNode('r', { x: 200, y: 0 }));
+    store.addNode(makeNode('child', { x: 10, y: 10, width: 10, height: 10, parentId: 'r' }));
+
+    // 整体外接框 (0,0)-(300,100) 中心 (150, 50)；转 90° 后 l 的中心 (50,50) → (150,-50)
+    const record = store.rotateNodes(['l', 'r', 'child'], 90)!;
+    const l = computeWorldFrame(store.getNode('l')!, engine.entityStore.getWorldTransform('l')!);
+    expect(l.cx).toBeCloseTo(150);
+    expect(l.cy).toBeCloseTo(-50);
+    expect(l.rotation).toBeCloseTo(90);
+    expect(record.patches.some((p) => p.path.includes('child'))).toBe(false);
+  });
+});
+
+describe('创建副本 (duplicateNodes)', () => {
+  it('容器连同后代与内部连线一起复制，只偏移最顶层；外部连线不复制；一步撤销', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('frame', { x: 100, y: 100, width: 200, height: 200, rotation: 90 }));
+    store.addNode(makeNode('a', { x: 10, y: 10, width: 20, height: 20, parentId: 'frame' }));
+    store.addNode(makeNode('b', { x: 50, y: 50, width: 20, height: 20, parentId: 'frame' }));
+    store.addNode(makeNode('outside', { x: 500, y: 0 }));
+    const connector = (id: string, from: string, to: string): ConnectorEntity => ({
+      id,
+      type: 'connector',
+      connectorType: 'default',
+      from: { nodeId: from },
+      to: { nodeId: to },
+      zIndex: 'a0',
+      locked: false,
+      controlPoints: [{ x: 0, y: 0 }]
+    });
+    store.commit({
+      patches: [
+        { op: 'set', path: ['content', 'connectors', 'inner'], value: connector('inner', 'a', 'b') },
+        { op: 'set', path: ['content', 'connectors', 'cross'], value: connector('cross', 'a', 'outside') }
+      ]
+    });
+    const before = engine.getNodeWorldBounds('frame')!;
+
+    const [copyId] = store.duplicateNodes(['frame', 'a'], { x: 20, y: 30 });
+    const copy = store.getNode(copyId)!;
+    const after = engine.getNodeWorldBounds(copyId)!;
+    expect(after.left).toBeCloseTo(before.left + 20);
+    expect(after.top).toBeCloseTo(before.top + 30);
+    expect(copy.zIndex > store.getNode('outside')!.zIndex).toBe(true);
+
+    const children = [...engine.entityStore.getChildIds(copyId)];
+    expect(children).toHaveLength(2);
+    expect(children.map((id) => store.getNode(id)!.x).sort()).toEqual([10, 50]);
+    const connectors = Object.values(store.getView().content.connectors);
+    expect(connectors).toHaveLength(3);
+    const copied = connectors.find((c) => c.id !== 'inner' && c.id !== 'cross')!;
+    expect(children).toContain(copied.from.nodeId);
+    expect(children).toContain(copied.to.nodeId);
+    expect(copied.controlPoints).toEqual([{ x: 20, y: 30 }]);
+
+    store.undo();
+    expect(store.getNode(copyId)).toBeUndefined();
+    expect(Object.keys(store.getView().content.connectors)).toHaveLength(2);
+  });
+});

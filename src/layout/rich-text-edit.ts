@@ -9,11 +9,12 @@
  * 4. 偏移与排版一致按 UTF-16 码元计；词边界优先用运行时的 Intl.Segmenter (中文按词)，不可用时按字符类别退化。
  */
 
+import type { RectBounds } from '../types/geometry';
 import type { TextDecoration, TextDecorationLine } from '../types/style';
-import type { RichTextRun, RichTextRunStyle } from '../types/text';
+import type { NodeTextStyle, RichTextRun, RichTextRunStyle } from '../types/text';
 import type { TextPrimitive } from '../protocols/primitives.protocol';
-import type { TextEditingTarget } from '../state/session-store';
-import { nextCodePoint, previousCodePoint } from './rich-text-layout';
+import type { TextComposition, TextEditingTarget } from '../state/session-store';
+import { nextCodePoint, previousCodePoint, type TextLayout } from './rich-text-layout';
 
 /** 样式补丁：值为 undefined 的键表示移除该样式 (回到块样式) */
 export type RichTextStylePatch = { [K in keyof RichTextRunStyle]?: RichTextRunStyle[K] | undefined };
@@ -228,36 +229,50 @@ export function parseRichTextRuns(json: string): RichTextRun[] | null {
 
 // ================= 编辑视图 =================
 
+/** 把输入法组合中的文字 (带下划线) 插入分段：只用于本地显示与测量，不写入文档 */
+export function withComposition(
+  runs: readonly RichTextRun[],
+  composition: TextComposition | null,
+  style: NodeTextStyle
+): readonly RichTextRun[] {
+  if (!composition) return runs;
+  return replaceText(runs, composition.offset, composition.offset, composition.text, {
+    ...composition.style,
+    textDecoration: toggleDecorationLine(composition.style.textDecoration ?? style.textDecoration, 'underline', true)
+  });
+}
+
+/**
+ * 编辑中文字是否在文本框内滚动：固定高度且会折行的文字超出时滚动查看；
+ * 不折行的单行文字 (如画框标题) 编辑时向右延展完整可见，不滚动也不裁剪
+ */
+function scrollsWhileEditing(primitive: TextPrimitive): boolean {
+  return primitive.height !== undefined && primitive.style.textWrap !== 'none';
+}
+
 /**
  * 编辑中文字块的视图 (渲染器与编辑插件共用，二者看到的排版完全一致)：
- * 插入输入法组合文字 (带下划线)、不截断，文字超出文本框时裁剪并滚动
+ * 插入输入法组合文字、不截断；会折行的文字超出文本框时裁剪并滚动，不折行的文字向外延展
  */
 export function editingTextPrimitive(primitive: TextPrimitive, editing: TextEditingTarget): TextPrimitive {
-  const { composition } = editing;
-  const runs = composition
-    ? replaceText(primitive.runs, composition.offset, composition.offset, composition.text, {
-        ...composition.style,
-        textDecoration: toggleDecorationLine(
-          composition.style.textDecoration ?? primitive.style.textDecoration,
-          'underline',
-          true
-        )
-      })
-    : primitive.runs;
-  // 显式编辑态溢出策略：未指定时单行默认 visible (溢出展开可见)，多行固定高默认 scroll (框内滚动)
-  const editingOverflow =
-    primitive.style.editingOverflow ?? (primitive.style.textWrap === 'none' ? 'visible' : 'scroll');
-  const isScrollable = editingOverflow === 'scroll' && primitive.height !== undefined;
   return {
     ...primitive,
-    runs,
-    style: {
-      ...primitive.style,
-      overflow: editingOverflow,
-      textOverflow: 'none'
-    },
-    scrollY: isScrollable ? editing.scrollY : undefined
+    runs: withComposition(primitive.runs, editing.composition, primitive.style),
+    style: { ...primitive.style, textOverflow: 'none' },
+    scrollY: scrollsWhileEditing(primitive) ? editing.scrollY : undefined
   };
+}
+
+/**
+ * 编辑中文字块在节点局部坐标中的可见范围 (点击是否仍在编辑区、工具栏定位)：
+ * 滚动的文字即文本框；延展的文字取文本框与排版结果的较大者；未限定的边取排版结果
+ * @param layout 编辑视图 (editingTextPrimitive) 的排版
+ */
+export function editingTextBounds(primitive: TextPrimitive, layout: TextLayout): RectBounds {
+  const scrolls = scrollsWhileEditing(primitive);
+  const width = scrolls ? (primitive.width ?? layout.width) : Math.max(primitive.width ?? 0, layout.width);
+  const height = scrolls ? primitive.height! : Math.max(primitive.height ?? 0, layout.height);
+  return { left: primitive.x, top: primitive.y, right: primitive.x + width, bottom: primitive.y + height };
 }
 
 // ================= 边界 =================
@@ -277,15 +292,9 @@ interface WordSegment {
   readonly index: number;
   readonly isWordLike?: boolean;
 }
-interface WordSegmenter {
-  segment(text: string): Iterable<WordSegment>;
-}
-
-/** 词切分：优先 Intl.Segmenter (中文按词)，否则按字符类别 (中日韩逐字) */
+/** 词切分：优先 Intl.Segmenter (中文按词)；较旧的运行环境没有它，按字符类别切分 (中日韩逐字) */
 function segmentWords(text: string): WordSegment[] {
-  const Segmenter = (Intl as unknown as { Segmenter?: new (locale?: string, options?: object) => WordSegmenter })
-    .Segmenter;
-  if (Segmenter) return [...new Segmenter(undefined, { granularity: 'word' }).segment(text)];
+  if ('Segmenter' in Intl) return [...new Intl.Segmenter(undefined, { granularity: 'word' }).segment(text)];
   const segments: WordSegment[] = [];
   let i = 0;
   while (i < text.length) {

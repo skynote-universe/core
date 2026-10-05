@@ -28,8 +28,6 @@ import {
   WIDTH_EPSILON
 } from './rich-text-constants';
 
-export { ASCENT_RATIO, DEFAULT_FONT_SIZE, DEFAULT_LINE_HEIGHT, ELLIPSIS, NO_LINE_END, NO_LINE_START, WIDTH_EPSILON };
-
 /** 片段的最终样式：块样式与分段样式合并后的结果 */
 export interface ResolvedRunStyle {
   readonly font: FontSpec;
@@ -443,11 +441,10 @@ export function layoutText(
 
   // 2. [溢出截断] 框高不足时按溢出方式截断：只保留完整可见的行，省略号补在最后一个可见行末
   let visibleCount = ranges.length;
-  const overflow = style.overflow ?? style.textOverflow ?? 'visible';
-  const shouldTruncateHeight = overflow !== 'visible' && overflow !== 'none' && overflow !== 'scroll';
+  const overflow = style.textOverflow ?? 'none';
   if (noRoom) {
     visibleCount = 0;
-  } else if (box.height !== undefined && shouldTruncateHeight && contentHeight > box.height + WIDTH_EPSILON) {
+  } else if (box.height !== undefined && overflow !== 'none' && contentHeight > box.height + WIDTH_EPSILON) {
     let bottom = 0;
     visibleCount = 0;
     while (visibleCount < built.length && bottom + built[visibleCount].height <= box.height + WIDTH_EPSILON) {
@@ -455,6 +452,7 @@ export function layoutText(
       visibleCount++;
     }
   }
+  // 不折行的单行文字超出框宽同样算截断 (如画框标题补省略号)
   const truncated =
     visibleCount < ranges.length ||
     (box.width !== undefined && visibleCount > 0 && built[visibleCount - 1].width > box.width + WIDTH_EPSILON);

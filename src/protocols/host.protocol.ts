@@ -24,16 +24,19 @@ export type SystemCursor =
   | 'nwse-resize'
   | 'nesw-resize'
   | 'ew-resize'
-  | 'ns-resize'
-  | 'rotate'
-  | 'rotate-0'
-  | 'rotate-45'
-  | 'rotate-90'
-  | 'rotate-135'
-  | 'rotate-180'
-  | 'rotate-225'
-  | 'rotate-270'
-  | 'rotate-315';
+  | 'ns-resize';
+
+/**
+ * 旋转光标：系统没有现成的旋转光标，由宿主自绘；angle 为弧形箭头的朝向 (度，0° 时弧线在左侧)，
+ * 随控制柄方位与节点旋转变化，宿主可按档位取整缓存
+ */
+export interface RotateCursor {
+  readonly kind: 'rotate';
+  readonly angle: number;
+}
+
+/** 宿主光标：系统光标或自绘的旋转光标 */
+export type CanvasCursor = SystemCursor | RotateCursor;
 
 export interface OverlayOptions {
   /** 瞬态图元 (框选、参考线)：宿主在失焦或 Esc 时兜底清除；默认 false */
@@ -86,7 +89,7 @@ export interface TextInputSession {
 /** 宿主能力 */
 export interface CanvasHost {
   readonly overlay: OverlayChannel;
-  setCursor(cursor: SystemCursor): void;
+  setCursor(cursor: CanvasCursor): void;
   /** 指针捕获：拖拽移出画布后仍能收到移动与抬起 */
   capturePointer(pointerId: number): void;
   releasePointer(pointerId: number): void;

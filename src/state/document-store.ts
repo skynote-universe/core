@@ -11,6 +11,7 @@
 
 import type { CanvasDocument, CanvasDocumentView, FractionalIndex } from '../types/canvas';
 import type { NodeEntity } from '../types/node';
+import type { Point } from '../types/geometry';
 import type { ConnectorEntity } from '../types/connector';
 import type {
   CanvasHistoryEntry,
@@ -19,7 +20,7 @@ import type {
   CanvasPatch
 } from '../types/operation';
 import type { DocumentChangeSet, EntityChanges } from '../types/change-set';
-import type { CreateNodeRequest } from '../protocols/node-type.protocol';
+import { isAspectLocked, type CreateNodeRequest, type ResizeHandle } from '../protocols/node-type.protocol';
 import type { WorldFrame } from '../utils/geometry';
 import type { FontMeasurer } from '../protocols/font-measurer.protocol';
 import { EntityStore, type EntityReader, type EntitySyncResult } from './entity-store';
@@ -43,9 +44,12 @@ import { areStructuredValuesEqual } from '../utils/equality';
 import {
   applyMatrixToVector,
   computeFrameMatrix,
+  computeNodeWorldBounds,
+  computeWorldFrame,
   decomposeNodeMatrix,
   invertMatrix,
-  multiplyMatrix
+  multiplyMatrix,
+  unionBounds
 } from '../utils/geometry';
 
 /** 创建空文档 */
@@ -103,13 +107,17 @@ export type DocumentApi = Pick<
   | 'createNode'
   | 'addNode'
   | 'updateNode'
+  | 'updateNodes'
   | 'updateConnector'
   | 'moveNodes'
   | 'transformNodes'
+  | 'resizeNodes'
+  | 'rotateNodes'
   | 'setAspectLocked'
   | 'fitContent'
   | 'canFitContent'
   | 'removeNodes'
+  | 'duplicateNodes'
   | 'reparentNodes'
   | 'moveLayers'
   | 'batch'
@@ -349,7 +357,19 @@ export class DocumentStore {
     partial: Partial<NodeEntity>,
     options?: CommandOptions & { merge?: boolean }
   ): CanvasOperationRecord | null {
-    return this.updateEntity('nodes', nodeId, partial, { label: '更新节点属性', ...options });
+    return this.updateEntities('nodes', [nodeId], partial, { label: '更新节点属性', ...options });
+  }
+
+  /**
+   * 批量写入节点字段，一次提交：连续调整可凭 groupId 合并为一步撤销
+   * @param fields 各节点相同的字段；或按节点计算各自的字段 (如只改某个圆角、保留其余三角)
+   */
+  updateNodes(
+    nodeIds: Iterable<string>,
+    fields: Partial<NodeEntity> | ((node: Readonly<NodeEntity>) => Partial<NodeEntity>),
+    options?: CommandOptions & { merge?: boolean }
+  ): CanvasOperationRecord | null {
+    return this.updateEntities('nodes', nodeIds, fields, { label: '更新节点属性', ...options });
   }
 
   /** 更新连线字段，规则同 updateNode */
@@ -358,7 +378,7 @@ export class DocumentStore {
     partial: Partial<ConnectorEntity>,
     options?: CommandOptions & { merge?: boolean }
   ): CanvasOperationRecord | null {
-    return this.updateEntity('connectors', connectorId, partial, { label: '更新连线属性', ...options });
+    return this.updateEntities('connectors', [connectorId], partial, { label: '更新连线属性', ...options });
   }
 
   /**
@@ -383,6 +403,68 @@ export class DocumentStore {
       patches.push({ op: 'unset', path: ['content', 'connectors', connectorId] });
     }
     return this.commit({ ...options, label: options?.label ?? '删除节点', patches });
+  }
+
+  /**
+   * 创建副本 (支持多选)：最顶层选中节点连同全部后代一起复制，两端都在副本内的连线一并复制并改接到副本；
+   * 副本按世界位移 offset 偏移、置于各自容器最上层并保持原相对层级，一步撤销
+   * @returns 副本中最顶层节点的 id；提交被拒绝时为空
+   */
+  duplicateNodes(nodeIds: Iterable<string>, offset: Point, options?: CommandOptions): string[] {
+    const { nodes, connectors } = this.document.content;
+    const topmost = sortSiblingsByLayer(this.collectTopmost(nodeIds).map((id) => nodes[id]));
+    const idMap = new Map<string, string>();
+    for (const { id } of topmost) {
+      for (const sourceId of [id, ...this.entities.collectDescendantIds(id)]) idMap.set(sourceId, generateId('node'));
+    }
+    if (idMap.size === 0) return [];
+
+    const patches: CanvasPatch[] = [];
+    const topKeys = new Map<string | undefined, FractionalIndex | null>();
+    for (const node of topmost) {
+      const { parentId } = node;
+      const zIndex = generateKeyBetween(topKeys.get(parentId) ?? this.findTopZIndex(parentId), null);
+      topKeys.set(parentId, zIndex);
+      const parentMatrix = parentId === undefined ? undefined : this.entities.getWorldTransform(parentId);
+      const local = parentMatrix ? applyMatrixToVector(invertMatrix(parentMatrix), offset.x, offset.y) : offset;
+      const copy = {
+        ...clonePlainData(node),
+        id: idMap.get(node.id)!,
+        x: node.x + local.x,
+        y: node.y + local.y,
+        zIndex
+      };
+      patches.push({ op: 'set', path: ['content', 'nodes', copy.id], value: copy });
+    }
+    const topIds = new Set(topmost.map((node) => node.id));
+    for (const [sourceId, copyId] of idMap) {
+      if (topIds.has(sourceId)) continue;
+      const source = nodes[sourceId];
+      const copy = { ...clonePlainData(source), id: copyId, parentId: idMap.get(source.parentId!)! };
+      patches.push({ op: 'set', path: ['content', 'nodes', copyId], value: copy });
+    }
+
+    const connectorIds = new Set<string>();
+    for (const sourceId of idMap.keys()) {
+      for (const connectorId of this.entities.getConnectorIdsOfNode(sourceId)) connectorIds.add(connectorId);
+    }
+    for (const connectorId of connectorIds) {
+      const source = connectors[connectorId];
+      const from = source.from.nodeId && idMap.get(source.from.nodeId);
+      const to = source.to.nodeId && idMap.get(source.to.nodeId);
+      if (!from || !to) continue;
+      const copy = clonePlainData(source);
+      copy.id = generateId('connector');
+      copy.from.nodeId = from;
+      copy.to.nodeId = to;
+      // 控制点是世界坐标，随副本一起偏移
+      if (copy.controlPoints)
+        copy.controlPoints = copy.controlPoints.map((p) => ({ x: p.x + offset.x, y: p.y + offset.y }));
+      patches.push({ op: 'set', path: ['content', 'connectors', copy.id], value: copy });
+    }
+
+    const record = this.commit({ ...options, label: options?.label ?? '创建副本', patches });
+    return record ? topmost.map((node) => idMap.get(node.id)!) : [];
   }
 
   /**
@@ -433,6 +515,73 @@ export class DocumentStore {
     }
     if (patches.length === 0) return null;
     return this.commit({ ...options, label: options?.label ?? '变换节点', patches });
+  }
+
+  /**
+   * 把节点设为指定宽高 (尺寸面板，支持多选)：节点左上角在世界中不动，旋转节点同样成立
+   * 只给一边且比例锁定时另一边按比例联动；节点类型的 applyResize 一并写入 (如自由文本切换为固定宽度)，
+   * 与拖控制柄走同一套缩放语义，否则排版派生会把直接写入的宽高改回去
+   */
+  resizeNodes(
+    nodeIds: Iterable<string>,
+    size: { width?: number; height?: number },
+    options?: CommandOptions
+  ): CanvasOperationRecord | null {
+    const { nodes } = this.document.content;
+    const handle: ResizeHandle = size.height === undefined ? 'e' : size.width === undefined ? 's' : 'se';
+    const transforms: NodeTransform[] = [];
+    for (const id of nodeIds) {
+      if (!Object.hasOwn(nodes, id)) continue;
+      const node = nodes[id];
+      const definition = this.nodeTypes.get(node.nodeType);
+      let width = size.width ?? node.width;
+      let height = size.height ?? node.height;
+      let scale = 1;
+      if (handle !== 'se' && isAspectLocked(node, definition) && node.width > 0 && node.height > 0) {
+        scale = handle === 'e' ? width / node.width : height / node.height;
+        width = node.width * scale;
+        height = node.height * scale;
+      }
+      // 旧节点局部坐标中左上角仍在原点，新中心 (w/2, h/2) 经旧世界矩阵换算即可
+      const frame = computeWorldFrame({ width, height }, this.entities.getWorldTransform(id)!);
+      const fields = definition?.applyResize?.(node, { handle, width, height, scale });
+      transforms.push({ id, frame, fields });
+    }
+    return this.transformNodes(transforms, { ...options, label: options?.label ?? '调整尺寸' });
+  }
+
+  /**
+   * 绕选中节点整体外接框的中心增量旋转 (支持多选)：与拖动旋转控制柄的结果一致
+   * 只变换最顶层选中节点，后代随容器旋转
+   */
+  rotateNodes(nodeIds: Iterable<string>, degrees: number, options?: CommandOptions): CanvasOperationRecord | null {
+    const targets = this.collectTopmost(nodeIds).map((id) => {
+      const node = this.document.content.nodes[id];
+      return { id, node, matrix: this.entities.getWorldTransform(id)! };
+    });
+    if (targets.length === 0 || degrees % 360 === 0) return null;
+    const bounds = targets
+      .map(({ node, matrix }) => computeNodeWorldBounds(node, matrix))
+      .reduce((union, b) => unionBounds(union, b));
+    const pivot = { x: (bounds.left + bounds.right) / 2, y: (bounds.top + bounds.bottom) / 2 };
+    const rad = (degrees * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const transforms = targets.map(({ id, node, matrix }): NodeTransform => {
+      const frame = computeWorldFrame(node, matrix);
+      const dx = frame.cx - pivot.x;
+      const dy = frame.cy - pivot.y;
+      return {
+        id,
+        frame: {
+          ...frame,
+          cx: pivot.x + dx * cos - dy * sin,
+          cy: pivot.y + dx * sin + dy * cos,
+          rotation: frame.rotation + degrees
+        }
+      };
+    });
+    return this.transformNodes(transforms, { ...options, label: options?.label ?? '旋转节点' });
   }
 
   /**
@@ -572,20 +721,24 @@ export class DocumentStore {
     return definition.fitContent(node as NodeEntity, createFitContext(node, definition, this.fontMeasurer));
   }
 
-  private updateEntity(
+  private updateEntities<T extends NodeEntity | ConnectorEntity>(
     collection: 'nodes' | 'connectors',
-    id: string,
-    partial: Partial<NodeEntity> | Partial<ConnectorEntity>,
+    ids: Iterable<string>,
+    fields: Partial<T> | ((entity: Readonly<T>) => Partial<T>),
     options: CommandOptions & { merge?: boolean }
   ): CanvasOperationRecord | null {
-    if (!Object.hasOwn(this.document.content[collection], id)) return null;
+    const entities = this.document.content[collection] as Record<string, T>;
     const merge = options.merge ?? true;
     const patches: CanvasPatch[] = [];
-    for (const [key, value] of Object.entries(partial)) {
-      // 主键与实体类别不可修改
-      if (key === 'id' || key === 'type') continue;
-      const mergeable = merge && (key === 'style' || key === 'data') && typeof value === 'object' && value !== null;
-      patches.push({ op: 'set', path: ['content', collection, id, key], value, ...(mergeable && { merge: true }) });
+    for (const id of ids) {
+      if (!Object.hasOwn(entities, id)) continue;
+      const partial = typeof fields === 'function' ? fields(entities[id]) : fields;
+      for (const [key, value] of Object.entries(partial)) {
+        // 主键与实体类别不可修改
+        if (key === 'id' || key === 'type') continue;
+        const mergeable = merge && (key === 'style' || key === 'data') && typeof value === 'object' && value !== null;
+        patches.push({ op: 'set', path: ['content', collection, id, key], value, ...(mergeable && { merge: true }) });
+      }
     }
     if (patches.length === 0) return null;
     return this.commit({ label: options.label, undoable: options.undoable, groupId: options.groupId, patches });
@@ -672,8 +825,12 @@ export class DocumentStore {
           (isNode ? nodeGeomIds : connectorGeomIds).add(id);
         } else {
           (isNode ? nodeDataIds : connectorDataIds).add(id);
-          // 声明了 extent 的节点，其外接包围盒可能随文字等内容动态变化，需视同几何变更同步维护空间索引
-          if (isNode && field === 'textBlocks' && this.nodeTypes.get(doc.content.nodes[id]?.nodeType ?? '')?.extent) {
+          // 占据范围由节点类型按任意字段计算 (如随标题文字伸缩)：数据变化同样要更新空间索引
+          if (
+            isNode &&
+            Object.hasOwn(doc.content.nodes, id) &&
+            this.nodeTypes.get(doc.content.nodes[id].nodeType)?.extent
+          ) {
             nodeGeomIds.add(id);
           }
         }

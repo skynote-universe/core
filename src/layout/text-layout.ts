@@ -28,8 +28,6 @@ import { normalizePatchPath } from '../operation/patch-path';
 import { layoutText } from './rich-text-layout';
 import { SIZE_EPSILON } from './rich-text-constants';
 
-export { SIZE_EPSILON };
-
 /**
  * 这些字段变化后需要重新派生尺寸：文本与宽度改变排版结果 (宽度影响折行)；
  * 高度由内容决定的节点被写入高度 (如缩放控制柄) 时也要在同一事务内纠正，否则会停在写入值上，
@@ -60,7 +58,8 @@ export function resolveTextPadding(padding: TextPadding | undefined): ResolvedPa
   return { top, right, bottom, left };
 }
 
-function findTextSlot(
+/** 文本块所属插槽的定义 (没有插槽或节点类型未声明时为 undefined) */
+export function findTextSlot(
   block: Readonly<TextBlock>,
   definition: NodeTypeDefinition | undefined
 ): NodeTextSlotDefinition | undefined {

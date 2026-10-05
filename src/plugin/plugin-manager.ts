@@ -17,7 +17,7 @@ import type {
   CanvasHost,
   OverlayChannel,
   OverlayOptions,
-  SystemCursor,
+  CanvasCursor,
   TextInputHandler,
   TextInputSession
 } from '../protocols/host.protocol';
@@ -59,7 +59,7 @@ class PluginHost implements CanvasHost, OverlayChannel {
     this.engine.host.overlay.clear(sessionId);
   }
 
-  setCursor(cursor: SystemCursor): void {
+  setCursor(cursor: CanvasCursor): void {
     this.engine.host.setCursor(cursor);
   }
 

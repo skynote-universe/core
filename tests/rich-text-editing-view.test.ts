@@ -98,6 +98,27 @@ describe('编辑视图', () => {
     );
     expect(autoHeight.scrollY).toBeUndefined();
     expect(autoHeight.runs).toBe(primitive.runs);
+
+    const singleLine = editingTextPrimitive(
+      { ...primitive, style: { ...primitive.style, textWrap: 'none' } },
+      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
+    );
+    expect(singleLine.scrollY).toBeUndefined();
+    expect(singleLine.style.textOverflow).toBe('none');
+
+    const explicitVisible = editingTextPrimitive(
+      { ...primitive, style: { ...primitive.style, editingOverflow: 'visible' } },
+      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
+    );
+    expect(explicitVisible.scrollY).toBeUndefined();
+    expect(explicitVisible.style.overflow).toBe('visible');
+
+    const explicitScroll = editingTextPrimitive(
+      { ...primitive, style: { ...primitive.style, textWrap: 'none', editingOverflow: 'scroll' } },
+      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
+    );
+    expect(explicitScroll.scrollY).toBe(12);
+    expect(explicitScroll.style.overflow).toBe('scroll');
   });
 
   it('空文本设置样式写在承载样式的空分段上', () => {

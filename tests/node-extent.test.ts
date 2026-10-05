@@ -67,4 +67,64 @@ describe('节点占据范围', () => {
     expect(engine.hitTestNode({ x: 125, y: 125 })?.id).toBe('top');
     expect(engine.hitTestNode({ x: 125, y: 125 }, (node) => node.id !== 'top')?.id).toBe('n');
   });
+
+  it('当 outline 仅包含本体形状时，框外标签带依然通过 extent 参与精确拾取', () => {
+    const engine = new SkyNoteEngine();
+    engine.nodeTypes.register({
+      type: 'frame-like',
+      label: '画框类',
+      defaultData: {},
+      extent: (node) => ({ left: 0, top: -20, right: node.width, bottom: node.height }),
+      // outline 仅为主体形状矩形
+      outline: (node) => [
+        { x: 0, y: 0 },
+        { x: node.width, y: 0 },
+        { x: node.width, y: node.height },
+        { x: 0, y: node.height }
+      ]
+    });
+    engine.documentStore.addNode(makeNode('f', { nodeType: 'frame-like', x: 100, y: 100 }));
+    // 点在主体矩形内
+    expect(engine.hitTestNode({ x: 150, y: 150 })?.id).toBe('f');
+    // 点在头顶框外标签带内 (y=90 在 80~100 之间)
+    expect(engine.hitTestNode({ x: 150, y: 90 })?.id).toBe('f');
+    // 点在标签带更上方 (y=70 < 80)
+    expect(engine.hitTestNode({ x: 150, y: 70 })).toBeUndefined();
+  });
+
+  it('textBlocks 变更时动态 extent 节点在空间索引中同步刷新范围，新扩展区域立即可拾取', () => {
+    const engine = new SkyNoteEngine();
+    engine.nodeTypes.register({
+      type: 'dynamic-extent',
+      label: '动态扩展',
+      defaultData: {},
+      extent: (node) => {
+        const text = node.textBlocks?.[0]?.runs?.[0]?.text ?? '';
+        const lines = text.split('\n').length;
+        // 单行扩展 20，两行扩展 40
+        return { left: 0, top: -(lines * 20), right: node.width, bottom: node.height };
+      }
+    });
+
+    engine.documentStore.addNode(
+      makeNode('dyn', {
+        nodeType: 'dynamic-extent',
+        x: 100,
+        y: 100,
+        textBlocks: [{ id: 'title', slot: 'title', runs: [{ text: 'line1' }] }]
+      })
+    );
+    // 单行时 top 为 80 (100 - 20)
+    expect(engine.hitTestNode({ x: 150, y: 85 })?.id).toBe('dyn');
+    expect(engine.hitTestNode({ x: 150, y: 65 })).toBeUndefined();
+
+    // 更新为两行
+    engine.documentStore.updateNode('dyn', {
+      textBlocks: [{ id: 'title', slot: 'title', runs: [{ text: 'line1\nline2' }] }]
+    });
+
+    // 两行时 top 向上延伸至 60 (100 - 40)，y=65 必须能被空间索引检出并命中
+    expect(engine.hitTestNode({ x: 150, y: 65 })?.id).toBe('dyn');
+    expect(engine.hitTestNode({ x: 150, y: 55 })).toBeUndefined();
+  });
 });

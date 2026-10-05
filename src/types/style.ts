@@ -34,8 +34,11 @@ export type VerticalAlign = 'top' | 'middle' | 'bottom';
 /** 文本基线对齐方式 */
 export type TextBaseline = 'top' | 'middle' | 'bottom' | 'alphabetic';
 
-/** 文本溢出截断模式 */
-export type TextOverflow = 'clip' | 'ellipsis' | 'none';
+/** 文本溢出策略 (对齐 CSS overflow / text-overflow) */
+export type TextOverflow = 'visible' | 'hidden' | 'clip' | 'ellipsis' | 'scroll' | 'none';
+
+/** 编辑态文本溢出策略 (决定文字超出排版框时是向外延展可见还是在框内滚动/隐藏) */
+export type TextEditingOverflow = 'visible' | 'scroll' | 'hidden';
 
 /** 文本装饰线原子基元 */
 export type TextDecorationLine = 'underline' | 'line-through';

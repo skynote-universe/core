@@ -91,6 +91,16 @@ describe('对齐、截断与基线', () => {
     expect(layout('abc', 0).lines).toHaveLength(0);
   });
 
+  it('单行不换行文本 (textWrap: none) 超出框宽时，末尾正确截断并补省略号', () => {
+    // 文本宽度 10 字 × 10 = 100px，框宽 50px
+    const result = layout('abcdefghij', 50, { textWrap: 'none', textOverflow: 'ellipsis' });
+    expect(result.lines).toHaveLength(1);
+    expect(result.truncated).toBe(true);
+    const line = result.lines[0];
+    expect(line.fragments.at(-1)?.text).toBe('…');
+    expect(line.width).toBeLessThanOrEqual(50);
+  });
+
   it('行高：数字为字号倍数，px 字符串为像素，两种写法等价时排版一致', () => {
     expect(layout('ab', 100, { lineHeight: 2 }).height).toBe(40);
     expect(layout('ab', 100, { lineHeight: '40px' }).height).toBe(40);

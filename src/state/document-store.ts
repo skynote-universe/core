@@ -672,6 +672,10 @@ export class DocumentStore {
           (isNode ? nodeGeomIds : connectorGeomIds).add(id);
         } else {
           (isNode ? nodeDataIds : connectorDataIds).add(id);
+          // 声明了 extent 的节点，其外接包围盒可能随文字等内容动态变化，需视同几何变更同步维护空间索引
+          if (isNode && field === 'textBlocks' && this.nodeTypes.get(doc.content.nodes[id]?.nodeType ?? '')?.extent) {
+            nodeGeomIds.add(id);
+          }
         }
         if (orderFields.has(field)) orderChanged = true;
         if (isNode && field === 'parentId') reparentedNodeIds.add(id);

@@ -164,9 +164,15 @@ export class SkyNoteEngine {
     const containsPoint = (node: Readonly<NodeEntity>): boolean => {
       const local = applyMatrix(invertMatrix(entityStore.getWorldTransform(node.id)!), point.x, point.y);
       const definition = nodeTypes.get(node.nodeType);
-      return definition?.outline
+      const inShape = definition?.outline
         ? isPointInPolygon(local, definition.outline(node as NodeEntity))
         : local.x >= 0 && local.x <= node.width && local.y >= 0 && local.y <= node.height;
+      if (inShape) return true;
+      if (definition?.extent) {
+        const ext = definition.extent(node as NodeEntity);
+        return local.x >= ext.left && local.x <= ext.right && local.y >= ext.top && local.y <= ext.bottom;
+      }
+      return false;
     };
     // 裁剪按容器外框判定 (框外标题不裁剪子节点)
     const isClippedOut = (node: Readonly<NodeEntity>) =>
@@ -211,6 +217,14 @@ export class SkyNoteEngine {
   getNodeWorldBounds(nodeId: string): RectBounds | undefined {
     const runtimeNode = this.entityStore.getNode(nodeId);
     return runtimeNode && computeNodeWorldBounds(runtimeNode.entity, this.entityStore.getWorldTransform(nodeId)!);
+  }
+
+  /**
+   * 节点在世界坐标系中的实际占据范围包围盒 (含 extent 框外扩展、自身与祖先旋转)；
+   * 常用于选区外框计算、工具栏定位与外部排他判定。节点不存在时返回 undefined
+   */
+  getNodeOccupiedBounds(nodeId: string): RectBounds | undefined {
+    return this.nodeSpatialIndex.getBounds(nodeId) ?? this.getNodeWorldBounds(nodeId);
   }
 
   /** 连线的当前路由；悬空连线 (两端无法定位) 返回 undefined */

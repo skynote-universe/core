@@ -582,4 +582,21 @@ describe('SkyNoteEngine.createNode (新建节点统一入口)', () => {
     expect(engine.documentStore.createNode({ nodeType: 'badge', id: 'dup', x: 5, y: 5 })).toBeNull();
     engine.destroy();
   });
+
+  it('getNodeOccupiedBounds 获取包含 extent 的实际占据包围盒', () => {
+    const engine = setup();
+    engine.nodeTypes.register({
+      type: 'with-extent',
+      label: '扩展节点',
+      defaultData: {},
+      createContent: () => ({ width: 200, height: 150 }),
+      extent: (node) => ({ left: 0, top: -20, right: node.width, bottom: node.height })
+    });
+    engine.documentStore.createNode({ nodeType: 'with-extent', id: 'we', x: 100, y: 100, width: 200, height: 150 });
+    // 普通外框不含 extent
+    expect(engine.getNodeWorldBounds('we')).toEqual({ left: 100, top: 100, right: 300, bottom: 250 });
+    // 实际占据范围包含 extent (top 延伸至 80)
+    expect(engine.getNodeOccupiedBounds('we')).toEqual({ left: 100, top: 80, right: 300, bottom: 250 });
+    engine.destroy();
+  });
 });

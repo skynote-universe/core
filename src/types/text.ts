@@ -16,6 +16,7 @@ import type {
   VerticalAlign,
   TextBaseline,
   TextOverflow,
+  TextEditingOverflow,
   TextDecoration,
   TextDecorationLine,
   TextWrap,
@@ -60,7 +61,12 @@ export interface NodeTextStyle {
   textAlign?: TextAlign;
   verticalAlign?: VerticalAlign;
   textBaseline?: TextBaseline;
+  /** 文本溢出策略 (对齐 CSS overflow，优先级高于 textOverflow) */
+  overflow?: TextOverflow;
+  /** 兼容别名 (等同 overflow) */
   textOverflow?: TextOverflow;
+  /** 编辑态溢出策略：'visible' 溢出可见 | 'scroll' 框内滚动 | 'hidden' 隐藏 */
+  editingOverflow?: TextEditingOverflow;
   textDecoration?: TextDecoration;
   textWrap?: TextWrap;
   /** 文本块内边距：支持单值或 [上, 右, 下, 左] */

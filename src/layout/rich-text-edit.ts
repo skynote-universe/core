@@ -244,11 +244,19 @@ export function editingTextPrimitive(primitive: TextPrimitive, editing: TextEdit
         )
       })
     : primitive.runs;
+  // 显式编辑态溢出策略：未指定时单行默认 visible (溢出展开可见)，多行固定高默认 scroll (框内滚动)
+  const editingOverflow =
+    primitive.style.editingOverflow ?? (primitive.style.textWrap === 'none' ? 'visible' : 'scroll');
+  const isScrollable = editingOverflow === 'scroll' && primitive.height !== undefined;
   return {
     ...primitive,
     runs,
-    style: { ...primitive.style, textOverflow: 'none' },
-    scrollY: primitive.height === undefined ? undefined : editing.scrollY
+    style: {
+      ...primitive.style,
+      overflow: editingOverflow,
+      textOverflow: 'none'
+    },
+    scrollY: isScrollable ? editing.scrollY : undefined
   };
 }
 

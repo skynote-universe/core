@@ -443,10 +443,11 @@ export function layoutText(
 
   // 2. [溢出截断] 框高不足时按溢出方式截断：只保留完整可见的行，省略号补在最后一个可见行末
   let visibleCount = ranges.length;
-  const overflow = style.textOverflow ?? 'none';
+  const overflow = style.overflow ?? style.textOverflow ?? 'visible';
+  const shouldTruncateHeight = overflow !== 'visible' && overflow !== 'none' && overflow !== 'scroll';
   if (noRoom) {
     visibleCount = 0;
-  } else if (box.height !== undefined && overflow !== 'none' && contentHeight > box.height + WIDTH_EPSILON) {
+  } else if (box.height !== undefined && shouldTruncateHeight && contentHeight > box.height + WIDTH_EPSILON) {
     let bottom = 0;
     visibleCount = 0;
     while (visibleCount < built.length && bottom + built[visibleCount].height <= box.height + WIDTH_EPSILON) {
@@ -454,7 +455,10 @@ export function layoutText(
       visibleCount++;
     }
   }
-  const truncated = visibleCount < ranges.length;
+  const truncated =
+    visibleCount < ranges.length ||
+    (box.width !== undefined && visibleCount > 0 && built[visibleCount - 1].width > box.width + WIDTH_EPSILON);
+
   if (truncated && overflow === 'ellipsis' && visibleCount > 0) {
     const last = visibleCount - 1;
     const cut = truncateWithEllipsis(ctx, ranges[last], box.width);

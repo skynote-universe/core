@@ -24,7 +24,16 @@ export type SystemCursor =
   | 'nwse-resize'
   | 'nesw-resize'
   | 'ew-resize'
-  | 'ns-resize';
+  | 'ns-resize'
+  | 'rotate'
+  | 'rotate-0'
+  | 'rotate-45'
+  | 'rotate-90'
+  | 'rotate-135'
+  | 'rotate-180'
+  | 'rotate-225'
+  | 'rotate-270'
+  | 'rotate-315';
 
 export interface OverlayOptions {
   /** 瞬态图元 (框选、参考线)：宿主在失焦或 Esc 时兜底清除；默认 false */

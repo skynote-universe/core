@@ -23,6 +23,7 @@ import type { DocumentApi } from '../state/document-store';
 import type { EntityReader } from '../state/entity-store';
 import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
 import type { PointerHooks } from '../input/pointer-dispatcher';
+import type { ClipboardHandler } from '../input/clipboard-dispatcher';
 import type { NodeTypeReader } from '../registry/node-type-registry';
 
 /** 插件上下文：插件可用的全部内核能力 */
@@ -60,6 +61,8 @@ export interface CanvasPluginContext {
    * 插件类自身实现 PointerHooks 时可直接传入 this
    */
   registerPointerHooks(hooks: PointerHooks, priority?: number): () => void;
+  /** 注册剪贴板处理者：priority 越大越先处理 (默认 0)，返回数据或 true 即停止 */
+  registerClipboardHandler(handler: ClipboardHandler, priority?: number): () => void;
 }
 
 /** 插件契约 */

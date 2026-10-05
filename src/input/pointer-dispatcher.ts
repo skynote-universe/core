@@ -21,6 +21,8 @@ export interface PointerHooks {
    * 拖拽、框选等会话必须在此结束并回收瞬态图元，否则会残留半截状态
    */
   onPointerCancel?(e: CanvasPointerEvent): void;
+  /** 指针离开画布 (移到工具栏等界面上或窗口外)：此后不再有移动事件，依赖指针位置的状态应失效 */
+  onPointerLeave?(e: CanvasPointerEvent): void;
   onWheel?(e: CanvasWheelEvent): void;
 }
 
@@ -79,6 +81,10 @@ export class PointerDispatcher {
 
   dispatchPointerCancel(e: CanvasPointerEvent): void {
     this.dispatch(e, (hooks) => hooks.onPointerCancel);
+  }
+
+  dispatchPointerLeave(e: CanvasPointerEvent): void {
+    this.dispatch(e, (hooks) => hooks.onPointerLeave);
   }
 
   dispatchWheel(e: CanvasWheelEvent): void {

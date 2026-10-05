@@ -204,8 +204,25 @@ const RUN_STYLE_CHECKERS: Readonly<Record<keyof RichTextRunStyle, StyleChecker>>
 };
 
 /**
- * 解析剪贴板中的富文本分段 (JSON)：结构不符返回 null；只保留白名单内且取值合法的样式键
+ * 校验外部来源的富文本分段 (文档导入、剪贴板)：结构不符返回 null；只保留白名单内且取值合法的样式键
+ * 不合并相邻分段，载入的文档保持原样
  */
+export function sanitizeRichTextRuns(value: unknown): RichTextRun[] | null {
+  if (!Array.isArray(value)) return null;
+  const runs: RichTextRun[] = [];
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null || typeof (item as { text?: unknown }).text !== 'string') return null;
+    const run: Record<string, unknown> = { text: (item as { text: string }).text };
+    for (const [key, check] of Object.entries(RUN_STYLE_CHECKERS)) {
+      const style = (item as Record<string, unknown>)[key];
+      if (Object.hasOwn(item, key) && check(style)) run[key] = style;
+    }
+    runs.push(run as unknown as RichTextRun);
+  }
+  return runs;
+}
+
+/** 解析剪贴板中的富文本分段 (JSON)：校验后合并相邻同样式分段 */
 export function parseRichTextRuns(json: string): RichTextRun[] | null {
   let data: unknown;
   try {
@@ -213,18 +230,8 @@ export function parseRichTextRuns(json: string): RichTextRun[] | null {
   } catch {
     return null;
   }
-  if (!Array.isArray(data)) return null;
-  const runs: RichTextRun[] = [];
-  for (const item of data) {
-    if (typeof item !== 'object' || item === null || typeof (item as { text?: unknown }).text !== 'string') return null;
-    const run: Record<string, unknown> = { text: (item as { text: string }).text };
-    for (const [key, check] of Object.entries(RUN_STYLE_CHECKERS)) {
-      const value = (item as Record<string, unknown>)[key];
-      if (Object.hasOwn(item, key) && check(value)) run[key] = value;
-    }
-    runs.push(run as unknown as RichTextRun);
-  }
-  return normalizeRuns(runs);
+  const runs = sanitizeRichTextRuns(data);
+  return runs && normalizeRuns(runs);
 }
 
 // ================= 编辑视图 =================

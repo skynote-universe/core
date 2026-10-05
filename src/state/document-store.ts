@@ -9,7 +9,7 @@
  * 4. 文本驱动的自动尺寸：注入字体测量器后，本地事务中的文本或宽度变更在同一事务内派生尺寸补丁，撤销时一并回退。
  */
 
-import type { CanvasDocument, CanvasDocumentView, FractionalIndex } from '../types/canvas';
+import type { CanvasContent, CanvasDocument, CanvasDocumentView, FractionalIndex } from '../types/canvas';
 import type { NodeEntity } from '../types/node';
 import type { Point } from '../types/geometry';
 import type { ConnectorEntity } from '../types/connector';
@@ -30,6 +30,7 @@ import { NodeTypeRegistry } from '../registry/node-type-registry';
 import { clonePlainData } from '../utils/clone';
 import { generateId } from '../utils/id';
 import { findCommitViolation, findInlineMediaUrl } from './commit-guards';
+import { NODE_CLIPBOARD_KIND, type NodeClipboardPayload } from '../serialization/document-schema';
 import { collectTextLayoutTargets, createFitContext, deriveTextLayoutPatches } from '../layout/text-layout';
 import {
   compareHierarchicalNodes,
@@ -83,6 +84,13 @@ export interface NodeTransform {
   fields?: Partial<NodeEntity>;
 }
 
+/** 节点子树快照 (实体均为深拷贝)：创建副本与剪贴板共用 */
+interface Subtrees {
+  topmost: NodeEntity[];
+  descendants: NodeEntity[];
+  connectors: ConnectorEntity[];
+}
+
 /** 语义命令的公共选项 */
 export interface CommandOptions {
   /** 撤销记录名称 */
@@ -118,6 +126,8 @@ export type DocumentApi = Pick<
   | 'canFitContent'
   | 'removeNodes'
   | 'duplicateNodes'
+  | 'copyNodes'
+  | 'pasteNodes'
   | 'reparentNodes'
   | 'moveLayers'
   | 'batch'
@@ -407,64 +417,58 @@ export class DocumentStore {
 
   /**
    * 创建副本 (支持多选)：最顶层选中节点连同全部后代一起复制，两端都在副本内的连线一并复制并改接到副本；
-   * 副本按世界位移 offset 偏移、置于各自容器最上层并保持原相对层级，一步撤销
+   * 副本留在原容器中，按世界位移 offset 偏移、置于容器最上层并保持原相对层级，一步撤销
    * @returns 副本中最顶层节点的 id；提交被拒绝时为空
    */
   duplicateNodes(nodeIds: Iterable<string>, offset: Point, options?: CommandOptions): string[] {
-    const { nodes, connectors } = this.document.content;
-    const topmost = sortSiblingsByLayer(this.collectTopmost(nodeIds).map((id) => nodes[id]));
-    const idMap = new Map<string, string>();
-    for (const { id } of topmost) {
-      for (const sourceId of [id, ...this.entities.collectDescendantIds(id)]) idMap.set(sourceId, generateId('node'));
-    }
-    if (idMap.size === 0) return [];
+    return this.insertSubtrees(this.collectSubtrees(nodeIds, false), offset, {
+      ...options,
+      label: options?.label ?? '创建副本'
+    });
+  }
 
-    const patches: CanvasPatch[] = [];
-    const topKeys = new Map<string | undefined, FractionalIndex | null>();
-    for (const node of topmost) {
-      const { parentId } = node;
-      const zIndex = generateKeyBetween(topKeys.get(parentId) ?? this.findTopZIndex(parentId), null);
-      topKeys.set(parentId, zIndex);
-      const parentMatrix = parentId === undefined ? undefined : this.entities.getWorldTransform(parentId);
-      const local = parentMatrix ? applyMatrixToVector(invertMatrix(parentMatrix), offset.x, offset.y) : offset;
-      const copy = {
-        ...clonePlainData(node),
-        id: idMap.get(node.id)!,
-        x: node.x + local.x,
-        y: node.y + local.y,
-        zIndex
-      };
-      patches.push({ op: 'set', path: ['content', 'nodes', copy.id], value: copy });
-    }
-    const topIds = new Set(topmost.map((node) => node.id));
-    for (const [sourceId, copyId] of idMap) {
-      if (topIds.has(sourceId)) continue;
-      const source = nodes[sourceId];
-      const copy = { ...clonePlainData(source), id: copyId, parentId: idMap.get(source.parentId!)! };
-      patches.push({ op: 'set', path: ['content', 'nodes', copyId], value: copy });
-    }
+  /**
+   * 复制到剪贴板的数据 (支持多选)：最顶层节点连同全部后代与内部连线；最顶层换算为根层级的世界位姿，
+   * 粘贴到任何位置 (包括另一个标签页) 时外观不变
+   * @returns 没有可复制的节点时为 null
+   */
+  copyNodes(nodeIds: Iterable<string>): NodeClipboardPayload | null {
+    const subtrees = this.collectSubtrees(nodeIds, true);
+    if (subtrees.topmost.length === 0) return null;
+    return {
+      kind: NODE_CLIPBOARD_KIND,
+      version: 1,
+      nodes: [...subtrees.topmost, ...subtrees.descendants],
+      connectors: subtrees.connectors
+    };
+  }
 
-    const connectorIds = new Set<string>();
-    for (const sourceId of idMap.keys()) {
-      for (const connectorId of this.entities.getConnectorIdsOfNode(sourceId)) connectorIds.add(connectorId);
-    }
-    for (const connectorId of connectorIds) {
-      const source = connectors[connectorId];
-      const from = source.from.nodeId && idMap.get(source.from.nodeId);
-      const to = source.to.nodeId && idMap.get(source.to.nodeId);
-      if (!from || !to) continue;
-      const copy = clonePlainData(source);
-      copy.id = generateId('connector');
-      copy.from.nodeId = from;
-      copy.to.nodeId = to;
-      // 控制点是世界坐标，随副本一起偏移
-      if (copy.controlPoints)
-        copy.controlPoints = copy.controlPoints.map((p) => ({ x: p.x + offset.x, y: p.y + offset.y }));
-      patches.push({ op: 'set', path: ['content', 'connectors', copy.id], value: copy });
-    }
+  /**
+   * 粘贴剪贴板中的节点 (数据须先经 parseNodeClipboard 校验)：全部换新 id，放在根层级最上方，
+   * 按世界位移 offset 偏移，一步撤销
+   * @returns 粘贴出的最顶层节点 id；提交被拒绝时为空
+   */
+  pasteNodes(payload: NodeClipboardPayload, offset: Point, options?: CommandOptions): string[] {
+    const ids = new Set(payload.nodes.map((node) => node.id));
+    const isTopmost = (node: NodeEntity) => node.parentId === undefined || !ids.has(node.parentId);
+    const topmost = payload.nodes.filter(isTopmost).map(({ parentId: _parentId, ...node }) => node);
+    const descendants = payload.nodes.filter((node) => !isTopmost(node));
+    return this.insertSubtrees({ topmost, descendants, connectors: payload.connectors }, offset, {
+      ...options,
+      label: options?.label ?? '粘贴'
+    });
+  }
 
-    const record = this.commit({ ...options, label: options?.label ?? '创建副本', patches });
-    return record ? topmost.map((node) => idMap.get(node.id)!) : [];
+  /**
+   * 整体替换文档内容 (导入文件、从本地存储恢复)；内容须先经 parseCanvasDocument 校验
+   * 默认可撤销：导入后撤销一步即回到原内容
+   */
+  replaceContent(content: CanvasContent, options?: CommandOptions): CanvasOperationRecord | null {
+    return this.commit({
+      ...options,
+      label: options?.label ?? '导入文档',
+      patches: [{ op: 'set', path: ['content'], value: content }]
+    });
   }
 
   /**
@@ -748,6 +752,93 @@ export class DocumentStore {
    * 过滤出「祖先不在集合中」的节点：后代坐标相对容器，随容器一起移动、改挂或删除；
    * 否则同时选中容器与其子节点时，子节点会被重复处理
    */
+  /**
+   * 选中节点的子树快照 (深拷贝)：最顶层节点按层叠顺序排列、全部后代、两端都在其中的连线
+   * @param toWorld 最顶层节点换算为根层级的世界位姿并去掉 parentId (剪贴板)；否则保留所在容器 (创建副本)
+   */
+  private collectSubtrees(nodeIds: Iterable<string>, toWorld: boolean): Subtrees {
+    const { nodes, connectors } = this.document.content;
+    const getNode = (id: string): Readonly<NodeEntity> | undefined =>
+      Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+    const chainCache = new Map<string, Readonly<NodeEntity>[]>();
+    const topIds = this.collectTopmost(nodeIds).sort((a, b) =>
+      compareHierarchicalNodes(nodes[a], nodes[b], getNode, chainCache)
+    );
+    const topmost = topIds.map((id) => {
+      const node = clonePlainData(nodes[id]) as NodeEntity;
+      if (!toWorld) return node;
+      const { parentId: _parentId, ...rest } = node;
+      return { ...rest, ...decomposeNodeMatrix(this.entities.getWorldTransform(id)!, node.width, node.height) };
+    });
+    const descendants = topIds.flatMap((id) =>
+      this.entities.collectDescendantIds(id).map((descendantId) => clonePlainData(nodes[descendantId]) as NodeEntity)
+    );
+    const included = new Set([...topIds, ...descendants.map((node) => node.id)]);
+    const connectorIds = new Set<string>();
+    for (const id of included) {
+      for (const connectorId of this.entities.getConnectorIdsOfNode(id)) connectorIds.add(connectorId);
+    }
+    const internal = [...connectorIds]
+      .map((id) => connectors[id])
+      .filter((c) => c.from.nodeId !== undefined && c.to.nodeId !== undefined)
+      .filter((c) => included.has(c.from.nodeId!) && included.has(c.to.nodeId!))
+      .map((c) => clonePlainData(c) as ConnectorEntity);
+    return { topmost, descendants, connectors: internal };
+  }
+
+  /**
+   * 把子树快照写入文档：全部换新 id；最顶层放进各自容器 (不存在时为根层级) 最上方并按世界位移偏移，
+   * 后代与连线改接到新 id；连线控制点是世界坐标，随之偏移
+   */
+  private insertSubtrees(subtrees: Subtrees, offset: Point, options: CommandOptions): string[] {
+    const { nodes } = this.document.content;
+    const idMap = new Map<string, string>();
+    for (const node of [...subtrees.topmost, ...subtrees.descendants]) idMap.set(node.id, generateId('node'));
+    if (subtrees.topmost.length === 0) return [];
+
+    const patches: CanvasPatch[] = [];
+    const topKeys = new Map<string | undefined, FractionalIndex | null>();
+    for (const node of subtrees.topmost) {
+      const parentId = node.parentId !== undefined && Object.hasOwn(nodes, node.parentId) ? node.parentId : undefined;
+      const zIndex = generateKeyBetween(topKeys.get(parentId) ?? this.findTopZIndex(parentId), null);
+      topKeys.set(parentId, zIndex);
+      const parentMatrix = parentId === undefined ? undefined : this.entities.getWorldTransform(parentId);
+      const local = parentMatrix ? applyMatrixToVector(invertMatrix(parentMatrix), offset.x, offset.y) : offset;
+      const { parentId: _parentId, ...rest } = node;
+      const copy: NodeEntity = {
+        ...rest,
+        ...(parentId !== undefined && { parentId }),
+        id: idMap.get(node.id)!,
+        x: node.x + local.x,
+        y: node.y + local.y,
+        zIndex
+      };
+      patches.push({ op: 'set', path: ['content', 'nodes', copy.id], value: copy });
+    }
+    for (const node of subtrees.descendants) {
+      const copy = { ...node, id: idMap.get(node.id)!, parentId: idMap.get(node.parentId!)! };
+      patches.push({ op: 'set', path: ['content', 'nodes', copy.id], value: copy });
+    }
+    for (const connector of subtrees.connectors) {
+      const from = connector.from.nodeId && idMap.get(connector.from.nodeId);
+      const to = connector.to.nodeId && idMap.get(connector.to.nodeId);
+      if (!from || !to) continue;
+      const copy: ConnectorEntity = {
+        ...connector,
+        id: generateId('connector'),
+        from: { ...connector.from, nodeId: from },
+        to: { ...connector.to, nodeId: to },
+        ...(connector.controlPoints && {
+          controlPoints: connector.controlPoints.map((p) => ({ x: p.x + offset.x, y: p.y + offset.y }))
+        })
+      };
+      patches.push({ op: 'set', path: ['content', 'connectors', copy.id], value: copy });
+    }
+
+    const record = this.commit({ ...options, patches });
+    return record ? subtrees.topmost.map((node) => idMap.get(node.id)!) : [];
+  }
+
   private collectTopmost(nodeIds: Iterable<string>): string[] {
     const selected = new Set<string>();
     for (const id of nodeIds) {

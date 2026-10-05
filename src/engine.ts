@@ -45,6 +45,7 @@ import {
 } from './spatial';
 import { InputScopeManager } from './input/input-scope-manager';
 import { PointerDispatcher } from './input/pointer-dispatcher';
+import { ClipboardDispatcher } from './input/clipboard-dispatcher';
 import { PluginManager } from './plugin/plugin-manager';
 
 export interface SkyNoteEngineOptions {
@@ -75,6 +76,7 @@ export class SkyNoteEngine {
   readonly connectorSpatialIndex = new RTreeSpatialIndex();
   readonly inputScopes = new InputScopeManager();
   readonly pointer = new PointerDispatcher();
+  readonly clipboard = new ClipboardDispatcher();
   readonly plugins: PluginManager;
 
   private readonly nodeSpatialIndex: SceneSpatialIndex;
@@ -244,6 +246,7 @@ export class SkyNoteEngine {
     this.nodeSpatialIndex.clear();
     this.connectorSpatialIndex.clear();
     this.inputScopes.clear();
+    this.clipboard.clear();
     this.nodeTypes.clear();
     this.arrowMarkers.clear();
     this.routers.clear();

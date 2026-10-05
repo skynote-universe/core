@@ -32,6 +32,7 @@ import type { EntityReader } from '../state/entity-store';
 import type { SessionController, SessionChange } from '../state/session-store';
 import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
 import type { PointerHooks } from '../input/pointer-dispatcher';
+import type { ClipboardHandler } from '../input/clipboard-dispatcher';
 import type { NodeTypeReader } from '../registry/node-type-registry';
 import type { SkyNoteEngine } from '../engine';
 
@@ -148,6 +149,10 @@ class PluginContext implements CanvasPluginContext {
 
   registerPointerHooks(hooks: PointerHooks, priority = 0): () => void {
     return this.track(this.engine.pointer.register(`${this.pluginId}#${++this.hookCount}`, hooks, priority));
+  }
+
+  registerClipboardHandler(handler: ClipboardHandler, priority = 0): () => void {
+    return this.track(this.engine.clipboard.register(handler, priority));
   }
 
   /** 按注册的逆序释放：后注册的资源可能依赖先注册的 */

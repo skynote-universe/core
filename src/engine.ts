@@ -46,6 +46,7 @@ import type { EntityReader } from './state/entity-store';
 import { SessionStore, type ZoomRange } from './state/session-store';
 import { NodeTypeRegistry } from './registry/node-type-registry';
 import { ArrowMarkerRegistry } from './registry/arrow-marker-registry';
+import { CursorRegistry } from './registry/cursor-registry';
 import { ConnectorRouterRegistry } from './registry/connector-router-registry';
 import {
   RTreeSpatialIndex,
@@ -99,6 +100,8 @@ const CONNECTOR_SNAP_PX = 8;
 export class SkyNoteEngine {
   readonly nodeTypes = new NodeTypeRegistry();
   readonly arrowMarkers = new ArrowMarkerRegistry();
+  /** 画布光标 (全部自绘)：插件与宿主应用可注册、覆盖与统一配色 */
+  readonly cursors = new CursorRegistry();
   readonly routers = new ConnectorRouterRegistry();
   readonly documentStore: DocumentStore;
   /** 本地会话状态：视口、选区与主题 */
@@ -381,6 +384,7 @@ export class SkyNoteEngine {
     this.clipboard.clear();
     this.nodeTypes.clear();
     this.arrowMarkers.clear();
+    this.cursors.clear();
     this.routers.clear();
     this.documentStore.clearHistory();
   }

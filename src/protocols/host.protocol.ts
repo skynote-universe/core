@@ -13,30 +13,23 @@
 
 import type { CanvasPrimitive } from './primitives.protocol';
 
-/** 抽象光标 (浏览器映射为 CSS cursor) */
-export type SystemCursor =
-  | 'default'
-  | 'grab'
-  | 'grabbing'
-  | 'crosshair'
-  | 'text'
-  | 'move'
-  | 'nwse-resize'
-  | 'nesw-resize'
-  | 'ew-resize'
-  | 'ns-resize';
+/** 内置光标 (见 CursorRegistry)：全部自绘，可被覆盖 */
+export type BuiltinCursorId = 'default' | 'move' | 'crosshair' | 'text' | 'grab' | 'grabbing';
 
 /**
- * 旋转光标：系统没有现成的旋转光标，由宿主自绘；angle 为弧形箭头的朝向 (度，0° 时弧线在左侧)，
- * 随控制柄方位与节点旋转变化，宿主可按档位取整缓存
+ * 带角度的光标：缩放光标 (resize，0° 为水平双向箭头) 与旋转光标 (rotate，0° 时弧线在左侧)，
+ * 随控制柄方位与节点旋转变化；也可用于插件注册的可旋转光标
  */
-export interface RotateCursor {
-  readonly kind: 'rotate';
+export interface AngledCursor {
+  readonly kind: 'resize' | 'rotate' | (string & {});
   readonly angle: number;
 }
 
-/** 宿主光标：系统光标或自绘的旋转光标 */
-export type CanvasCursor = SystemCursor | RotateCursor;
+/**
+ * 宿主光标：光标注册表中的 id (内置或插件注册)，或带角度的光标；
+ * 未注册的 id 由宿主当作平台光标名直接使用 (浏览器即 CSS cursor 关键字)
+ */
+export type CanvasCursor = BuiltinCursorId | (string & {}) | AngledCursor;
 
 export interface OverlayOptions {
   /** 瞬态图元 (框选、参考线)：宿主在失焦或 Esc 时兜底清除；默认 false */

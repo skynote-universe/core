@@ -6,3 +6,4 @@
 export * from './node-type-registry';
 export * from './arrow-marker-registry';
 export * from './connector-router-registry';
+export * from './cursor-registry';

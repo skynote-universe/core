@@ -11,6 +11,7 @@
 import type { CanvasPluginContext, SkyNotePlugin } from '../protocols/plugin.protocol';
 import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { ArrowMarkerDefinition } from '../protocols/arrow-marker.protocol';
+import type { CursorDefinition } from '../protocols/cursor.protocol';
 import type { ConnectorRouterDefinition } from '../protocols/connector-router.protocol';
 import type { InputScope } from '../protocols/input-scope.protocol';
 import type {
@@ -147,6 +148,10 @@ class PluginContext implements CanvasPluginContext {
   registerConnectorRouter(definition: ConnectorRouterDefinition): void {
     this.engine.routers.register(definition);
     this.cleanups.push(() => this.engine.routers.unregister(definition.id));
+  }
+
+  registerCursor(definition: CursorDefinition): void {
+    this.cleanups.push(this.engine.cursors.register(definition));
   }
 
   registerInputScope(scope: InputScope): () => void {

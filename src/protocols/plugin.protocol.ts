@@ -11,6 +11,7 @@
 import type { NodeTypeDefinition } from './node-type.protocol';
 import type { InputScope } from './input-scope.protocol';
 import type { ArrowMarkerDefinition } from './arrow-marker.protocol';
+import type { CursorDefinition } from './cursor.protocol';
 import type { ConnectorRouterDefinition } from './connector-router.protocol';
 import type { CanvasHost } from './host.protocol';
 import type { Point } from '../types/geometry';
@@ -59,6 +60,8 @@ export interface CanvasPluginContext {
   registerNodeType(definition: NodeTypeDefinition): void;
   registerArrowMarker(definition: ArrowMarkerDefinition): void;
   registerConnectorRouter(definition: ConnectorRouterDefinition): void;
+  /** 注册或覆盖光标 (见 CursorRegistry)；插件卸载时恢复被覆盖的定义 */
+  registerCursor(definition: CursorDefinition): void;
   /** 注册键盘作用域 (焦点栈，ADR-005) */
   registerInputScope(scope: InputScope): () => void;
   /**

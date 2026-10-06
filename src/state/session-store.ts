@@ -7,7 +7,8 @@
  *    平移缩放不走事务与撤销栈，也不会同步给协作者 (他人的选区与视口走在线状态通道)。
  * 2. 增量通知：选区变化只广播选中态翻转的 id，渲染器据此只重绘受影响的实体。
  * 3. 画布内文字编辑的目标、滚动与输入法组合文字同属本地交互态，放在这里供渲染器与编辑插件共读。
- * 4. 视口命令只有一处实现：缩放、适配内容都经 setViewport 写入并受缩放范围约束；
+ * 4. 当前工具 (选择、连线等) 同样是本地交互态：工具插件据此认领指针，界面据此高亮按钮。
+ * 5. 视口命令只有一处实现：缩放、适配内容都经 setViewport 写入并受缩放范围约束；
  *    视口像素尺寸由渲染器上报到这里，插件与界面据此换算中心点，不再各自持有尺寸。
  */
 
@@ -25,6 +26,8 @@ export interface SessionChange {
   readonly themeChanged: boolean;
   /** 正在编辑的文字块变化 (进入、退出或切换) */
   readonly textEditingChanged: boolean;
+  /** 当前工具切换 */
+  readonly toolChanged: boolean;
   /** 选中态发生翻转的节点 id (新选中 ∪ 取消选中) */
   readonly toggledNodeIds: ReadonlySet<string>;
   /** 选中态发生翻转的连线 id */
@@ -43,7 +46,9 @@ export interface TextComposition {
  * 编辑块不截断，超出文本框的部分裁剪并按 scrollY 滚动；滚动与组合文字都是本地状态，不进入文档
  */
 export interface TextEditingTarget {
-  readonly nodeId: string;
+  /** 文字所属的实体：节点的文字块，或连线上的文字 */
+  readonly kind: 'node' | 'connector';
+  readonly id: string;
   readonly blockId: string;
   /** 文字超出文本框时向上滚动的距离 (文本框坐标) */
   readonly scrollY: number;
@@ -51,6 +56,9 @@ export interface TextEditingTarget {
 }
 
 export type SessionListener = (change: SessionChange) => void;
+
+/** 默认工具：点选、框选与拖动；其他工具 (如 'connector') 由对应插件在激活时认领指针 */
+export const SELECT_TOOL = 'select';
 
 /** 选区更新参数：未提供的类别保持不变 */
 export interface SelectionUpdate {
@@ -89,6 +97,8 @@ export interface SessionController {
   readonly selectedNodeIds: ReadonlySet<string>;
   readonly selectedConnectorIds: ReadonlySet<string>;
   readonly textEditing: TextEditingTarget | null;
+  /** 当前工具 (缺省 SELECT_TOOL) */
+  readonly tool: string;
   setViewport(viewport: Partial<ViewportState>): void;
   /** 以世界坐标 anchor (默认视口中心) 为不动点按倍率缩放 */
   zoomAt(factor: number, anchor?: Point): void;
@@ -96,6 +106,7 @@ export interface SessionController {
   fitBounds(bounds: RectBounds | null, options?: FitOptions): void;
   setSelection(selection: SelectionUpdate): void;
   setTextEditing(target: TextEditingTarget | null): void;
+  setTool(tool: string): void;
   /**
    * 显式切换主题
    * @throws 配置中含非法颜色
@@ -119,6 +130,7 @@ const VIEWPORT_CHANGE: SessionChange = Object.freeze({
   viewportChanged: true,
   themeChanged: false,
   textEditingChanged: false,
+  toolChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -126,6 +138,7 @@ const THEME_CHANGE: SessionChange = Object.freeze({
   viewportChanged: false,
   themeChanged: true,
   textEditingChanged: false,
+  toolChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -133,6 +146,15 @@ const TEXT_EDITING_CHANGE: SessionChange = Object.freeze({
   viewportChanged: false,
   themeChanged: false,
   textEditingChanged: true,
+  toolChanged: false,
+  toggledNodeIds: EMPTY_ID_SET,
+  toggledConnectorIds: EMPTY_ID_SET
+});
+const TOOL_CHANGE: SessionChange = Object.freeze({
+  viewportChanged: false,
+  themeChanged: false,
+  textEditingChanged: false,
+  toolChanged: true,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -157,6 +179,7 @@ export class SessionStore implements SessionController {
   private nodeSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private connectorSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private editingTarget: TextEditingTarget | null = null;
+  private currentTool = SELECT_TOOL;
   private readonly listeners = new Set<SessionListener>();
 
   constructor(options?: SessionStoreOptions) {
@@ -198,10 +221,21 @@ export class SessionStore implements SessionController {
     return this.editingTarget;
   }
 
+  get tool(): string {
+    return this.currentTool;
+  }
+
+  setTool(tool: string): void {
+    if (tool === this.currentTool) return;
+    this.currentTool = tool;
+    this.notify(TOOL_CHANGE);
+  }
+
   setTextEditing(target: TextEditingTarget | null): void {
     const current = this.editingTarget;
     if (
-      current?.nodeId === target?.nodeId &&
+      current?.kind === target?.kind &&
+      current?.id === target?.id &&
       current?.blockId === target?.blockId &&
       current?.scrollY === target?.scrollY &&
       current?.composition === target?.composition
@@ -282,6 +316,7 @@ export class SessionStore implements SessionController {
       viewportChanged: false,
       themeChanged: false,
       textEditingChanged: false,
+      toolChanged: false,
       toggledNodeIds,
       toggledConnectorIds
     });
@@ -296,7 +331,9 @@ export class SessionStore implements SessionController {
     const keptNodeIds = [...this.nodeSelection].filter((id) => !removedNodeIds.has(id));
     const keptConnectorIds = [...this.connectorSelection].filter((id) => !removedConnectorIds.has(id));
     this.setSelection({ nodeIds: keptNodeIds, connectorIds: keptConnectorIds });
-    if (this.editingTarget && removedNodeIds.has(this.editingTarget.nodeId)) this.setTextEditing(null);
+    const editing = this.editingTarget;
+    const removed = editing?.kind === 'node' ? removedNodeIds : removedConnectorIds;
+    if (editing && removed.has(editing.id)) this.setTextEditing(null);
   }
 
   subscribe(listener: SessionListener): () => void {

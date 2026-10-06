@@ -69,7 +69,7 @@ describe('DocumentStore & EntityStore', () => {
     const { geomVersion, dataVersion } = envelope.runtime;
 
     // 移动节点
-    store.moveNodes(['node_1'], { x: 50, y: 30 });
+    store.moveEntities({ nodeIds: ['node_1'] }, { x: 50, y: 30 });
     expect(store.getView().content.nodes.node_1.x).toBe(150);
     expect(store.getView().content.nodes.node_1.y).toBe(230);
 
@@ -133,7 +133,7 @@ describe('DocumentStore & EntityStore', () => {
 
     store.addNode(node);
 
-    store.removeNodes(['node_1']);
+    store.removeEntities({ nodeIds: ['node_1'] });
     expect(store.getView().content.nodes.node_1).toBeUndefined();
     expect(store.entityStore.hasNode('node_1')).toBe(false);
 
@@ -232,7 +232,7 @@ describe('DocumentStore & EntityStore', () => {
 
     store.addNode(make('a'));
     store.addNode(make('b'));
-    store.moveNodes(['b'], { x: 100 });
+    store.moveEntities({ nodeIds: ['b'] }, { x: 100 });
 
     store.commit({
       origin: 'remote',
@@ -283,7 +283,7 @@ describe('DocumentStore & EntityStore', () => {
     });
     const before = store.entityStore.getNode('node_1')!.runtime.geomVersion;
 
-    store.removeNodes(['node_1']);
+    store.removeEntities({ nodeIds: ['node_1'] });
     store.undo();
 
     expect(store.entityStore.getNode('node_1')!.runtime.geomVersion).toBeGreaterThan(before);

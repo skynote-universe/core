@@ -116,7 +116,7 @@ describe('容器语义', () => {
     store.addNode(makeNode('badge', 5, 'card'));
     store.addNode(makeNode('outside', 500));
 
-    const record = store.moveNodes(['frame'], { x: 100 })!;
+    const record = store.moveEntities({ nodeIds: ['frame'] }, { x: 100 })!;
     expect(record.patches.map((p) => p.path)).toEqual([['content', 'nodes', 'frame', 'x']]);
     const nodes = engine.documentStore.getView().content.nodes;
     expect([nodes.frame.x, nodes.card.x, nodes.badge.x, nodes.outside.x]).toEqual([100, 20, 5, 500]);
@@ -152,7 +152,7 @@ describe('容器语义', () => {
       ]
     });
 
-    store.removeNodes(['frame']);
+    store.removeEntities({ nodeIds: ['frame'] });
     const { nodes, connectors } = store.getView().content;
     expect(Object.keys(nodes)).toEqual(['outside']);
     expect(Object.keys(connectors)).toEqual([]);
@@ -169,7 +169,7 @@ describe('容器语义', () => {
     store.addNode(makeNode('card', 20, 'frame'));
     store.addNode(makeNode('solo', 500));
 
-    store.moveNodes(['card', 'frame', 'solo'], { x: 100 });
+    store.moveEntities({ nodeIds: ['card', 'frame', 'solo'] }, { x: 100 });
     const nodes = store.getView().content.nodes;
     expect([nodes.frame.x, nodes.card.x, nodes.solo.x]).toEqual([100, 20, 600]);
     expect(store.entityStore.getWorldTransform('card')!.e).toBe(120);
@@ -187,7 +187,7 @@ describe('容器语义', () => {
     store.addNode(makeNode('b', 400));
     const depth = store.undoEntries.length;
 
-    store.removeNodes(['card', 'frame', 'a', 'missing']);
+    store.removeEntities({ nodeIds: ['card', 'frame', 'a', 'missing'] });
     expect(Object.keys(store.getView().content.nodes)).toEqual(['b']);
     expect(store.undoEntries).toHaveLength(depth + 1);
 

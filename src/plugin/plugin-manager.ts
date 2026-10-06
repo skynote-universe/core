@@ -31,6 +31,7 @@ import type { DocumentApi } from '../state/document-store';
 import type { EntityReader } from '../state/entity-store';
 import type { SessionController, SessionChange } from '../state/session-store';
 import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
+import type { CanvasHit, ConnectorGeometryApi } from '../engine';
 import type { PointerHooks } from '../input/pointer-dispatcher';
 import type { ClipboardHandler } from '../input/clipboard-dispatcher';
 import type { NodeTypeReader } from '../registry/node-type-registry';
@@ -92,6 +93,7 @@ class PluginContext implements CanvasPluginContext {
   readonly document: DocumentApi;
   readonly entities: EntityReader;
   readonly spatial: NodeSpatialQuery;
+  readonly connectors: ConnectorGeometryApi;
   readonly nodeTypes: NodeTypeReader;
   readonly session: SessionController;
   readonly host: PluginHost;
@@ -105,6 +107,7 @@ class PluginContext implements CanvasPluginContext {
     this.document = engine.documentStore;
     this.entities = engine.entityStore;
     this.spatial = engine.spatialIndex;
+    this.connectors = engine;
     this.nodeTypes = engine.nodeTypes;
     this.session = engine.session;
     this.host = new PluginHost(engine);
@@ -117,6 +120,10 @@ class PluginContext implements CanvasPluginContext {
 
   hitTestConnector(point: Point, tolerancePx?: number): Readonly<ConnectorEntity> | undefined {
     return this.engine.hitTestConnector(point, tolerancePx);
+  }
+
+  hitTest(point: Point): CanvasHit | null {
+    return this.engine.hitTest(point);
   }
 
   onDocumentChange(listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void): () => void {

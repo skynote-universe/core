@@ -77,6 +77,25 @@ describe('文档反序列化', () => {
     expect(result.ok && result.value.content.nodes.child.parentId).toBeUndefined();
   });
 
+  it('端点所连节点不存在的连线被丢弃，其余连线保留', () => {
+    const connector = (id: string, to: ConnectorEntity['to']): ConnectorEntity => ({
+      id,
+      type: 'connector',
+      connectorType: 'orthogonal',
+      from: { nodeId: 'a' },
+      to,
+      zIndex: 'a0',
+      locked: false
+    });
+    const result = parseCanvasDocument(
+      docWith(
+        [makeNode('a')],
+        [connector('dangling', { nodeId: 'missing' }), connector('free', { position: { x: 300, y: 0 } })]
+      )
+    );
+    expect(result.ok && Object.keys(result.value.content.connectors)).toEqual(['free']);
+  });
+
   it('剪贴板：不是画布节点数据或 JSON 不合法时失败', () => {
     expect(parseNodeClipboard('not json').ok).toBe(false);
     expect(parseNodeClipboard(JSON.stringify({ kind: 'other' })).ok).toBe(false);
@@ -94,7 +113,7 @@ describe('复制、粘贴与替换内容', () => {
     store.addNode(makeNode('leaf', { x: 5, y: 5, width: 10, height: 10, parentId: 'card' }));
     const before = engine.getNodeWorldBounds('card')!;
 
-    const payload = store.copyNodes(['card'])!;
+    const payload = store.copyEntities({ nodeIds: ['card'] })!;
     expect(payload.nodes.map((n) => n.id)).toEqual(['card', 'leaf']);
     expect(payload.nodes[0].parentId).toBeUndefined();
     expect(payload.nodes[0].rotation).toBeCloseTo(90);
@@ -103,7 +122,7 @@ describe('复制、粘贴与替换内容', () => {
     const parsed = parseNodeClipboard(JSON.stringify(payload));
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
-    const [pastedId] = store.pasteNodes(parsed.value, { x: 30, y: 0 });
+    const [pastedId] = store.pasteEntities(parsed.value, { x: 30, y: 0 }).nodeIds;
     expect(pastedId).not.toBe('card');
     expect(store.getNode(pastedId)!.parentId).toBeUndefined();
     const after = engine.getNodeWorldBounds(pastedId)!;

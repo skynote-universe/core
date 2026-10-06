@@ -22,6 +22,7 @@ import type { SessionController, SessionChange } from '../state/session-store';
 import type { DocumentApi } from '../state/document-store';
 import type { EntityReader } from '../state/entity-store';
 import type { NodeSpatialQuery } from '../spatial/scene-spatial-index';
+import type { CanvasHit, ConnectorGeometryApi } from '../engine';
 import type { PointerHooks } from '../input/pointer-dispatcher';
 import type { ClipboardHandler } from '../input/clipboard-dispatcher';
 import type { NodeTypeReader } from '../registry/node-type-registry';
@@ -34,6 +35,8 @@ export interface CanvasPluginContext {
   readonly entities: EntityReader;
   /** 节点空间检索 (世界坐标) */
   readonly spatial: NodeSpatialQuery;
+  /** 连线路由、预览路由与端点吸附 (内核统一求解，ADR-103) */
+  readonly connectors: ConnectorGeometryApi;
   /** 已注册的节点类型 (只读)：读取尺寸策略、缩放行为与轮廓 */
   readonly nodeTypes: NodeTypeReader;
   /** 本地会话 (视口、选区、主题)：不进入文档、不入撤销栈、不参与协同 */
@@ -45,6 +48,8 @@ export interface CanvasPluginContext {
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined;
   /** 连线拾取：点到路由的距离不超过 tolerancePx 屏幕像素 */
   hitTestConnector(point: Point, tolerancePx?: number): Readonly<ConnectorEntity> | undefined;
+  /** 点中的最上层实体 (节点或连线，按画面层叠)：点选、双击编辑与悬停据此判断 */
+  hitTest(point: Point): CanvasHit | null;
 
   /** 订阅文档增量变更集；只做单向通知，监听中严禁同步提交新事务引发级联 */
   onDocumentChange(listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void): () => void;

@@ -17,6 +17,16 @@ const builtInMarkers: readonly ArrowMarkerDefinition[] = [
     fillRule: 'match-stroke'
   },
   {
+    id: 'standard:open',
+    label: '开放箭头',
+    width: 8,
+    height: 8,
+    // 只有两条斜边，线身直接画到尖端
+    lineOffset: 0,
+    d: 'M -8 -4 L 0 0 L -8 4',
+    fillRule: 'none'
+  },
+  {
     id: 'standard:triangle',
     label: '空心三角',
     width: 10,
@@ -40,13 +50,15 @@ const builtInMarkers: readonly ArrowMarkerDefinition[] = [
     width: 8,
     height: 8,
     lineOffset: 8,
-    d: 'M 0 0 m -4 0 a 4 4 0 1 0 8 0 a 4 4 0 1 0 -8 0',
+    // 圆的外沿贴在端点 (圆心在端点后 4)：不压进节点，线身正好接到圆的后沿
+    d: 'M 0 0 a 4 4 0 1 0 -8 0 a 4 4 0 1 0 8 0',
     fillRule: 'match-background'
   }
 ];
 
 const ALIAS_MAP: Record<string, string> = {
   arrow: 'standard:arrow',
+  open: 'standard:open',
   triangle: 'standard:triangle',
   diamond: 'standard:diamond',
   circle: 'standard:circle'

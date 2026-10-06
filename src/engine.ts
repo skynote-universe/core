@@ -13,7 +13,7 @@
 import type { Point, RectBounds } from './types/geometry';
 import type { CanvasDocument, ViewportState } from './types/canvas';
 import type { NodeEntity } from './types/node';
-import type { ConnectorEntity } from './types/connector';
+import type { ConnectorEndpointSnap, ConnectorEntity } from './types/connector';
 import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
 import type { DocumentChangeSet } from './types/change-set';
@@ -26,10 +26,21 @@ import {
   distanceToPolyline,
   expandBounds,
   invertMatrix,
+  isPointInBounds,
   isPointInPolygon
 } from './utils/geometry';
 import { compareHierarchicalNodes } from './layout/layer-order';
-import { computeConnectorRoute } from './routing/connector-route';
+import { resolveConnectorLayerPlacement } from './layout/connector-layer';
+import { compareFractionalIndex } from './utils/fractional-index';
+import { resolveNodeStyle } from './protocols/node-type.protocol';
+import { isEqual } from './utils/equality';
+import {
+  computeConnectorRoute,
+  resolveConnectorStyle,
+  type ConnectorRouteSource,
+  type ResolvedEndpointNode
+} from './routing/connector-route';
+import { outlineAnchors, projectOntoOutline, resolveNodeOutline } from './routing/outline';
 import { DocumentStore } from './state/document-store';
 import type { EntityReader } from './state/entity-store';
 import { SessionStore, type ZoomRange } from './state/session-store';
@@ -63,8 +74,27 @@ export interface SkyNoteEngineOptions {
   createNodeSpatialIndex?: () => SpatialIndex;
 }
 
+/** 插件可用的连线派生能力：空间检索、路由、预览路由、端点吸附与吸附点 (只读，不改文档) */
+export type ConnectorGeometryApi = Pick<
+  SkyNoteEngine,
+  | 'connectorSpatialIndex'
+  | 'getConnectorRoute'
+  | 'previewConnectorRoute'
+  | 'snapConnectorEndpoint'
+  | 'getConnectorAnchors'
+>;
+
+/** 按画面层叠点中的最上层实体 */
+export type CanvasHit =
+  | { readonly kind: 'node'; readonly node: Readonly<NodeEntity> }
+  | { readonly kind: 'connector'; readonly connector: Readonly<ConnectorEntity> };
+
 /** 连线拾取的默认屏幕像素容差 */
 const CONNECTOR_HIT_TOLERANCE_PX = 6;
+/** 粗筛时按此线宽放宽 (世界坐标)：比它更粗的线在线条中段仍能命中，只是边缘外侧的容差略少 */
+const MAX_HIT_STROKE = 16;
+/** 连线端点吸附到吸附点或边框的屏幕像素距离 */
+const CONNECTOR_SNAP_PX = 8;
 
 export class SkyNoteEngine {
   readonly nodeTypes = new NodeTypeRegistry();
@@ -90,7 +120,11 @@ export class SkyNoteEngine {
   constructor(options?: SkyNoteEngineOptions) {
     this.documentStore = new DocumentStore(options?.initialDoc, {
       nodeTypes: this.nodeTypes,
-      fonts: options?.fonts
+      fonts: options?.fonts,
+      connectorEnds: (id) => {
+        const points = this.routes.get(id)?.points;
+        return points && [points[0], points[points.length - 1]];
+      }
     });
     this.session = new SessionStore({
       viewport: options?.initialViewport,
@@ -198,21 +232,52 @@ export class SkyNoteEngine {
   }
 
   /**
-   * 连线拾取：点到路由折线的距离不超过 tolerancePx 屏幕像素即命中
+   * 连线拾取：点在连线文字上，或到路由折线的距离不超过 tolerancePx 屏幕像素即命中
    * 经连线空间索引粗筛后按路由精判，离屏或尚未绘制的连线同样可拾取
    */
   hitTestConnector(point: Point, tolerancePx = CONNECTOR_HIT_TOLERANCE_PX): Readonly<ConnectorEntity> | undefined {
     const tolerance = tolerancePx / this.session.viewport.zoom;
+    // 粗线按画出来的宽度命中：容差再加半个线宽 (粗筛按可能的最粗线宽放宽)
     const candidateIds = this.connectorSpatialIndex.search(
-      expandBounds({ left: point.x, top: point.y, right: point.x, bottom: point.y }, tolerance)
+      expandBounds({ left: point.x, top: point.y, right: point.x, bottom: point.y }, tolerance + MAX_HIT_STROKE / 2)
     );
     // 连线索引只收录有路由的连线
     for (let i = candidateIds.length - 1; i >= 0; i--) {
       const connector = this.entityStore.getConnector(candidateIds[i])!.entity;
-      if (connector.style?.strokeWidth === 0) continue;
-      if (distanceToPolyline(point, this.routes.get(connector.id)!.points) <= tolerance) return connector;
+      const route = this.routes.get(connector.id)!;
+      if (route.labels.some(({ bounds }) => isPointInBounds(point, bounds))) return connector;
+      const width = resolveConnectorStyle(connector, this.routers).strokeWidth ?? 2;
+      if (width === 0) continue;
+      if (distanceToPolyline(point, route.points) <= tolerance + width / 2) return connector;
     }
     return undefined;
+  }
+
+  /**
+   * 点中的最上层实体：节点与连线都命中时按画面层叠决定 (与渲染同一条层叠规则，见 resolveConnectorLayerPlacement)，
+   * 盖在连线上面的无关节点优先，连线所连的节点与其内部永远在连线下方
+   */
+  hitTest(point: Point): CanvasHit | null {
+    const connector = this.hitTestConnector(point);
+    const node = this.hitTestNode(point);
+    if (!connector) return node ? { kind: 'node', node } : null;
+    if (node && this.isNodeAboveConnector(node, connector)) return { kind: 'node', node };
+    return { kind: 'connector', connector };
+  }
+
+  /** 节点是否画在连线之上 */
+  private isNodeAboveConnector(node: Readonly<NodeEntity>, connector: Readonly<ConnectorEntity>): boolean {
+    const getNode = (id: string) => this.entityStore.getNode(id)?.entity as NodeEntity | undefined;
+    const { anchorNode } = resolveConnectorLayerPlacement(connector, getNode);
+    if (!anchorNode) {
+      // 两端都是自由端：连线以自身索引与根层级节点排序
+      const root = this.entityStore.getAncestorIds(node.id).at(-1);
+      const top = root === undefined ? node : getNode(root)!;
+      return compareFractionalIndex(top.zIndex, top.id, connector.zIndex, connector.id) > 0;
+    }
+    // 连线紧贴锚点上方：锚点本身及其内部都在连线下方
+    if (node.id === anchorNode.id || this.entityStore.getAncestorIds(node.id).includes(anchorNode.id)) return false;
+    return compareHierarchicalNodes(node, anchorNode, getNode) > 0;
   }
 
   /** 节点在世界坐标系中的轴对齐包围盒 (含自身与祖先旋转)；节点不存在时返回 undefined */
@@ -232,6 +297,73 @@ export class SkyNoteEngine {
   /** 连线的当前路由；悬空连线 (两端无法定位) 返回 undefined */
   getConnectorRoute(connectorId: string): ComputedRoute | undefined {
     return this.routes.get(connectorId);
+  }
+
+  /** 尚未提交的连线 (如拖拽中的预览) 的路由，与已保存连线走同一套求解 */
+  previewConnectorRoute(connector: Readonly<ConnectorRouteSource>): ComputedRoute | null {
+    return computeConnectorRoute(connector, this.resolveEndpointNode, this.routers, this.documentStore.fonts);
+  }
+
+  /** 节点的连线吸附点 (世界坐标)：轮廓上、右、下、左四点，供连线工具提示 */
+  getConnectorAnchors(nodeId: string): Point[] {
+    const resolved = this.resolveEndpointNode(nodeId);
+    if (!resolved) return [];
+    return outlineAnchors(resolved.outline).map(({ point }) => applyMatrix(resolved.worldMatrix, point.x, point.y));
+  }
+
+  /**
+   * 指针处的连线端点：靠近吸附点 → 固定在吸附点；靠近边框 → 固定在边框上最近的一点；
+   * 落在节点内部 → 浮动绑定整个节点；都不是 → 自由端
+   * @param accept 只吸附满足条件的节点 (如不连到自身所在的连线之外的东西)
+   */
+  snapConnectorEndpoint(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): ConnectorEndpointSnap {
+    const tolerance = CONNECTOR_SNAP_PX / this.session.viewport.zoom;
+    const candidates = this.nodeSpatialIndex
+      .search(expandBounds({ left: point.x, top: point.y, right: point.x, bottom: point.y }, tolerance))
+      .map((id) => this.resolveEndpointNode(id)!)
+      .filter(({ node }) => node.style?.opacity !== 0 && (!accept || accept(node)));
+
+    const fixedAt = (resolved: ResolvedEndpointNode, local: Point, kind: 'anchor' | 'outline') => {
+      const { node, worldMatrix } = resolved;
+      return {
+        endpoint: {
+          nodeId: node.id,
+          anchor: { x: node.width ? local.x / node.width : 0, y: node.height ? local.y / node.height : 0 }
+        },
+        point: applyMatrix(worldMatrix, local.x, local.y),
+        kind
+      };
+    };
+    let best: ConnectorEndpointSnap | null = null;
+    let bestDistance = tolerance;
+    for (const resolved of candidates) {
+      for (const { point: local } of outlineAnchors(resolved.outline)) {
+        const world = applyMatrix(resolved.worldMatrix, local.x, local.y);
+        const distance = Math.hypot(world.x - point.x, world.y - point.y);
+        if (distance <= bestDistance) {
+          bestDistance = distance;
+          best = fixedAt(resolved, local, 'anchor');
+        }
+      }
+    }
+    if (best) return best;
+    for (const resolved of candidates) {
+      const local = applyMatrix(invertMatrix(resolved.worldMatrix), point.x, point.y);
+      const projected = projectOntoOutline(resolved.outline, local).point;
+      const world = applyMatrix(resolved.worldMatrix, projected.x, projected.y);
+      const distance = Math.hypot(world.x - point.x, world.y - point.y);
+      if (distance <= bestDistance) {
+        bestDistance = distance;
+        best = fixedAt(resolved, projected, 'outline');
+      }
+    }
+    if (best) return best;
+    const node = this.hitTestNode(point, accept);
+    if (node) {
+      const m = this.entityStore.getWorldTransform(node.id)!;
+      return { endpoint: { nodeId: node.id }, point: applyMatrix(m, node.width / 2, node.height / 2), kind: 'node' };
+    }
+    return { endpoint: { position: { x: point.x, y: point.y } }, point: { x: point.x, y: point.y }, kind: 'free' };
   }
 
   /** 销毁引擎并释放全部插件资源 */
@@ -255,25 +387,51 @@ export class SkyNoteEngine {
 
   /** 按变更集增量维护空间索引与连线路由，只触达本次提交涉及的实体 */
   private syncDerivedState(changes: DocumentChangeSet): void {
+    const { nodes, connectors } = changes;
     // 分层索引：容器移动只更新容器自身的条目，后代无需任何处理
-    this.nodeSpatialIndex.applyChanges(changes.nodes);
-    for (const id of changes.connectors.removed) {
+    this.nodeSpatialIndex.applyChanges(nodes);
+    for (const id of connectors.removed) {
       this.connectorSpatialIndex.remove(id);
       this.routes.delete(id);
     }
     // 依附节点移动引发的路由失效已由 DocumentStore 并入 connectors.geometry
-    this.updateConnectorRoutes(changes.connectors.geometry);
+    const affected = new Set(connectors.geometry);
+    // 节点样式变化 (如描边粗细) 影响线端位置：重算连在它上面的连线
+    for (const id of nodes.data) {
+      for (const connectorId of this.entityStore.getConnectorIdsOfNode(id)) affected.add(connectorId);
+    }
+    this.updateConnectorRoutes(affected);
   }
 
-  private updateConnectorRoutes(connectorIds: Iterable<string>): void {
-    const resolveNode = (nodeId: string) => {
-      const runtimeNode = this.entityStore.getNode(nodeId);
-      return runtimeNode && { node: runtimeNode.entity, worldMatrix: this.entityStore.getWorldTransform(nodeId)! };
+  /** 连线端点所需的节点信息：世界矩阵与轮廓 */
+  private readonly resolveEndpointNode = (nodeId: string): ResolvedEndpointNode | undefined => {
+    const runtimeNode = this.entityStore.getNode(nodeId);
+    if (!runtimeNode) return undefined;
+    const node = runtimeNode.entity;
+    const definition = this.nodeTypes.get(node.nodeType);
+    return {
+      node,
+      worldMatrix: this.entityStore.getWorldTransform(nodeId)!,
+      outline: resolveNodeOutline(node, definition),
+      strokeWidth: resolveNodeStyle(node, definition).strokeWidth ?? 0
     };
+  };
+
+  private updateConnectorRoutes(connectorIds: Iterable<string>): void {
     const entries: SpatialIndexEntry[] = [];
     for (const id of connectorIds) {
       const runtimeConnector = this.entityStore.getConnector(id);
-      const route = runtimeConnector && computeConnectorRoute(runtimeConnector.entity, resolveNode, this.routers);
+      const route =
+        runtimeConnector &&
+        computeConnectorRoute(
+          runtimeConnector.entity,
+          this.resolveEndpointNode,
+          this.routers,
+          this.documentStore.fonts
+        );
+      // 重算结果与原来一致 (如只改了节点填充色)：沿用原对象，下游按引用判定不必重画
+      const previous = this.routes.get(id);
+      if (route && previous && isSameRoute(previous, route)) continue;
       if (route) {
         this.routes.set(id, route);
         entries.push([id, route.bounds]);
@@ -285,4 +443,25 @@ export class SkyNoteEngine {
     }
     this.connectorSpatialIndex.load(entries);
   }
+}
+
+/** 两次求解的路由在几何与文字排版上完全一致 */
+function isSameRoute(a: ComputedRoute, b: ComputedRoute): boolean {
+  if (a.pathData !== b.pathData || a.points.length !== b.points.length || a.labels.length !== b.labels.length) {
+    return false;
+  }
+  if (a.points.some((p, i) => p.x !== b.points[i].x || p.y !== b.points[i].y)) return false;
+  return a.labels.every((label, i) => {
+    const other = b.labels[i];
+    const [p, q] = [label.primitive, other.primitive];
+    return (
+      label.blockId === other.blockId &&
+      p.runs === q.runs &&
+      isEqual(p.style, q.style) &&
+      label.bounds.left === other.bounds.left &&
+      label.bounds.top === other.bounds.top &&
+      label.bounds.right === other.bounds.right &&
+      label.bounds.bottom === other.bounds.bottom
+    );
+  });
 }

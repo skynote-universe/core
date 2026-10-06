@@ -13,7 +13,7 @@
  */
 
 import type { CanvasDocument, CanvasMeta } from '../types/canvas';
-import type { NodeAnchor, NodeEntity } from '../types/node';
+import type { NodeEntity } from '../types/node';
 import type { ConnectorEndpoint, ConnectorEntity, ConnectorTextBlock } from '../types/connector';
 import type { TextBlock, TextSizingMode } from '../types/text';
 import type { Point } from '../types/geometry';
@@ -145,17 +145,6 @@ function connectorTextBlock(value: unknown, path: Path): ConnectorTextBlock {
   };
 }
 
-function anchor(value: unknown, path: Path): NodeAnchor {
-  const a = record(value, path);
-  return {
-    id: str(a.id, `${path}.id`, true),
-    x: num(a.x, `${path}.x`),
-    y: num(a.y, `${path}.y`),
-    ...optional(a, 'name', path, (v, p) => str(v, p)),
-    ...optional(a, 'direction', path, point)
-  };
-}
-
 function zIndex(value: unknown, path: Path): string {
   if (!isValidFractionalIndex(value)) fail(path, '层级索引不正确');
   return value;
@@ -183,18 +172,20 @@ export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
     ...list('textBlocks', textBlock),
     ...optional(n, 'style', path, plainObject),
     ...optional(n, 'textStyle', path, plainObject),
-    ...list('anchors', anchor),
     ...optional(n, 'data', path, plainObject)
   };
 }
 
 function endpoint(value: unknown, path: Path): ConnectorEndpoint {
   const e = record(value, path);
-  return {
-    ...optional(e, 'nodeId', path, (v, p) => str(v, p, true)),
-    ...optional(e, 'anchorId', path, (v, p) => str(v, p, true)),
-    ...optional(e, 'position', path, point)
-  };
+  // 端点只能是三种状态之一 (浮动、固定、自由)，混合状态会让路由无法判断以谁为准
+  if (e.nodeId !== undefined) {
+    return {
+      nodeId: str(e.nodeId, `${path}.nodeId`, true),
+      ...optional(e, 'anchor', path, point)
+    };
+  }
+  return { position: point(e.position, `${path}.position`) };
 }
 
 /** 校验单条连线实体 (只保留已知字段) */
@@ -239,6 +230,16 @@ function detachOrphans(nodes: Record<string, NodeEntity>): void {
   }
 }
 
+/** 端点所连节点不存在的连线：既画不出也选不中，留着只会成为删不掉的数据，直接丢弃 */
+function dropDanglingConnectors(connectors: Record<string, ConnectorEntity>, nodes: Record<string, NodeEntity>): void {
+  for (const [id, connector] of Object.entries(connectors)) {
+    const dangling = [connector.from, connector.to].some(
+      (end) => end.nodeId !== undefined && !Object.hasOwn(nodes, end.nodeId)
+    );
+    if (dangling) delete connectors[id];
+  }
+}
+
 function rejectInlineMedia(value: unknown): void {
   const inlineMedia = findInlineMediaUrl(value);
   if (inlineMedia) fail(inlineMedia, '内联了 data:/blob: 媒体地址，媒体必须通过资产引用');
@@ -268,11 +269,13 @@ export function parseCanvasDocument(value: unknown): ParseResult<CanvasDocument>
     const content = record(d.content, 'content');
     const nodes = entityTable(content.nodes, 'content.nodes', sanitizeNodeEntity);
     detachOrphans(nodes);
+    const connectors = entityTable(content.connectors, 'content.connectors', sanitizeConnectorEntity);
+    dropDanglingConnectors(connectors, nodes);
     const doc: CanvasDocument = {
       id: str(d.id, 'id', true),
       name: str(d.name, 'name'),
       meta,
-      content: { nodes, connectors: entityTable(content.connectors, 'content.connectors', sanitizeConnectorEntity) },
+      content: { nodes, connectors },
       ...optional(d, 'assets', '文档', plainObject),
       ...optional(d, 'resources', '文档', plainObject)
     };
@@ -291,12 +294,12 @@ export function parseNodeClipboard(json: string): ParseResult<NodeClipboardPaylo
   }
   return run(() => {
     const p = record(data, '剪贴板');
-    if (p.kind !== NODE_CLIPBOARD_KIND || p.version !== 1) fail('剪贴板', '不是画布节点数据');
+    if (p.kind !== NODE_CLIPBOARD_KIND || p.version !== 1) fail('剪贴板', '不是画布数据');
     const nodes = array(p.nodes, 'nodes').map((item, i) => sanitizeNodeEntity(item, `nodes[${i}]`));
-    if (nodes.length === 0) fail('nodes', '没有可粘贴的节点');
     const connectors = array(p.connectors, 'connectors').map((item, i) =>
       sanitizeConnectorEntity(item, `connectors[${i}]`)
     );
+    if (nodes.length === 0 && connectors.length === 0) fail('剪贴板', '没有可粘贴的内容');
     const payload: NodeClipboardPayload = { kind: NODE_CLIPBOARD_KIND, version: 1, nodes, connectors };
     rejectInlineMedia(payload);
     return payload;

@@ -75,7 +75,7 @@ describe('语义操作', () => {
     store.addNode(makeNode('card', { x: 10, y: 10, width: 20, height: 20, parentId: 'frame' }));
 
     const before = worldPoint(engine, 'card', 0, 0);
-    store.moveNodes(['card'], { x: 30 });
+    store.moveEntities({ nodeIds: ['card'] }, { x: 30 });
     const after = worldPoint(engine, 'card', 0, 0);
     expect(after.x - before.x).toBeCloseTo(30);
     expect(after.y - before.y).toBeCloseTo(0);
@@ -149,22 +149,22 @@ describe('变更集与派生状态', () => {
       id: 'c1',
       type: 'connector',
       connectorType: 'straight',
-      from: { nodeId: 'badge' },
+      from: { nodeId: 'badge', anchor: { x: 1, y: 0.5 } },
       to: { nodeId: 'outside' },
       zIndex: 'a0',
       locked: false
     };
     store.commit({ patches: [{ op: 'set', path: ['content', 'connectors', 'c1'], value: connector }] });
-    expect(engine.getConnectorRoute('c1')!.points[0]).toEqual({ x: 12, y: 12 });
+    expect(engine.getConnectorRoute('c1')!.points[0]).toEqual({ x: 14, y: 12 });
 
     let changes: DocumentChangeSet | null = null;
     store.subscribe((_view, _record, c) => (changes = c));
-    store.moveNodes(['frame'], { x: 100 });
+    store.moveEntities({ nodeIds: ['frame'] }, { x: 100 });
 
     expect([...changes!.nodes.geometry]).toEqual(['frame']);
     expect([...changes!.nodes.worldGeometry].sort()).toEqual(['badge', 'card', 'frame']);
     expect(changes!.connectors.geometry.has('c1')).toBe(true);
-    expect(engine.getConnectorRoute('c1')!.points[0]).toEqual({ x: 112, y: 12 });
+    expect(engine.getConnectorRoute('c1')!.points[0]).toEqual({ x: 114, y: 12 });
   });
 
   it('远端删除容器而未删除子节点时，子节点回落到根层级，世界几何与空间索引随之更新', () => {
@@ -268,7 +268,7 @@ describe('创建副本 (duplicateNodes)', () => {
     });
     const before = engine.getNodeWorldBounds('frame')!;
 
-    const [copyId] = store.duplicateNodes(['frame', 'a'], { x: 20, y: 30 });
+    const [copyId] = store.duplicateEntities({ nodeIds: ['frame', 'a'] }, { x: 20, y: 30 }).nodeIds;
     const copy = store.getNode(copyId)!;
     const after = engine.getNodeWorldBounds(copyId)!;
     expect(after.left).toBeCloseTo(before.left + 20);

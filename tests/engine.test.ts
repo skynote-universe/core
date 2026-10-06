@@ -196,7 +196,7 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     expect(hits).toContain('plugin_node_1');
 
     // 移动节点
-    engine.documentStore.moveNodes(['plugin_node_1'], { x: 300, y: 300 });
+    engine.documentStore.moveEntities({ nodeIds: ['plugin_node_1'] }, { x: 300, y: 300 });
     // 原位置不再命中
     expect(engine.spatialIndex.hitTest({ x: 250, y: 240 })).not.toContain('plugin_node_1');
     // 新位置 [500, 500] 命中
@@ -353,8 +353,9 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
 
     // 1. 测试内置直线路由
     const straightResult = engine.routers.get('straight').route({
-      startPoint: { x: 0, y: 0 },
-      endPoint: { x: 100, y: 100 }
+      start: { point: { x: 0, y: 0 } },
+      end: { point: { x: 100, y: 100 } },
+      style: {}
     });
     expect(straightResult.points).toEqual([
       { x: 0, y: 0 },
@@ -363,21 +364,20 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
 
     // 2. 测试内置贝塞尔曲线路由
     const curvedResult = engine.routers.get('curved').route({
-      startPoint: { x: 0, y: 0 },
-      endPoint: { x: 200, y: 100 },
-      startDirection: 'right',
-      endDirection: 'left'
+      start: { point: { x: 0, y: 0 }, direction: { x: 1, y: 0 } },
+      end: { point: { x: 200, y: 100 }, direction: { x: -1, y: 0 } },
+      style: {}
     });
-    expect(curvedResult.points.length).toBe(4);
+    // 输出曲线采样点：首尾即两端点
+    expect(curvedResult.points[0]).toEqual({ x: 0, y: 0 });
+    expect(curvedResult.points[curvedResult.points.length - 1]).toEqual({ x: 200, y: 100 });
     expect(curvedResult.pathData).toBeDefined();
     expect(curvedResult.pathData?.startsWith('M 0 0 C')).toBe(true);
 
     // 3. 测试内置正交折线路由 (含圆角 cornerRadius 自动切角计算)
     const orthoResult = engine.routers.get('orthogonal').route({
-      startPoint: { x: 0, y: 0 },
-      endPoint: { x: 100, y: 100 },
-      startDirection: 'right',
-      endDirection: 'right',
+      start: { point: { x: 0, y: 0 }, direction: { x: 1, y: 0 } },
+      end: { point: { x: 100, y: 100 }, direction: { x: -1, y: 0 } },
       style: { cornerRadius: 8 }
     });
     expect(orthoResult.points.length).toBe(4);
@@ -396,11 +396,11 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
           label: '思维导图分支',
           route: (input) => ({
             points: [
-              input.startPoint,
-              { x: (input.startPoint.x + input.endPoint.x) / 2, y: input.startPoint.y },
-              input.endPoint
+              input.start.point,
+              { x: (input.start.point.x + input.end.point.x) / 2, y: input.start.point.y },
+              input.end.point
             ],
-            pathData: `M ${input.startPoint.x} ${input.startPoint.y} Q ...`
+            pathData: `M ${input.start.point.x} ${input.start.point.y} Q ...`
           })
         });
       }
@@ -410,8 +410,9 @@ describe('SkyNoteEngine 顶层闭环联动', () => {
     expect(engine.routers.has('mindmap:branch')).toBe(true);
 
     const mindmapResult = engine.routers.get('mindmap:branch').route({
-      startPoint: { x: 10, y: 10 },
-      endPoint: { x: 90, y: 50 }
+      start: { point: { x: 10, y: 10 } },
+      end: { point: { x: 90, y: 50 } },
+      style: {}
     });
     expect(mindmapResult.points[1]).toEqual({ x: 50, y: 10 });
 

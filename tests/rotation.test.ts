@@ -6,7 +6,8 @@
 import type { RotatableBox } from '../src/types/geometry';
 import { describe, it, expect } from 'vitest';
 import { applyMatrix, computeNodeLocalMatrix, computeNodeWorldBounds } from '../src/utils/geometry';
-import { resolveConnectorEndpoint } from '../src/routing/connector-route';
+import { resolveConnectorEnds } from '../src/routing/connector-route';
+import { resolveNodeOutline } from '../src/routing/outline';
 import { SkyNoteEngine } from '../src/engine';
 import type { NodeEntity } from '../src/types/node';
 
@@ -59,17 +60,25 @@ describe('绕中心旋转的几何', () => {
       ...box,
       rotation: 90,
       zIndex: 'a0',
-      locked: false,
-      anchors: [{ id: 'right', x: 1, y: 0.5 }]
+      locked: false
     } as NodeEntity;
 
-    const resolved = { node, worldMatrix: computeNodeLocalMatrix(node) };
-    const right = resolveConnectorEndpoint({ nodeId: 'n', anchorId: 'right' }, resolved)!;
-    expect(right.x).toBeCloseTo(200);
-    expect(right.y).toBeCloseTo(250);
-    const center = resolveConnectorEndpoint({ nodeId: 'n' }, resolved)!;
-    expect(center.x).toBeCloseTo(200);
-    expect(center.y).toBeCloseTo(150);
+    const resolved = {
+      node,
+      worldMatrix: computeNodeLocalMatrix(node),
+      outline: resolveNodeOutline(node, undefined),
+      strokeWidth: 0
+    };
+    // 右边中点旋转 90° 后朝下，出线方向随之朝下
+    const [right] = resolveConnectorEnds(
+      { from: { nodeId: 'n', anchor: { x: 1, y: 0.5 } }, to: { position: { x: 0, y: 0 } } },
+      () => resolved,
+      'side'
+    )!;
+    expect(right.point.x).toBeCloseTo(200);
+    expect(right.point.y).toBeCloseTo(250);
+    expect(right.direction!.x).toBeCloseTo(0);
+    expect(right.direction!.y).toBeCloseTo(1);
   });
 
   it('引擎空间索引使用旋转后的外接矩形，旋转属于几何变更', () => {

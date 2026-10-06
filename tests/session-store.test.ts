@@ -168,7 +168,7 @@ describe('视口命令', () => {
     expect(x + 2000 * zoom).toBeCloseTo(500);
     expect(y + 1000 * zoom).toBeCloseTo(400);
 
-    documentStore.removeNodes(['a', 'b']);
+    documentStore.removeEntities({ nodeIds: ['a', 'b'] });
     documentStore.addNode(node('small', 0, 0, 10, 10));
     session.fitBounds(spatialIndex.getContentBounds());
     expect(session.viewport.zoom).toBe(1);

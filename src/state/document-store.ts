@@ -9,10 +9,17 @@
  * 4. 文本驱动的自动尺寸：注入字体测量器后，本地事务中的文本或宽度变更在同一事务内派生尺寸补丁，撤销时一并回退。
  */
 
-import type { CanvasContent, CanvasDocument, CanvasDocumentView, FractionalIndex } from '../types/canvas';
+import type {
+  CanvasContent,
+  CanvasDocument,
+  CanvasDocumentView,
+  EntityIds,
+  EntityRefs,
+  FractionalIndex
+} from '../types/canvas';
 import type { NodeEntity } from '../types/node';
-import type { Point } from '../types/geometry';
-import type { ConnectorEntity } from '../types/connector';
+import type { Matrix2D, Point } from '../types/geometry';
+import type { ConnectorEndpoint, ConnectorEntity, ConnectorStyle } from '../types/connector';
 import type {
   CanvasHistoryEntry,
   CanvasOperationRecord,
@@ -43,6 +50,7 @@ import {
 import { generateKeyBetween, generateNKeysBetween } from '../utils/fractional-index';
 import { areStructuredValuesEqual } from '../utils/equality';
 import {
+  applyMatrix,
   applyMatrixToVector,
   computeFrameMatrix,
   computeNodeWorldBounds,
@@ -65,8 +73,18 @@ export function createEmptyCanvasDocument(id = 'doc_root', name = '未命名画�
 }
 
 const NODE_GEOM_FIELDS: ReadonlySet<string | number> = new Set(['x', 'y', 'width', 'height', 'rotation']);
-/** style 中的 curveType / cornerRadius / padding 会改变路由形状，因此连线样式同时视为几何变更 */
-const CONNECTOR_GEOM_FIELDS: ReadonlySet<string | number> = new Set(['from', 'to', 'controlPoints', 'style']);
+/**
+ * 线型决定路由器；style 中的 cornerRadius / padding 会改变路由形状；文字的排版与路由一起求解 (占据范围随之变化)，
+ * 因此这些都视为几何变更
+ */
+const CONNECTOR_GEOM_FIELDS: ReadonlySet<string | number> = new Set([
+  'connectorType',
+  'textBlocks',
+  'from',
+  'to',
+  'controlPoints',
+  'style'
+]);
 const NODE_ORDER_FIELDS: ReadonlySet<string | number> = new Set(['zIndex', 'parentId']);
 const CONNECTOR_ORDER_FIELDS: ReadonlySet<string | number> = new Set(['zIndex', 'from', 'to']);
 const LAYER_MOVE_LABELS: Record<LayerMove, string> = {
@@ -82,6 +100,19 @@ export interface NodeTransform {
   frame: WorldFrame;
   /** 节点类型 applyResize 的结果 (如文本尺寸模式、字号)，与外框一并提交 */
   fields?: Partial<NodeEntity>;
+}
+
+/** 新建连线的请求 */
+export interface CreateConnectorRequest {
+  from: ConnectorEndpoint;
+  to: ConnectorEndpoint;
+  /** 线型 (路由器 id)，缺省为折线 */
+  connectorType?: string;
+  style?: ConnectorStyle;
+  /** 缺省时自动生成 */
+  id?: string;
+  /** 撤销记录名称 */
+  label?: string;
 }
 
 /** 节点子树快照 (实体均为深拷贝)：创建副本与剪贴板共用 */
@@ -117,17 +148,19 @@ export type DocumentApi = Pick<
   | 'updateNode'
   | 'updateNodes'
   | 'updateConnector'
-  | 'moveNodes'
+  | 'updateConnectors'
+  | 'createConnector'
+  | 'moveEntities'
   | 'transformNodes'
   | 'resizeNodes'
   | 'rotateNodes'
   | 'setAspectLocked'
   | 'fitContent'
   | 'canFitContent'
-  | 'removeNodes'
-  | 'duplicateNodes'
-  | 'copyNodes'
-  | 'pasteNodes'
+  | 'removeEntities'
+  | 'duplicateEntities'
+  | 'copyEntities'
+  | 'pasteEntities'
   | 'reparentNodes'
   | 'moveLayers'
   | 'batch'
@@ -149,6 +182,11 @@ export interface DocumentStoreOptions {
   nodeTypes?: NodeTypeRegistry;
   /** 字体测量器 (渲染适配层提供)，缺省时不做文本驱动的自动尺寸 */
   fonts?: FontMeasurer;
+  /**
+   * 连线两端当前的世界坐标 (由引擎按路由提供)：单独复制连线而不带所连节点时，
+   * 断开的一端改为自由端并停在原位
+   */
+  connectorEnds?: (connectorId: string) => readonly [Point, Point] | undefined;
 }
 
 interface MutableEntityChanges extends EntityChanges {
@@ -189,6 +227,7 @@ export class DocumentStore {
   private readonly coordinator: OperationCoordinator<CanvasDocument>;
   private readonly subscribers = new Set<DocumentSubscriber>();
   private fontMeasurer: FontMeasurer | null = null;
+  private readonly connectorEnds: (connectorId: string) => readonly [Point, Point] | undefined;
 
   constructor(initialDoc?: CanvasDocument, options?: DocumentStoreOptions) {
     // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
@@ -203,6 +242,7 @@ export class DocumentStore {
     if (violation) throw new Error(`[DocumentStore] 文档非法：${violation}`);
 
     this.nodeTypes = options?.nodeTypes ?? new NodeTypeRegistry();
+    this.connectorEnds = options?.connectorEnds ?? (() => undefined);
     this.coordinator = new OperationCoordinator(this.document);
     const { nodes, connectors } = this.document.content;
     for (const id in nodes) this.entities.syncNode(id, nodes[id]);
@@ -361,7 +401,7 @@ export class DocumentStore {
     });
   }
 
-  /** 更新节点字段：style / data 默认浅合并，其余字段直接覆盖；id 与 type 不可修改 */
+  /** 更新节点字段：style / data 默认浅合并，其余字段直接覆盖，值为 undefined 时删除该字段；id 与 type 不可修改 */
   updateNode(
     nodeId: string,
     partial: Partial<NodeEntity>,
@@ -391,19 +431,60 @@ export class DocumentStore {
     return this.updateEntities('connectors', [connectorId], partial, { label: '更新连线属性', ...options });
   }
 
+  /** 批量写入连线字段，规则同 updateNodes */
+  updateConnectors(
+    connectorIds: Iterable<string>,
+    fields: Partial<ConnectorEntity> | ((connector: Readonly<ConnectorEntity>) => Partial<ConnectorEntity>),
+    options?: CommandOptions & { merge?: boolean }
+  ): CanvasOperationRecord | null {
+    return this.updateEntities('connectors', connectorIds, fields, { label: '更新连线属性', ...options });
+  }
+
   /**
-   * 删除节点 (支持多选)：同一事务内级联删除全部后代 (容器语义) 与这些节点上的依附连线，撤销一步整体恢复
+   * 新建连线：置于两端节点已有连线之上 (连线紧贴较高一端节点下方，ADR-114)
+   * @returns 新连线 id；端点引用的节点不存在或提交被拒绝时返回 null
+   */
+  createConnector(request: CreateConnectorRequest): string | null {
+    const { nodes, connectors } = this.document.content;
+    const endpointNodes = [request.from.nodeId, request.to.nodeId].filter((id) => id !== undefined);
+    if (endpointNodes.some((id) => !Object.hasOwn(nodes, id))) return null;
+    let top: FractionalIndex | null = null;
+    for (const nodeId of endpointNodes) {
+      for (const id of this.entities.getConnectorIdsOfNode(nodeId)) {
+        if (top === null || connectors[id].zIndex > top) top = connectors[id].zIndex;
+      }
+    }
+    const connector: ConnectorEntity = {
+      id: request.id ?? generateId('connector'),
+      type: 'connector',
+      connectorType: request.connectorType ?? 'orthogonal',
+      from: request.from,
+      to: request.to,
+      zIndex: generateKeyBetween(top, null),
+      locked: false,
+      ...(request.style && { style: request.style })
+    };
+    const record = this.commit({
+      label: request.label ?? '添加连线',
+      patches: [{ op: 'set', path: ['content', 'connectors', connector.id], value: connector }]
+    });
+    return record ? connector.id : null;
+  }
+
+  /**
+   * 删除节点与连线 (支持多选)：同一事务内级联删除节点的全部后代 (容器语义) 与依附连线，撤销一步整体恢复
    * 选区中的失效项由引擎在收到变更集后统一剔除，本地删除与远端删除走同一条路径
    */
-  removeNodes(nodeIds: Iterable<string>, options?: CommandOptions): CanvasOperationRecord | null {
+  removeEntities(refs: EntityRefs, options?: CommandOptions): CanvasOperationRecord | null {
     const removed = new Set<string>();
-    for (const id of this.collectTopmost(nodeIds)) {
+    for (const id of this.collectTopmost(refs.nodeIds ?? [])) {
       removed.add(id);
       for (const descendantId of this.entities.collectDescendantIds(id)) removed.add(descendantId);
     }
-    if (removed.size === 0) return null;
-
     const connectorIds = new Set<string>();
+    for (const id of refs.connectorIds ?? []) {
+      if (this.entities.getConnector(id)) connectorIds.add(id);
+    }
     const patches: CanvasPatch[] = [];
     for (const id of removed) {
       patches.push({ op: 'unset', path: ['content', 'nodes', id] });
@@ -412,29 +493,30 @@ export class DocumentStore {
     for (const connectorId of connectorIds) {
       patches.push({ op: 'unset', path: ['content', 'connectors', connectorId] });
     }
-    return this.commit({ ...options, label: options?.label ?? '删除节点', patches });
+    if (patches.length === 0) return null;
+    return this.commit({ ...options, label: options?.label ?? '删除', patches });
   }
 
   /**
-   * 创建副本 (支持多选)：最顶层选中节点连同全部后代一起复制，两端都在副本内的连线一并复制并改接到副本；
+   * 创建副本 (支持多选)：最顶层选中节点连同全部后代一起复制，所连节点都在副本内的连线与选中的连线一并复制；
    * 副本留在原容器中，按世界位移 offset 偏移、置于容器最上层并保持原相对层级，一步撤销
-   * @returns 副本中最顶层节点的 id；提交被拒绝时为空
+   * @returns 副本中最顶层节点与连线的 id；提交被拒绝时为空
    */
-  duplicateNodes(nodeIds: Iterable<string>, offset: Point, options?: CommandOptions): string[] {
-    return this.insertSubtrees(this.collectSubtrees(nodeIds, false), offset, {
+  duplicateEntities(refs: EntityRefs, offset: Point, options?: CommandOptions): EntityIds {
+    return this.insertSubtrees(this.collectSubtrees(refs, false), offset, {
       ...options,
       label: options?.label ?? '创建副本'
     });
   }
 
   /**
-   * 复制到剪贴板的数据 (支持多选)：最顶层节点连同全部后代与内部连线；最顶层换算为根层级的世界位姿，
+   * 复制到剪贴板的数据 (支持多选)：最顶层节点连同全部后代与连线；最顶层换算为根层级的世界位姿，
    * 粘贴到任何位置 (包括另一个标签页) 时外观不变
-   * @returns 没有可复制的节点时为 null
+   * @returns 没有可复制的内容时为 null
    */
-  copyNodes(nodeIds: Iterable<string>): NodeClipboardPayload | null {
-    const subtrees = this.collectSubtrees(nodeIds, true);
-    if (subtrees.topmost.length === 0) return null;
+  copyEntities(refs: EntityRefs): NodeClipboardPayload | null {
+    const subtrees = this.collectSubtrees(refs, true);
+    if (subtrees.topmost.length === 0 && subtrees.connectors.length === 0) return null;
     return {
       kind: NODE_CLIPBOARD_KIND,
       version: 1,
@@ -444,11 +526,11 @@ export class DocumentStore {
   }
 
   /**
-   * 粘贴剪贴板中的节点 (数据须先经 parseNodeClipboard 校验)：全部换新 id，放在根层级最上方，
+   * 粘贴剪贴板中的节点与连线 (数据须先经 parseNodeClipboard 校验)：全部换新 id，放在根层级最上方，
    * 按世界位移 offset 偏移，一步撤销
-   * @returns 粘贴出的最顶层节点 id；提交被拒绝时为空
+   * @returns 粘贴出的最顶层节点与连线 id；提交被拒绝时为空
    */
-  pasteNodes(payload: NodeClipboardPayload, offset: Point, options?: CommandOptions): string[] {
+  pasteEntities(payload: NodeClipboardPayload, offset: Point, options?: CommandOptions): EntityIds {
     const ids = new Set(payload.nodes.map((node) => node.id));
     const isTopmost = (node: NodeEntity) => node.parentId === undefined || !ids.has(node.parentId);
     const topmost = payload.nodes.filter(isTopmost).map(({ parentId: _parentId, ...node }) => node);
@@ -472,28 +554,58 @@ export class DocumentStore {
   }
 
   /**
-   * 移动节点 (支持多选)：delta 为世界坐标位移，只改最顶层选中节点，后代坐标相对容器，不产生补丁 (ADR-114)
-   * 父容器旋转时把世界位移换算为父容器局部位移；高频拖拽通过 groupId 折叠为一步撤销
+   * 移动节点与连线 (支持多选)：delta 为世界坐标位移，只改最顶层选中节点，后代坐标相对容器，不产生补丁 (ADR-114)；
+   * 父容器旋转时把世界位移换算为父容器局部位移。连线的自由端与手动拐点是世界坐标，随之平移的有：
+   * 选中的连线，以及两端都连在移动范围内节点上的连线 (一起移动的流程图，拐点保持相对位置)；
+   * 一端是自由端的连线只在选中时平移。
+   * 高频拖拽通过 groupId 折叠为一步撤销
    */
-  moveNodes(
-    nodeIds: Iterable<string>,
+  moveEntities(
+    refs: EntityRefs,
     delta: { x?: number; y?: number },
     options?: CommandOptions
   ): CanvasOperationRecord | null {
     const dx = delta.x ?? 0;
     const dy = delta.y ?? 0;
     if (!dx && !dy) return null;
-    const { nodes } = this.document.content;
+    const { nodes, connectors } = this.document.content;
     const patches: CanvasPatch[] = [];
-    for (const id of this.collectTopmost(nodeIds)) {
+    const moved = new Set<string>();
+    for (const id of this.collectTopmost(refs.nodeIds ?? [])) {
       const node = nodes[id];
       const parentMatrix = node.parentId === undefined ? undefined : this.entities.getWorldTransform(node.parentId);
       const local = parentMatrix ? applyMatrixToVector(invertMatrix(parentMatrix), dx, dy) : { x: dx, y: dy };
       if (local.x) patches.push({ op: 'set', path: ['content', 'nodes', id, 'x'], value: node.x + local.x });
       if (local.y) patches.push({ op: 'set', path: ['content', 'nodes', id, 'y'], value: node.y + local.y });
+      moved.add(id);
+      for (const descendantId of this.entities.collectDescendantIds(id)) moved.add(descendantId);
+    }
+
+    const carried = new Set<string>();
+    for (const id of refs.connectorIds ?? []) {
+      if (Object.hasOwn(connectors, id)) carried.add(id);
+    }
+    // 只带上两端都连在移动范围内的连线：一端是自由端的连线没选中时，自由端留在原处 (与 FigJam、Miro 一致)
+    const inside = (end: ConnectorEndpoint) => end.nodeId !== undefined && moved.has(end.nodeId);
+    for (const id of moved) {
+      for (const connectorId of this.entities.getConnectorIdsOfNode(id)) {
+        const c = connectors[connectorId];
+        if (inside(c.from) && inside(c.to)) carried.add(connectorId);
+      }
+    }
+    const shift = (p: Point): Point => ({ x: p.x + dx, y: p.y + dy });
+    for (const id of carried) {
+      const c = connectors[id];
+      const path = ['content', 'connectors', id];
+      if (c.from.position)
+        patches.push({ op: 'set', path: [...path, 'from'], value: { position: shift(c.from.position) } });
+      if (c.to.position) patches.push({ op: 'set', path: [...path, 'to'], value: { position: shift(c.to.position) } });
+      if (c.controlPoints) {
+        patches.push({ op: 'set', path: [...path, 'controlPoints'], value: c.controlPoints.map(shift) });
+      }
     }
     if (patches.length === 0) return null;
-    return this.commit({ ...options, label: options?.label ?? '移动节点', patches });
+    return this.commit({ ...options, label: options?.label ?? '移动', patches });
   }
 
   /**
@@ -503,6 +615,7 @@ export class DocumentStore {
   transformNodes(transforms: readonly NodeTransform[], options?: CommandOptions): CanvasOperationRecord | null {
     const { nodes } = this.document.content;
     const patches: CanvasPatch[] = [];
+    const carried = new Set<string>();
     for (const { id, frame, fields } of transforms) {
       if (!Object.hasOwn(nodes, id)) continue;
       const node = nodes[id];
@@ -516,9 +629,35 @@ export class DocumentStore {
         if (areStructuredValuesEqual(node[key as keyof NodeEntity], value)) continue;
         patches.push({ op: 'set', path: ['content', 'nodes', id, key], value });
       }
+      // 容器内的连线随后代一起移动旋转：自由端与手动拐点是世界坐标，按容器自身坐标系的变化一并换算
+      const delta = multiplyMatrix(world, invertMatrix(this.entities.getWorldTransform(id)!));
+      this.carryConnectors([id, ...this.entities.collectDescendantIds(id)], delta, carried, patches);
     }
     if (patches.length === 0) return null;
     return this.commit({ ...options, label: options?.label ?? '变换节点', patches });
+  }
+
+  /**
+   * 两端都连在 subtree 内节点上的连线：手动拐点按矩阵 m 换算 (每条连线只处理一次)
+   * @param carried 本次事务已处理的连线
+   */
+  private carryConnectors(subtree: readonly string[], m: Matrix2D, carried: Set<string>, patches: CanvasPatch[]): void {
+    const { connectors } = this.document.content;
+    const inside = new Set(subtree);
+    const contains = (end: ConnectorEndpoint) => end.nodeId !== undefined && inside.has(end.nodeId);
+    const map = (p: Point): Point => applyMatrix(m, p.x, p.y);
+    for (const nodeId of subtree) {
+      for (const id of this.entities.getConnectorIdsOfNode(nodeId)) {
+        const c = connectors[id];
+        if (carried.has(id) || !c.controlPoints || !contains(c.from) || !contains(c.to)) continue;
+        carried.add(id);
+        patches.push({
+          op: 'set',
+          path: ['content', 'connectors', id, 'controlPoints'],
+          value: c.controlPoints.map(map)
+        });
+      }
+    }
   }
 
   /**
@@ -740,8 +879,14 @@ export class DocumentStore {
       for (const [key, value] of Object.entries(partial)) {
         // 主键与实体类别不可修改
         if (key === 'id' || key === 'type') continue;
+        const path = ['content', collection, id, key];
+        // 显式传 undefined 表示去掉该字段 (如清除手动拐点恢复自动路由)，而不是留下值为 undefined 的键
+        if (value === undefined) {
+          if (Object.hasOwn(entities[id], key)) patches.push({ op: 'unset', path });
+          continue;
+        }
         const mergeable = merge && (key === 'style' || key === 'data') && typeof value === 'object' && value !== null;
-        patches.push({ op: 'set', path: ['content', collection, id, key], value, ...(mergeable && { merge: true }) });
+        patches.push({ op: 'set', path, value, ...(mergeable && { merge: true }) });
       }
     }
     if (patches.length === 0) return null;
@@ -749,19 +894,17 @@ export class DocumentStore {
   }
 
   /**
-   * 过滤出「祖先不在集合中」的节点：后代坐标相对容器，随容器一起移动、改挂或删除；
-   * 否则同时选中容器与其子节点时，子节点会被重复处理
-   */
-  /**
-   * 选中节点的子树快照 (深拷贝)：最顶层节点按层叠顺序排列、全部后代、两端都在其中的连线
+   * 选中实体的子树快照 (深拷贝)：最顶层节点按层叠顺序排列、全部后代，以及连线——
+   * 所连节点都在其中的连线 (另一端可以是自由端) 与选中的连线；选中连线所连的节点不在其中时，
+   * 断开的一端改为停在原位的自由端
    * @param toWorld 最顶层节点换算为根层级的世界位姿并去掉 parentId (剪贴板)；否则保留所在容器 (创建副本)
    */
-  private collectSubtrees(nodeIds: Iterable<string>, toWorld: boolean): Subtrees {
+  private collectSubtrees(refs: EntityRefs, toWorld: boolean): Subtrees {
     const { nodes, connectors } = this.document.content;
     const getNode = (id: string): Readonly<NodeEntity> | undefined =>
       Object.hasOwn(nodes, id) ? nodes[id] : undefined;
     const chainCache = new Map<string, Readonly<NodeEntity>[]>();
-    const topIds = this.collectTopmost(nodeIds).sort((a, b) =>
+    const topIds = this.collectTopmost(refs.nodeIds ?? []).sort((a, b) =>
       compareHierarchicalNodes(nodes[a], nodes[b], getNode, chainCache)
     );
     const topmost = topIds.map((id) => {
@@ -774,27 +917,38 @@ export class DocumentStore {
       this.entities.collectDescendantIds(id).map((descendantId) => clonePlainData(nodes[descendantId]) as NodeEntity)
     );
     const included = new Set([...topIds, ...descendants.map((node) => node.id)]);
-    const connectorIds = new Set<string>();
+    const isInside = (end: ConnectorEndpoint) => end.nodeId === undefined || included.has(end.nodeId);
+
+    const picked = new Map<string, ConnectorEntity>();
     for (const id of included) {
-      for (const connectorId of this.entities.getConnectorIdsOfNode(id)) connectorIds.add(connectorId);
+      for (const connectorId of this.entities.getConnectorIdsOfNode(id)) {
+        const c = connectors[connectorId];
+        if (isInside(c.from) && isInside(c.to)) picked.set(connectorId, clonePlainData(c) as ConnectorEntity);
+      }
     }
-    const internal = [...connectorIds]
-      .map((id) => connectors[id])
-      .filter((c) => c.from.nodeId !== undefined && c.to.nodeId !== undefined)
-      .filter((c) => included.has(c.from.nodeId!) && included.has(c.to.nodeId!))
-      .map((c) => clonePlainData(c) as ConnectorEntity);
-    return { topmost, descendants, connectors: internal };
+    for (const id of refs.connectorIds ?? []) {
+      if (picked.has(id) || !this.entities.getConnector(id)) continue;
+      const ends = this.connectorEnds(id);
+      // 悬空连线没有可落脚的位置，不复制
+      if (!ends) continue;
+      const c = clonePlainData(connectors[id]) as ConnectorEntity;
+      picked.set(id, {
+        ...c,
+        from: isInside(c.from) ? c.from : { position: { x: ends[0].x, y: ends[0].y } },
+        to: isInside(c.to) ? c.to : { position: { x: ends[1].x, y: ends[1].y } }
+      });
+    }
+    return { topmost, descendants, connectors: [...picked.values()] };
   }
 
   /**
    * 把子树快照写入文档：全部换新 id；最顶层放进各自容器 (不存在时为根层级) 最上方并按世界位移偏移，
-   * 后代与连线改接到新 id；连线控制点是世界坐标，随之偏移
+   * 后代与连线改接到新 id；自由端与手动拐点是世界坐标，随之偏移
    */
-  private insertSubtrees(subtrees: Subtrees, offset: Point, options: CommandOptions): string[] {
+  private insertSubtrees(subtrees: Subtrees, offset: Point, options: CommandOptions): EntityIds {
     const { nodes } = this.document.content;
     const idMap = new Map<string, string>();
     for (const node of [...subtrees.topmost, ...subtrees.descendants]) idMap.set(node.id, generateId('node'));
-    if (subtrees.topmost.length === 0) return [];
 
     const patches: CanvasPatch[] = [];
     const topKeys = new Map<string | undefined, FractionalIndex | null>();
@@ -819,26 +973,39 @@ export class DocumentStore {
       const copy = { ...node, id: idMap.get(node.id)!, parentId: idMap.get(node.parentId!)! };
       patches.push({ op: 'set', path: ['content', 'nodes', copy.id], value: copy });
     }
+    const shift = (p: Point): Point => ({ x: p.x + offset.x, y: p.y + offset.y });
+    // 剪贴板是外部数据：所连节点不在数据中的连线跳过
+    const remap = (end: ConnectorEndpoint): ConnectorEndpoint | null => {
+      if (end.nodeId === undefined) return { position: shift(end.position!) };
+      const nodeId = idMap.get(end.nodeId);
+      return nodeId ? { ...end, nodeId } : null;
+    };
+    const connectorIds: string[] = [];
     for (const connector of subtrees.connectors) {
-      const from = connector.from.nodeId && idMap.get(connector.from.nodeId);
-      const to = connector.to.nodeId && idMap.get(connector.to.nodeId);
+      const from = remap(connector.from);
+      const to = remap(connector.to);
       if (!from || !to) continue;
       const copy: ConnectorEntity = {
         ...connector,
         id: generateId('connector'),
-        from: { ...connector.from, nodeId: from },
-        to: { ...connector.to, nodeId: to },
-        ...(connector.controlPoints && {
-          controlPoints: connector.controlPoints.map((p) => ({ x: p.x + offset.x, y: p.y + offset.y }))
-        })
+        from,
+        to,
+        ...(connector.controlPoints && { controlPoints: connector.controlPoints.map(shift) })
       };
+      connectorIds.push(copy.id);
       patches.push({ op: 'set', path: ['content', 'connectors', copy.id], value: copy });
     }
 
+    const empty: EntityIds = { nodeIds: [], connectorIds: [] };
+    if (patches.length === 0) return empty;
     const record = this.commit({ ...options, patches });
-    return record ? subtrees.topmost.map((node) => idMap.get(node.id)!) : [];
+    return record ? { nodeIds: subtrees.topmost.map((node) => idMap.get(node.id)!), connectorIds } : empty;
   }
 
+  /**
+   * 过滤出「祖先不在集合中」的节点：后代坐标相对容器，随容器一起移动、改挂或删除；
+   * 否则同时选中容器与其子节点时，子节点会被重复处理
+   */
   private collectTopmost(nodeIds: Iterable<string>): string[] {
     const selected = new Set<string>();
     for (const id of nodeIds) {

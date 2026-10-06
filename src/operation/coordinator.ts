@@ -22,7 +22,7 @@ import type {
   CanvasPatch
 } from '../types/operation';
 import { applyPatches } from './patch-applier';
-import { getValueByPath } from './patch-path';
+import { getValueByPath, normalizePatchPath } from './patch-path';
 import { OverwriteCompactor } from './overwrite-compactor';
 import { isEqual } from '../utils/equality';
 import { generateId } from '../utils/id';
@@ -301,7 +301,13 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
         inversePatches: state.inverse.toArray()
       };
 
-      this.undoStack[this.undoStack.length - 1] = mergedEntry;
+      // 同组改动回到了组开始前的状态 (如新建空文字后什么都没输入就移除)：不留下撤销后毫无变化的空步骤
+      if (isNetNoOp(mergedEntry)) {
+        this.undoStack.pop();
+        this.groupCompaction = null;
+      } else {
+        this.undoStack[this.undoStack.length - 1] = mergedEntry;
+      }
     } else {
       const entry: CanvasHistoryEntry = {
         id: record.id,
@@ -345,4 +351,23 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       }
     }
   }
+}
+
+/**
+ * 合并后的条目是否没有净效果：每个路径最终的正向值都等于逆向补丁记下的原值
+ * 只判断整体覆盖与删除 (set / unset)；含合并写入或数组切片时保守视为有效果
+ */
+function isNetNoOp(entry: CanvasHistoryEntry): boolean {
+  const original = new Map<string, CanvasPatch>();
+  for (const patch of entry.inversePatches) {
+    if ((patch.op !== 'set' && patch.op !== 'unset') || (patch.op === 'set' && patch.merge)) return false;
+    original.set(JSON.stringify(normalizePatchPath(patch.path)), patch);
+  }
+  return entry.patches.every((patch) => {
+    if ((patch.op !== 'set' && patch.op !== 'unset') || (patch.op === 'set' && patch.merge)) return false;
+    const before = original.get(JSON.stringify(normalizePatchPath(patch.path)));
+    if (!before) return false;
+    if (patch.op === 'unset') return before.op === 'unset';
+    return before.op === 'set' && isEqual(patch.value, before.value);
+  });
 }

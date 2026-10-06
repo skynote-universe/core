@@ -95,7 +95,7 @@ export type NodeCreateContent<TData = Record<string, unknown>, TStyle extends No
   NodeEntity<TData, TStyle>,
   'width' | 'height'
 > &
-  Partial<Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'anchors' | 'data'>>;
+  Partial<Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'data'>>;
 
 /**
  * 各节点类型的新建选项表：节点插件以模块扩充登记，createNode 据 nodeType 推导 options 的类型

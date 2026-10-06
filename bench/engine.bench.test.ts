@@ -53,9 +53,9 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
   const store = engine.documentStore;
 
   it('拖拽单节点 (groupId 折叠)', () => {
-    expect(measure('拖拽单节点', () => store.moveNodes(['n100'], { x: 1 }, { groupId: 'drag' }))).toBeLessThan(
-      BUDGET_MS_PER_COMMIT
-    );
+    expect(
+      measure('拖拽单节点', () => store.moveEntities({ nodeIds: ['n100'] }, { x: 1 }, { groupId: 'drag' }))
+    ).toBeLessThan(BUDGET_MS_PER_COMMIT);
   });
 
   it('修改单节点样式', () => {
@@ -69,7 +69,7 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     const frames: number[] = [];
     for (let f = 0; f < 60; f++) {
       const start = performance.now();
-      store.moveNodes(ids, { x: 1, y: 1 }, { groupId: 'multi-drag' });
+      store.moveEntities({ nodeIds: ids }, { x: 1, y: 1 }, { groupId: 'multi-drag' });
       frames.push(performance.now() - start);
     }
     const median = [...frames].sort((a, b) => a - b)[30];
@@ -121,7 +121,8 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     let patchCount = 0;
     for (let f = 0; f < 60; f++) {
       const start = performance.now();
-      patchCount = store.moveNodes(['frame'], { x: 1, y: 1 }, { groupId: 'frame-drag' })!.patches.length;
+      patchCount = store.moveEntities({ nodeIds: ['frame'] }, { x: 1, y: 1 }, { groupId: 'frame-drag' })!.patches
+        .length;
       frames.push(performance.now() - start);
     }
     const median = [...frames].sort((a, b) => a - b)[30];

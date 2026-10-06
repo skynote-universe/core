@@ -86,7 +86,8 @@ describe('编辑视图', () => {
 
   it('插入带下划线的组合文字、取消截断、带上滚动；无文本框高度时不滚动', () => {
     const view = editingTextPrimitive(primitive, {
-      nodeId: 'n',
+      kind: 'node',
+      id: 'n',
       blockId: 'body',
       scrollY: 12,
       composition: { offset: 1, text: 'ni', style: { color: '$red' } }
@@ -100,14 +101,14 @@ describe('编辑视图', () => {
     expect(view.scrollY).toBe(12);
     const autoHeight = editingTextPrimitive(
       { ...primitive, height: undefined },
-      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
+      { kind: 'node', id: 'n', blockId: 'body', scrollY: 12, composition: null }
     );
     expect(autoHeight.scrollY).toBeUndefined();
     expect(autoHeight.runs).toBe(primitive.runs);
 
     const singleLine = editingTextPrimitive(
       { ...primitive, style: { ...primitive.style, textWrap: 'none' } },
-      { nodeId: 'n', blockId: 'body', scrollY: 12, composition: null }
+      { kind: 'node', id: 'n', blockId: 'body', scrollY: 12, composition: null }
     );
     expect(singleLine.scrollY).toBeUndefined();
     expect(singleLine.style.textOverflow).toBe('none');

@@ -10,145 +10,127 @@
  */
 
 import type { Point } from '../types/geometry';
+import type { ConnectorStyle } from '../types/connector';
 import {
   ConnectorRouter,
   type ConnectorRouterDefinition,
   type ConnectorRouterInput,
   type ConnectorRouterResult,
-  type ConnectorDirection
+  type FloatingEndpointMode
 } from '../protocols/connector-router.protocol';
 import { buildRoundedPolylinePath } from '../utils/geometry';
+import { routeOrthogonal, routeOrthogonalThrough } from '../routing/orthogonal-route';
 
-/** 直线路由算法类 */
+/** 起点、手动拐点、终点依次连成的折线 (拐点处按样式倒圆角) */
+function routeThroughControlPoints(
+  input: ConnectorRouterInput,
+  controlPoints: readonly Point[]
+): ConnectorRouterResult {
+  const points: Point[] = [{ ...input.start.point }, ...controlPoints.map((p) => ({ ...p })), { ...input.end.point }];
+  return { points, pathData: buildRoundedPolylinePath(points, input.style.cornerRadius ?? 0) };
+}
+
+/** 直线：浮动端取中心连线与轮廓的交点，线看起来从图形中心射出 */
 export class StraightRouter extends ConnectorRouter {
   readonly id = 'straight';
   readonly label = '直线';
+  readonly floating: FloatingEndpointMode = 'boundary';
 
   route(input: ConnectorRouterInput): ConnectorRouterResult {
-    const { startPoint, endPoint, controlPoints, style } = input;
-    const cornerRadius = style?.cornerRadius ?? 0;
-
-    if (controlPoints && controlPoints.length > 0) {
-      const points: Point[] = [{ ...startPoint }, ...controlPoints.map((p) => ({ ...p })), { ...endPoint }];
-      const pathData = cornerRadius > 0 ? buildRoundedPolylinePath(points, cornerRadius) : undefined;
-      return {
-        points,
-        pathData
-      };
-    }
-
-    const points: Point[] = [{ ...startPoint }, { ...endPoint }];
+    if (input.controlPoints?.length) return routeThroughControlPoints(input, input.controlPoints);
+    const { start, end } = input;
     return {
-      points,
-      pathData: `M ${startPoint.x} ${startPoint.y} L ${endPoint.x} ${endPoint.y}`
+      points: [{ ...start.point }, { ...end.point }],
+      pathData: `M ${start.point.x} ${start.point.y} L ${end.point.x} ${end.point.y}`
     };
   }
 }
 
-/** 经典平滑贝塞尔曲线路由算法类 */
+/** 曲线每段三次曲线的采样数：路由点中第 i 段占 [i×N, (i+1)×N]，编辑手柄据此找到每段的中点 */
+export const CURVE_SEGMENT_SAMPLES = 24;
+
+/** 曲线：三次贝塞尔，两端沿出线方向切出，控制柄长度随两端距离伸缩 */
 export class CurvedRouter extends ConnectorRouter {
   readonly id = 'curved';
-  readonly label = '平滑曲线';
+  readonly label = '曲线';
+  readonly floating: FloatingEndpointMode = 'side';
 
-  constructor(private readonly defaultCurviness = 0.4) {
+  constructor(private readonly curviness = 0.4) {
     super();
   }
 
   route(input: ConnectorRouterInput): ConnectorRouterResult {
-    const { startPoint, endPoint, startDirection, endDirection } = input;
-    const dx = endPoint.x - startPoint.x;
-    const dy = endPoint.y - startPoint.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    // 控制点延伸距离，正比于两点距离但设置下限
-    const offset = Math.max(dist * this.defaultCurviness, 20);
-
-    const getDirectionOffset = (
-      dir: ConnectorDirection | undefined,
-      defaultDir: 'x' | 'y'
-    ): { ox: number; oy: number } => {
-      if (dir === 'top') return { ox: 0, oy: -offset };
-      if (dir === 'bottom') return { ox: 0, oy: offset };
-      if (dir === 'left') return { ox: -offset, oy: 0 };
-      if (dir === 'right') return { ox: offset, oy: 0 };
-      // 无朝向时根据端点主轴方向默认沿 X 轴延伸
-      return defaultDir === 'x'
-        ? { ox: offset * Math.sign(dx || 1), oy: 0 }
-        : { ox: 0, oy: offset * Math.sign(dy || 1) };
+    const { start, end } = input;
+    const dx = end.point.x - start.point.x;
+    const dy = end.point.y - start.point.y;
+    // 自由端没有出线方向：沿两端连线的主轴切出 (起点朝向终点，终点背向起点)
+    const along = Math.abs(dx) >= Math.abs(dy) ? { x: Math.sign(dx) || 1, y: 0 } : { x: 0, y: Math.sign(dy) || 1 };
+    const startDir = start.direction ?? along;
+    const endDir = end.direction ?? { x: -along.x, y: -along.y };
+    const through = input.controlPoints ?? [];
+    if (through.length === 0) {
+      const offset = Math.max(Math.hypot(dx, dy) * this.curviness, 20);
+      return bezierResult([
+        [start.point, offsetPoint(start.point, startDir, offset), offsetPoint(end.point, endDir, offset), end.point]
+      ]);
+    }
+    // 依次经过手动点：每两点之间一段三次曲线；中间点的切线取前后两点连线方向 (Catmull-Rom)，曲线在手动点处平滑相接；
+    // 两端沿出线方向切出。控制柄长度与该段长度成正比
+    const stops = [start.point, ...through, end.point];
+    const tangentAt = (i: number): Point => {
+      if (i === 0) return startDir;
+      if (i === stops.length - 1) return { x: -endDir.x, y: -endDir.y };
+      const tx = stops[i + 1].x - stops[i - 1].x;
+      const ty = stops[i + 1].y - stops[i - 1].y;
+      const length = Math.hypot(tx, ty) || 1;
+      return { x: tx / length, y: ty / length };
     };
-
-    const startOff = getDirectionOffset(startDirection, Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y');
-    const endOff = getDirectionOffset(endDirection, Math.abs(dx) >= Math.abs(dy) ? 'x' : 'y');
-
-    const cp1: Point = { x: startPoint.x + startOff.ox, y: startPoint.y + startOff.oy };
-    const cp2: Point = {
-      x: endPoint.x + (endDirection ? endOff.ox : -endOff.ox),
-      y: endPoint.y + (endDirection ? endOff.oy : -endOff.oy)
-    };
-
-    const pathData = `M ${startPoint.x} ${startPoint.y} C ${cp1.x} ${cp1.y}, ${cp2.x} ${cp2.y}, ${endPoint.x} ${endPoint.y}`;
-
-    return {
-      points: [{ ...startPoint }, cp1, cp2, { ...endPoint }],
-      pathData
-    };
+    const segments: [Point, Point, Point, Point][] = [];
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i];
+      const b = stops[i + 1];
+      const handle = Math.hypot(b.x - a.x, b.y - a.y) * this.curviness;
+      segments.push([a, offsetPoint(a, tangentAt(i), handle), offsetPoint(b, tangentAt(i + 1), -handle), b]);
+    }
+    return bezierResult(segments);
   }
 }
 
-/** 经典曼哈顿正交折线路由算法类 */
+function offsetPoint(p: Point, dir: Point, distance: number): Point {
+  return { x: p.x + dir.x * distance, y: p.y + dir.y * distance };
+}
+
+/** 三次曲线段 → 路径指令与采样点 (拾取、包围盒与箭头朝向按真实曲线计算) */
+function bezierResult(segments: readonly (readonly [Point, Point, Point, Point])[]): ConnectorRouterResult {
+  const [p0] = segments[0];
+  const points: Point[] = [{ x: p0.x, y: p0.y }];
+  let pathData = `M ${p0.x} ${p0.y}`;
+  for (const [a, b, c, d] of segments) {
+    pathData += ` C ${b.x} ${b.y}, ${c.x} ${c.y}, ${d.x} ${d.y}`;
+    for (let i = 1; i <= CURVE_SEGMENT_SAMPLES; i++) {
+      const t = i / CURVE_SEGMENT_SAMPLES;
+      const k0 = (1 - t) ** 3;
+      const k1 = 3 * (1 - t) ** 2 * t;
+      const k2 = 3 * (1 - t) * t * t;
+      const k3 = t ** 3;
+      points.push({ x: k0 * a.x + k1 * b.x + k2 * c.x + k3 * d.x, y: k0 * a.y + k1 * b.y + k2 * c.y + k3 * d.y });
+    }
+  }
+  return { points, pathData };
+}
+
+/** 正交折线 (默认线型)：垂直离开边框、绕开两端节点，拐点默认圆角 */
 export class OrthogonalRouter extends ConnectorRouter {
   readonly id = 'orthogonal';
-  readonly label = '正交折线';
-
-  constructor(private readonly defaultRadius = 0) {
-    super();
-  }
+  readonly label = '折线';
+  readonly floating: FloatingEndpointMode = 'side';
+  readonly defaultStyle: ConnectorStyle = { cornerRadius: 8, padding: 20 };
 
   route(input: ConnectorRouterInput): ConnectorRouterResult {
-    const { startPoint, endPoint, startDirection, endDirection, controlPoints, style } = input;
-    const cornerRadius = style?.cornerRadius ?? this.defaultRadius;
-
-    if (controlPoints && controlPoints.length > 0) {
-      const points: Point[] = [{ ...startPoint }, ...controlPoints.map((p) => ({ ...p })), { ...endPoint }];
-      return {
-        points,
-        pathData: buildRoundedPolylinePath(points, cornerRadius)
-      };
-    }
-
-    const points: Point[] = [{ ...startPoint }];
-
-    // 若无指定朝向，默认使用两段或三段 Z 型折线
-    if (!startDirection && !endDirection) {
-      const midX = (startPoint.x + endPoint.x) / 2;
-      points.push({ x: midX, y: startPoint.y });
-      points.push({ x: midX, y: endPoint.y });
-    } else {
-      // 具备朝向特征时的折线计算
-      const startHorizontal = startDirection === 'left' || startDirection === 'right';
-      const endHorizontal = endDirection === 'left' || endDirection === 'right';
-
-      if (startHorizontal && endHorizontal) {
-        const midX = (startPoint.x + endPoint.x) / 2;
-        points.push({ x: midX, y: startPoint.y });
-        points.push({ x: midX, y: endPoint.y });
-      } else if (!startHorizontal && !endHorizontal) {
-        const midY = (startPoint.y + endPoint.y) / 2;
-        points.push({ x: startPoint.x, y: midY });
-        points.push({ x: endPoint.x, y: midY });
-      } else if (startHorizontal) {
-        points.push({ x: endPoint.x, y: startPoint.y });
-      } else {
-        points.push({ x: startPoint.x, y: endPoint.y });
-      }
-    }
-
-    points.push({ ...endPoint });
-    const pathData = buildRoundedPolylinePath(points, cornerRadius);
-
-    return {
-      points,
-      pathData
-    };
+    const points = input.controlPoints?.length
+      ? routeOrthogonalThrough(input.start, input.end, input.controlPoints)
+      : routeOrthogonal(input.start, input.end, input.style.padding ?? 20);
+    return { points, pathData: buildRoundedPolylinePath(points, input.style.cornerRadius ?? 0) };
   }
 }
 

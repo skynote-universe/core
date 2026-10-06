@@ -106,7 +106,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
         for (let step = 0; step < 300; step++) {
           const roll = random();
           if (roll < 0.25) {
-            store.moveNodes([pick()], { x: random() * 400 - 200, y: random() * 400 - 200 });
+            store.moveEntities({ nodeIds: [pick()] }, { x: random() * 400 - 200, y: random() * 400 - 200 });
           } else if (roll < 0.4) {
             store.updateNode(pick(), { rotation: random() * 360 });
           } else if (roll < 0.5) {
@@ -114,7 +114,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
           } else if (roll < 0.62) {
             store.reparentNodes([pick()], random() < 0.3 ? undefined : pick());
           } else if (roll < 0.7) {
-            store.removeNodes([pick()]);
+            store.removeEntities({ nodeIds: [pick()] });
           } else if (roll < 0.75) {
             // 远端只删除容器、保留子节点：子节点回落根层级
             store.commit({ origin: 'remote', patches: [{ op: 'unset', path: ['content', 'nodes', pick()] }] });
@@ -189,7 +189,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
     }
     updateSpy.mockClear();
 
-    store.moveNodes(['frame'], { x: 100, y: 50 });
+    store.moveEntities({ nodeIds: ['frame'] }, { x: 100, y: 50 });
     expect(updateSpy.mock.calls).toEqual([['frame']]);
     expect(engine.spatialIndex.getBounds('c10')!.left).toBe(150);
     // 边界包含在内：c8 右下角与 c12 左上角恰好落在该点
@@ -246,7 +246,7 @@ describe('SceneSpatialIndex 分层空间索引', () => {
     const far = { left: 990, top: -5, right: 1020, bottom: 20 };
 
     expect(engine.spatialIndex.search(far)).toEqual(['child']);
-    store.moveNodes(['child'], { x: -990 });
+    store.moveEntities({ nodeIds: ['child'] }, { x: -990 });
     searched.length = 0;
     expect(engine.spatialIndex.search(far)).toEqual([]);
     expect(searched).toEqual(['root-index']);

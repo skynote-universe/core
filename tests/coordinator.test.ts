@@ -196,3 +196,25 @@ describe('OperationCoordinator', () => {
     expect(doc.style).toEqual({ fill: 'e', stroke: 'z' });
   });
 });
+
+describe('同组改动的净效果', () => {
+  it('同组改动回到组开始前的状态时不留下撤销条目', () => {
+    const doc: { label?: string; x: number } = { x: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    coordinator.commitOperation({ label: '移动', patches: [{ op: 'set', path: ['x'], value: 5 }] });
+    coordinator.commitOperation({
+      label: '加文字',
+      groupId: 'g',
+      patches: [{ op: 'set', path: ['label'], value: '' }]
+    });
+    coordinator.commitOperation({ label: '删空', groupId: 'g', patches: [{ op: 'unset', path: ['label'] }] });
+    expect(coordinator.undoEntries.map((entry) => entry.label)).toEqual(['移动']);
+
+    // 有净效果的同组改动照常保留
+    coordinator.commitOperation({ label: '拖动', groupId: 'h', patches: [{ op: 'set', path: ['x'], value: 8 }] });
+    coordinator.commitOperation({ label: '拖动', groupId: 'h', patches: [{ op: 'set', path: ['x'], value: 9 }] });
+    expect(coordinator.undoEntries).toHaveLength(2);
+    coordinator.undo();
+    expect(doc.x).toBe(5);
+  });
+});

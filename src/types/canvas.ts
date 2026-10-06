@@ -50,6 +50,18 @@ export interface CanvasContent {
   connectors: Record<string, ConnectorEntity>;
 }
 
+/** 引用一组实体 (节点与连线)：删除、复制、创建副本等命令的输入；缺省的类别视为空 */
+export interface EntityRefs {
+  readonly nodeIds?: Iterable<string>;
+  readonly connectorIds?: Iterable<string>;
+}
+
+/** 命令产生的实体 id (如粘贴、创建副本的结果)，可直接作为新的选区 */
+export interface EntityIds {
+  readonly nodeIds: string[];
+  readonly connectorIds: string[];
+}
+
 /** 插件扩展专有资源（如全局配置、草稿索引） */
 export interface FeatureResource<TData = unknown> {
   id: string;

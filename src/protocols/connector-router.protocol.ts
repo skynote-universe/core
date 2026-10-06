@@ -10,32 +10,25 @@
  */
 
 import type { Point, RectBounds } from '../types/geometry';
-import type { ConnectorEntity, ConnectorStyle } from '../types/connector';
+import type { ConnectorStyle } from '../types/connector';
 
-/** 端点连接几何朝向/法线 */
-export type ConnectorDirection = 'top' | 'right' | 'bottom' | 'left';
+/** 已解析的连线一端 (世界坐标) */
+export interface ConnectorRouteEnd {
+  readonly point: Point;
+  /** 出线方向 (单位向量，轮廓外法线)；自由端缺省，由路由器按另一端自行决定 */
+  readonly direction?: Point;
+  /** 所连节点的世界包围盒：正交折线据此绕开两端节点；自由端缺省 */
+  readonly bounds?: RectBounds;
+}
 
 /** 连线寻路算法入参上下文 */
 export interface ConnectorRouterInput {
-  /** 起始端点物理世界坐标 */
-  readonly startPoint: Point;
-  /** 结束端点物理世界坐标 */
-  readonly endPoint: Point;
-  /** 起始锚点离开方向 (可选) */
-  readonly startDirection?: ConnectorDirection;
-  /** 结束锚点进入方向 (可选) */
-  readonly endDirection?: ConnectorDirection;
-  /** 用户拖拽产生的手动控制点列表 (可选) */
+  readonly start: ConnectorRouteEnd;
+  readonly end: ConnectorRouteEnd;
+  /** 用户拖拽产生的手动拐点 (世界坐标) */
   readonly controlPoints?: readonly Point[];
-  /** 连线样式配置 */
-  readonly style?: ConnectorStyle;
-  /** 宿主连线实体元数据 */
-  readonly connector?: ConnectorEntity;
-  /**
-   * 避障障碍物包围盒集合 (可选，空间索引查询或画布传入)
-   * 供 A* / 曼哈顿避障等高级算法使用
-   */
-  readonly obstacles?: readonly RectBounds[];
+  /** 生效样式：路由器默认样式 < 连线自身样式 */
+  readonly style: ConnectorStyle;
 }
 
 /** 连线寻路计算输出结果 */
@@ -53,16 +46,27 @@ export interface ConnectorRouterResult {
 }
 
 /**
+ * 浮动端 (只绑定节点) 的出线位置：
+ * - 'side'：取面向另一端的那条边的吸附点，线垂直离开边框 (折线、曲线)
+ * - 'boundary'：取节点中心指向另一端的射线与轮廓的交点 (直线)
+ */
+export type FloatingEndpointMode = 'side' | 'boundary';
+
+/**
  * 连线寻路算法定义契约
  */
 export interface ConnectorRouterDefinition {
-  /** 路由算法全局唯一标识，如 'straight', 'orthogonal', 'curved', 'mindmap' */
+  /** 路由算法全局唯一标识，即连线的 connectorType，如 'straight', 'orthogonal', 'curved' */
   readonly id: string;
   /** UI 呈现说明 */
   readonly label: string;
+  /** 浮动端出线位置 (缺省 'boundary') */
+  readonly floating?: FloatingEndpointMode;
+  /** 连线未设置的样式项取此默认值 (如折线圆角 8)；绘制与界面面板读同一份生效样式 */
+  readonly defaultStyle?: ConnectorStyle;
   /**
    * 寻路执行纯函数 (Pure Function)
-   * 严禁篡改入参中的点或障碍物，必须返回全新计算结果
+   * 严禁篡改入参，必须返回全新计算结果
    */
   route(input: ConnectorRouterInput): ConnectorRouterResult;
 }

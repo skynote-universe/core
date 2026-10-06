@@ -48,15 +48,6 @@ export interface NodeStyle {
   opacity?: number;
 }
 
-/** 连线吸附锚点 */
-export interface NodeAnchor {
-  id: string;
-  x: number;
-  y: number;
-  name?: string;
-  direction?: Point;
-}
-
 /** 节点实体：持久化的纯数据，只经事务修改 */
 export interface NodeEntity<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> {
   id: string;
@@ -90,8 +81,6 @@ export interface NodeEntity<TData = Record<string, unknown>, TStyle extends Node
   style?: TStyle;
   /** 默认文本外观 */
   textStyle?: NodeTextStyle;
-  /** 暴露给连线的吸附锚点 */
-  anchors?: NodeAnchor[];
   /** 业务自定义私有结构载荷 */
   data?: TData;
 }

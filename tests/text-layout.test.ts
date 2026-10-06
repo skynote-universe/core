@@ -140,7 +140,7 @@ describe('文本驱动的自动尺寸', () => {
     engine.documentStore.addNode(makeNode('r', 'rect', 'hello'));
     const callsAfterAdd = measurer.calls.length;
 
-    engine.documentStore.moveNodes(['s'], { x: 50 });
+    engine.documentStore.moveEntities({ nodeIds: ['s'] }, { x: 50 });
     engine.documentStore.updateNode('s', { style: { fill: '#FFF7AE' } });
     expect(measurer.calls.length).toBe(callsAfterAdd);
     expect(engine.documentStore.getNode('r')?.height).toBe(10);

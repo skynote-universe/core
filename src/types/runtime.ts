@@ -7,6 +7,7 @@
  * 不进文档、不进撤销栈、不参与协同，随实例销毁回收。
  */
 
+import type { ConnectorLabelLayout } from '../layout/connector-label';
 import type { Point, RectBounds } from './geometry';
 import type { NodeEntity } from './node';
 import type { ConnectorEntity } from './connector';
@@ -57,6 +58,8 @@ export interface ComputedRoute {
   readonly pathData?: string;
   /** 折线总长度 (供连线文本标注按比例定位) */
   readonly totalLength: number;
-  /** 路由点集的外包矩形 (视锥剔除与空间拾取) */
+  /** 路由点集与连线文字的外包矩形 (视锥剔除与空间拾取) */
   readonly bounds: RectBounds;
+  /** 连线文字的排版 (未注入字体测量器时为空) */
+  readonly labels: readonly ConnectorLabelLayout[];
 }

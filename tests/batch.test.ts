@@ -35,7 +35,7 @@ describe('DocumentStore.batch', () => {
       store.addNode(makeNode('a'));
       // 后续操作能读到前序结果
       expect(store.getNode('a')).toBeDefined();
-      store.moveNodes(['a'], { x: 50, y: 0 });
+      store.moveEntities({ nodeIds: ['a'] }, { x: 50, y: 0 });
       store.updateNode('a', { width: 30 });
     }, '新建并调整');
 
@@ -54,8 +54,8 @@ describe('DocumentStore.batch', () => {
     store.batch(() => {
       store.addNode(makeNode('a'));
       store.batch(() => store.addNode(makeNode('b')));
-      store.moveNodes(['a'], { x: 1, y: 0 }, { groupId: 'drag' });
-      store.moveNodes(['a'], { x: 1, y: 0 }, { groupId: 'drag' });
+      store.moveEntities({ nodeIds: ['a'] }, { x: 1, y: 0 }, { groupId: 'drag' });
+      store.moveEntities({ nodeIds: ['a'] }, { x: 1, y: 0 }, { groupId: 'drag' });
     });
     expect(store.undoEntries).toHaveLength(1);
     store.undo();

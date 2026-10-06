@@ -58,6 +58,19 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     ).toBeLessThan(BUDGET_MS_PER_COMMIT);
   });
 
+  it('视锥查询：1920×1080 视口在画布中平移 (每次命中约 2300 个节点)', () => {
+    const { spatialIndex } = engine;
+    let hits = 0;
+    const perQuery = measure('视锥查询', (i) => {
+      const left = (i % 50) * 100;
+      const top = (i % 20) * 100;
+      hits = spatialIndex.search({ left, top, right: left + 1920, bottom: top + 1080 }).length;
+    });
+    expect(hits).toBeGreaterThan(2000);
+    // 迁移验收清单：5000 节点下视锥查询不超过 2ms；这里在 5 万节点上要求同样的预算
+    expect(perQuery).toBeLessThan(2);
+  });
+
   it('修改单节点样式', () => {
     expect(measure('修改单节点样式', (i) => store.updateNode('n100', { style: { fill: String(i) } }))).toBeLessThan(
       BUDGET_MS_PER_COMMIT

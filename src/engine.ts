@@ -40,7 +40,7 @@ import {
   type ConnectorRouteSource,
   type ResolvedEndpointNode
 } from './routing/connector-route';
-import { outlineAnchors, projectOntoOutline, resolveNodeOutline } from './routing/outline';
+import { projectOntoOutline, resolveNodeAnchors, resolveNodeOutline } from './routing/outline';
 import { DocumentStore } from './state/document-store';
 import type { EntityReader } from './state/entity-store';
 import { SessionStore, type ZoomRange } from './state/session-store';
@@ -304,11 +304,11 @@ export class SkyNoteEngine {
     return computeConnectorRoute(connector, this.resolveEndpointNode, this.routers, this.documentStore.fonts);
   }
 
-  /** 节点的连线吸附点 (世界坐标)：轮廓上、右、下、左四点，供连线工具提示 */
+  /** 节点的连线吸附点 (世界坐标)，供连线工具提示；缺省为轮廓上、右、下、左四点 (见 resolveNodeAnchors) */
   getConnectorAnchors(nodeId: string): Point[] {
     const resolved = this.resolveEndpointNode(nodeId);
     if (!resolved) return [];
-    return outlineAnchors(resolved.outline).map(({ point }) => applyMatrix(resolved.worldMatrix, point.x, point.y));
+    return resolved.anchors.map(({ point }) => applyMatrix(resolved.worldMatrix, point.x, point.y));
   }
 
   /**
@@ -337,7 +337,7 @@ export class SkyNoteEngine {
     let best: ConnectorEndpointSnap | null = null;
     let bestDistance = tolerance;
     for (const resolved of candidates) {
-      for (const { point: local } of outlineAnchors(resolved.outline)) {
+      for (const { point: local } of resolved.anchors) {
         const world = applyMatrix(resolved.worldMatrix, local.x, local.y);
         const distance = Math.hypot(world.x - point.x, world.y - point.y);
         if (distance <= bestDistance) {
@@ -409,10 +409,12 @@ export class SkyNoteEngine {
     if (!runtimeNode) return undefined;
     const node = runtimeNode.entity;
     const definition = this.nodeTypes.get(node.nodeType);
+    const outline = resolveNodeOutline(node, definition);
     return {
       node,
       worldMatrix: this.entityStore.getWorldTransform(nodeId)!,
-      outline: resolveNodeOutline(node, definition),
+      outline,
+      anchors: resolveNodeAnchors(node, definition, outline),
       strokeWidth: resolveNodeStyle(node, definition).strokeWidth ?? 0
     };
   };

@@ -13,12 +13,13 @@
  */
 
 import type { CanvasDocument, CanvasMeta } from '../types/canvas';
-import type { NodeEntity } from '../types/node';
+import type { NodeEntity, NodeStyle } from '../types/node';
 import type { ConnectorEndpoint, ConnectorEntity, ConnectorTextBlock } from '../types/connector';
 import type { TextBlock, TextSizingMode } from '../types/text';
 import type { Point } from '../types/geometry';
 import { DANGEROUS_KEYS } from '../utils/clone';
 import { isValidFractionalIndex } from '../utils/fractional-index';
+import { splitColorAlpha } from '../utils/color';
 import { sanitizeRichTextRuns } from '../layout/rich-text-edit';
 import { findInlineMediaUrl } from '../state/commit-guards';
 
@@ -151,6 +152,20 @@ function zIndex(value: unknown, path: Path): string {
 }
 
 /** 校验单个节点实体 (只保留已知字段) */
+/**
+ * 节点样式：带透明度的填充色 (如 rgba(...)、#RRGGBBAA) 拆成不透明的色值，透明度乘进 fillOpacity，
+ * 文档里只有一种表示透明的方式
+ */
+function nodeStyle(value: unknown, path: Path): NodeStyle {
+  const style = plainObject<NodeStyle>(value, path);
+  const split = typeof style.fill === 'string' ? splitColorAlpha(style.fill) : null;
+  if (split) {
+    style.fill = split.color;
+    style.fillOpacity = (typeof style.fillOpacity === 'number' ? style.fillOpacity : 1) * split.alpha;
+  }
+  return style;
+}
+
 export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
   const n = record(value, path);
   if (n.type !== 'node') fail(`${path}.type`, '应为 node');
@@ -170,7 +185,7 @@ export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
     ...optional(n, 'parentId', path, (v, p) => str(v, p, true)),
     ...optional(n, 'aspectLocked', path, bool),
     ...list('textBlocks', textBlock),
-    ...optional(n, 'style', path, plainObject),
+    ...optional(n, 'style', path, nodeStyle),
     ...optional(n, 'textStyle', path, plainObject),
     ...optional(n, 'data', path, plainObject)
   };

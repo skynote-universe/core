@@ -18,7 +18,7 @@ import { layoutConnectorLabels } from '../layout/connector-label';
 import type { ConnectorRouteEnd, FloatingEndpointMode } from '../protocols/connector-router.protocol';
 import { applyMatrix, applyMatrixToVector, computeNodeWorldBounds, invertMatrix } from '../utils/geometry';
 import type { ConnectorRouterRegistry } from '../registry/connector-router-registry';
-import { outlineAnchors, outlineExit, projectOntoOutline, type OutlinePoint } from './outline';
+import { facingAnchor, outlineExit, projectOntoOutline, type OutlinePoint } from './outline';
 
 /** 端点绑定的节点、世界矩阵与轮廓 (节点坐标相对父容器，ADR-114) */
 export interface ResolvedEndpointNode {
@@ -26,6 +26,8 @@ export interface ResolvedEndpointNode {
   readonly worldMatrix: Matrix2D;
   /** 局部坐标轮廓 (见 resolveNodeOutline) */
   readonly outline: readonly Point[];
+  /** 局部坐标吸附点 (见 resolveNodeAnchors) */
+  readonly anchors: readonly OutlinePoint[];
   /** 节点描边宽度 (生效样式)：描边以轮廓为中线，线端外移半个描边宽度，箭头尖端停在描边外沿而不是压在描边中间 */
   readonly strokeWidth: number;
 }
@@ -74,19 +76,7 @@ function resolveFloatingEnd(
   const center = { x: node.width / 2, y: node.height / 2 };
   const local = applyMatrix(invertMatrix(worldMatrix), target.x, target.y);
   if (mode === 'side') {
-    const dx = local.x - center.x;
-    const dy = local.y - center.y;
-    const anchors = outlineAnchors(outline);
-    let best = anchors[0];
-    let bestDot = -Infinity;
-    for (const anchor of anchors) {
-      const dot = anchor.normal.x * dx + anchor.normal.y * dy;
-      if (dot > bestDot) {
-        bestDot = dot;
-        best = anchor;
-      }
-    }
-    return toWorldEnd(resolved, best);
+    return toWorldEnd(resolved, facingAnchor(resolved.anchors, { x: local.x - center.x, y: local.y - center.y }));
   }
   const exit = outlineExit(outline, center, local);
   return exit

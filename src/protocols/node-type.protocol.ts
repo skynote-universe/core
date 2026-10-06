@@ -200,6 +200,16 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    */
   readonly removeWhenEmpty?: boolean;
   /**
+   * 连线吸附点 (局部坐标，会投影到轮廓上)，缺省为轮廓包围盒四边中点的投影 (矩形四边中点、椭圆与菱形四个端点)。
+   * 包围盒中点落不到合适位置的形状在此声明，如星形的五个尖角、三角形的顶点与各边中点；返回 undefined 时用缺省
+   */
+  anchors?(node: NodeEntity<TData, TStyle>): readonly Point[] | undefined;
+  /**
+   * 绘制时采用样式中的圆角 (style.radius)，缺省 false；界面据此决定是否提供圆角设置，
+   * 例如形状只有矩形画圆角，椭圆、菱形调了也看不出变化
+   */
+  supportsCornerRadius?(node: NodeEntity<TData, TStyle>): boolean;
+  /**
    * 拖角时等比缩放内容 (如自由文本按比例缩放字号)，与比例锁定无关；边控制柄不受影响
    */
   readonly scaleContentOnCorners?: boolean;

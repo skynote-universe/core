@@ -18,6 +18,8 @@ export interface CanvasThemeSeed {
   readonly foreground: string;
   /** 选中与强调色 */
   readonly accent: string;
+  /** 吸附参考线颜色 (缺省取强调色)：与选中框区分开，拖动时一眼看出是对齐提示 */
+  readonly guide?: string;
   /** 语义调色板：文档中的 `$名称` 颜色引用在此解析，如 { yellow: '#FDE68A' } */
   readonly palette?: Readonly<Record<string, string>>;
 }
@@ -39,6 +41,8 @@ export interface CanvasTheme {
   readonly placeholderFill: string;
   /** 选中描边 */
   readonly selectionStroke: string;
+  /** 吸附对齐参考线 */
+  readonly snapGuide: string;
   readonly palette: Readonly<Record<string, string>>;
 }
 

@@ -7,7 +7,7 @@ import type { RotatableBox } from '../src/types/geometry';
 import { describe, it, expect } from 'vitest';
 import { applyMatrix, computeNodeLocalMatrix, computeNodeWorldBounds } from '../src/utils/geometry';
 import { resolveConnectorEnds } from '../src/routing/connector-route';
-import { resolveNodeOutline } from '../src/routing/outline';
+import { resolveNodeAnchors, resolveNodeOutline } from '../src/routing/outline';
 import { SkyNoteEngine } from '../src/engine';
 import type { NodeEntity } from '../src/types/node';
 
@@ -63,10 +63,12 @@ describe('绕中心旋转的几何', () => {
       locked: false
     } as NodeEntity;
 
+    const outline = resolveNodeOutline(node, undefined);
     const resolved = {
       node,
       worldMatrix: computeNodeLocalMatrix(node),
-      outline: resolveNodeOutline(node, undefined),
+      outline,
+      anchors: resolveNodeAnchors(node, undefined, outline),
       strokeWidth: 0
     };
     // 右边中点旋转 90° 后朝下，出线方向随之朝下

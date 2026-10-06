@@ -8,6 +8,7 @@ import { SkyNoteEngine } from '../src/engine';
 import { SessionStore, type SessionChange } from '../src/state/session-store';
 import type { SkyNotePlugin, CanvasPluginContext } from '../src/protocols/plugin.protocol';
 import type { NodeEntity } from '../src/types/node';
+import { screenToWorld, worldToScreen } from '../src/utils/geometry';
 
 function makeNode(id: string): NodeEntity {
   return {
@@ -146,6 +147,25 @@ describe('视口缩放范围', () => {
 });
 
 describe('视口命令', () => {
+  it('屏幕与世界坐标在 0.1x ~ 10x 缩放与任意平移下往返无漂移；以指针处的世界点为锚点缩放时它在屏幕上不动', () => {
+    const session = new SessionStore();
+    session.setViewportSize({ width: 1000, height: 800 });
+    const anchor = { x: 317, y: 589 };
+    for (const zoom of [0.1, 0.25, 1, 3.7, 10]) {
+      session.setViewport({ x: -12345.678, y: 9876.543, zoom });
+      const world = screenToWorld(anchor, session.viewport);
+      const back = worldToScreen(world, session.viewport);
+      expect(back.x).toBeCloseTo(anchor.x, 9);
+      expect(back.y).toBeCloseTo(anchor.y, 9);
+
+      // zoomAt 的锚点是世界坐标
+      session.zoomAt(1.5, world);
+      const after = worldToScreen(world, session.viewport);
+      expect(after.x).toBeCloseTo(anchor.x, 9);
+      expect(after.y).toBeCloseTo(anchor.y, 9);
+    }
+  });
+
   function node(id: string, x: number, y: number, width: number, height: number): NodeEntity {
     return { id, type: 'node', nodeType: 'rect', x, y, width, height, rotation: 0, zIndex: 'a0', locked: false };
   }

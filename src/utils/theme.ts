@@ -43,6 +43,7 @@ export const LIGHT_CANVAS_THEME_SEED: CanvasThemeSeed = Object.freeze({
   background: '#FFFFFF',
   foreground: '#1E293B',
   accent: '#3B82F6',
+  guide: '#F43F5E',
   palette: CANVAS_PALETTE
 });
 
@@ -51,6 +52,7 @@ export const DARK_CANVAS_THEME_SEED: CanvasThemeSeed = Object.freeze({
   background: '#0F172A',
   foreground: '#E2E8F0',
   accent: '#60A5FA',
+  guide: '#FB7185',
   palette: CANVAS_PALETTE
 });
 
@@ -81,6 +83,7 @@ export function deriveCanvasTheme(config: CanvasThemeConfig): CanvasTheme {
     ['background', seed.background],
     ['foreground', seed.foreground],
     ['accent', seed.accent],
+    ...(seed.guide === undefined ? [] : [['guide', seed.guide] as [string, unknown]]),
     ...Object.entries(palette).map(([name, color]): [string, unknown] => [`palette.${name}`, color]),
     ...Object.entries(overrides)
   ];
@@ -102,6 +105,7 @@ export function deriveCanvasTheme(config: CanvasThemeConfig): CanvasTheme {
     connectorStroke: tint(ratios.connectorStroke),
     placeholderFill: tint(ratios.placeholderFill),
     selectionStroke: seed.accent,
+    snapGuide: seed.guide ?? seed.accent,
     palette: Object.freeze(palette),
     ...overrides
   };

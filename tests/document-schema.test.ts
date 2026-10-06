@@ -59,6 +59,26 @@ describe('文档反序列化', () => {
     expect(node.textBlocks![0].runs).toEqual([{ text: 'hi', fontWeight: 'bold' }]);
   });
 
+  it('导出再导入：文字的颜色、字号、粗细与对齐方式无损还原', () => {
+    const node = makeNode('t', {
+      nodeType: 'free-text',
+      textBlocks: [
+        {
+          id: 'body',
+          style: { fontSize: 24, textAlign: 'right', verticalAlign: 'bottom', lineHeight: 1.6 },
+          sizing: 'auto-height',
+          explicitWidth: 240,
+          runs: [
+            { text: '红色', color: '#E11D48', fontSize: 32, fontWeight: 'bold' },
+            { text: '斜体', fontStyle: 'italic', textDecoration: 'underline' }
+          ]
+        }
+      ]
+    });
+    const result = parseCanvasDocument(JSON.parse(JSON.stringify(docWith([node]))));
+    expect(result.ok && result.value.content.nodes.t.textBlocks).toEqual(node.textBlocks);
+  });
+
   it('字段类型不对或内联媒体时整体拒绝，并给出出错位置', () => {
     const badNumber = JSON.parse(JSON.stringify(docWith([makeNode('a')])));
     badNumber.content.nodes.a.width = 'wide';
@@ -75,6 +95,25 @@ describe('文档反序列化', () => {
   it('父容器缺失的节点回落到根层级，而不是拒绝整份文档', () => {
     const result = parseCanvasDocument(docWith([makeNode('child', { parentId: 'missing' })]));
     expect(result.ok && result.value.content.nodes.child.parentId).toBeUndefined();
+  });
+
+  it('带透明度的填充色拆成不透明色值与 fillOpacity；主题色引用与描边原样保留', () => {
+    const result = parseCanvasDocument(
+      docWith([
+        makeNode('a', { style: { fill: 'rgba(255, 0, 0, 0.5)' } }),
+        makeNode('b', { style: { fill: '#00FF0080', fillOpacity: 0.5 } }),
+        makeNode('c', { style: { fill: 'rgb(0 0 255 / 25%)' } }),
+        makeNode('d', { style: { fill: '$red', stroke: 'rgba(0, 0, 0, 0.5)' } })
+      ])
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const { nodes } = result.value.content;
+    expect(nodes.a.style).toEqual({ fill: '#FF0000', fillOpacity: 0.5 });
+    expect(nodes.b.style!.fill).toBe('#00FF00');
+    expect(nodes.b.style!.fillOpacity).toBeCloseTo(0.25, 2);
+    expect(nodes.c.style).toEqual({ fill: '#0000FF', fillOpacity: 0.25 });
+    expect(nodes.d.style).toEqual({ fill: '$red', stroke: 'rgba(0, 0, 0, 0.5)' });
   });
 
   it('端点所连节点不存在的连线被丢弃，其余连线保留', () => {

@@ -37,6 +37,31 @@ export function parseHexColor(value: string): RgbaColor | null {
   };
 }
 
+/** rgb() / rgba() 函数写法 (逗号或空格分隔，透明度可为小数或百分比) */
+const RGB_FUNCTION = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)\s*(?:[,/]\s*([\d.]+)(%?)\s*)?\)$/i;
+
+/** 解析十六进制或 rgb() / rgba() 颜色；其他写法 (颜色名、主题色引用) 返回 null */
+export function parseCssColor(value: string): RgbaColor | null {
+  const hex = parseHexColor(value);
+  if (hex) return hex;
+  const match = RGB_FUNCTION.exec(value.trim());
+  if (!match) return null;
+  const [, r, g, b, alpha, percent] = match;
+  const a = alpha === undefined ? 1 : Number(alpha) / (percent ? 100 : 1);
+  return { r: Number(r), g: Number(g), b: Number(b), a: Math.min(1, Math.max(0, a)) };
+}
+
+/**
+ * 把带透明度的颜色拆成不透明的色值与透明度：文档中颜色只存不透明值，透明度存在单独的字段里，
+ * 界面上的不透明度才与实际效果一致
+ * @returns 不带透明度 (或无法解析) 时为 null，原样保留
+ */
+export function splitColorAlpha(value: string): { color: string; alpha: number } | null {
+  const color = parseCssColor(value);
+  if (!color || color.a >= 1) return null;
+  return { color: formatHexColor({ ...color, a: 1 }), alpha: color.a };
+}
+
 /** 格式化为 #rrggbb，透明度不足 1 时输出 #rrggbbaa */
 export function formatHexColor(color: RgbaColor): string {
   const channel = (value: number): string =>

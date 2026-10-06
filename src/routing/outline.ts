@@ -5,6 +5,8 @@
  * 设计考量 (Why):
  * 1. 连线端点落在轮廓上而不是外框上：椭圆、菱形的出线点贴着图形本身，与悬停高亮、拾取共用同一份轮廓。
  * 2. 外法线即出线方向：正交折线据此垂直离开边框，曲线据此决定切线方向。
+ * 3. 吸附点可由节点类型声明 (如星形的五个尖角)：包围盒四边中点投影到星形、三角形上会落进凹处或偏到一侧，
+ *    看起来不像连接点。声明的点同样投影回轮廓取外法线，浮动端与快速连接都从这些点里按朝向挑选。
  */
 
 import type { Point } from '../types/geometry';
@@ -113,6 +115,34 @@ export function outlineExit(outline: readonly Point[], from: Point, toward: Poin
     }
   }
   return hit;
+}
+
+/** 节点的吸附点 (局部坐标)：节点类型声明的点，缺省为 outlineAnchors */
+export function resolveNodeAnchors(
+  node: Readonly<NodeEntity>,
+  definition: NodeTypeDefinition | undefined,
+  outline: readonly Point[]
+): OutlinePoint[] {
+  const declared = definition?.anchors?.(node as NodeEntity);
+  if (!declared) return outlineAnchors(outline);
+  return declared.map((p) => {
+    const { point, normal } = projectOntoOutline(outline, p);
+    return { point, normal };
+  });
+}
+
+/** 外法线最朝向 direction 的吸附点 (如星形朝右取右上的尖角)；同样朝向时取靠前的一个 */
+export function facingAnchor(anchors: readonly OutlinePoint[], direction: Point): OutlinePoint {
+  let best = anchors[0];
+  let bestDot = -Infinity;
+  for (const anchor of anchors) {
+    const dot = anchor.normal.x * direction.x + anchor.normal.y * direction.y;
+    if (dot > bestDot + VERTEX_EPSILON) {
+      bestDot = dot;
+      best = anchor;
+    }
+  }
+  return best;
 }
 
 /**

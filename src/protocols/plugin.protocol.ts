@@ -13,6 +13,8 @@ import type { InputScope } from './input-scope.protocol';
 import type { ArrowMarkerDefinition } from './arrow-marker.protocol';
 import type { CursorDefinition } from './cursor.protocol';
 import type { ConnectorRouterDefinition } from './connector-router.protocol';
+import type { LayoutDefinition, LayoutReader } from './layout.protocol';
+import type { DerivedConnectorSource } from './connector-source.protocol';
 import type { CanvasHost } from './host.protocol';
 import type { Point } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
@@ -40,6 +42,8 @@ export interface CanvasPluginContext {
   readonly connectors: ConnectorGeometryApi;
   /** 已注册的节点类型 (只读)：读取尺寸策略、缩放行为与轮廓 */
   readonly nodeTypes: NodeTypeReader;
+  /** 已注册的布局 (只读)：读取定义并订阅变化 (插件卸载时订阅自动解除) */
+  readonly layouts: LayoutReader;
   /** 本地会话 (视口、选区、主题)：不进入文档、不入撤销栈、不参与协同 */
   readonly session: SessionController;
   /** 宿主能力 (覆盖层、光标、指针捕获)；渲染器挂载前为空实现，插件卸载时其覆盖层会话自动清除 */
@@ -60,6 +64,12 @@ export interface CanvasPluginContext {
   registerNodeType(definition: NodeTypeDefinition): void;
   registerArrowMarker(definition: ArrowMarkerDefinition): void;
   registerConnectorRouter(definition: ConnectorRouterDefinition): void;
+  /** 注册布局 (ADR-130)：根节点 layout.type 为该 id 的子树按其排列；插件卸载时移除 */
+  registerLayout(definition: LayoutDefinition): void;
+  /** 注册派生连线来源 (ADR-130)；插件卸载时移除，其连线随之消失 */
+  registerConnectorSource(source: DerivedConnectorSource): void;
+  /** 请求全量重算某来源 (来源依赖的外部条件变化时，如布局注册表变化) */
+  refreshConnectorSource(sourceId: string): void;
   /** 注册或覆盖光标 (见 CursorRegistry)；插件卸载时恢复被覆盖的定义 */
   registerCursor(definition: CursorDefinition): void;
   /** 注册键盘作用域 (焦点栈，ADR-005) */

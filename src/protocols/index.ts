@@ -10,6 +10,8 @@ export * from './arrow-marker.protocol';
 export * from './cursor.protocol';
 export * from './input-scope.protocol';
 export * from './connector-router.protocol';
+export * from './layout.protocol';
+export * from './connector-source.protocol';
 export * from './plugin.protocol';
 export * from './font-measurer.protocol';
 export * from './host.protocol';

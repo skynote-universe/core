@@ -106,6 +106,12 @@ export interface SessionController {
   fitBounds(bounds: RectBounds | null, options?: FitOptions): void;
   setSelection(selection: SelectionUpdate): void;
   setTextEditing(target: TextEditingTarget | null): void;
+  /**
+   * 请求进入某节点的文字编辑 (如新建主题、插入便签后立即输入)
+   * 单向的意图通知：由文字编辑插件决定是否响应，未安装时无效果
+   */
+  requestTextEditing(nodeId: string): void;
+  onTextEditRequest(listener: (nodeId: string) => void): () => void;
   setTool(tool: string): void;
   /**
    * 显式切换主题
@@ -181,6 +187,7 @@ export class SessionStore implements SessionController {
   private editingTarget: TextEditingTarget | null = null;
   private currentTool = SELECT_TOOL;
   private readonly listeners = new Set<SessionListener>();
+  private readonly textEditRequestListeners = new Set<(nodeId: string) => void>();
 
   constructor(options?: SessionStoreOptions) {
     const range = options?.zoomRange ?? DEFAULT_ZOOM_RANGE;
@@ -229,6 +236,17 @@ export class SessionStore implements SessionController {
     if (tool === this.currentTool) return;
     this.currentTool = tool;
     this.notify(TOOL_CHANGE);
+  }
+
+  requestTextEditing(nodeId: string): void {
+    for (const listener of this.textEditRequestListeners) listener(nodeId);
+  }
+
+  onTextEditRequest(listener: (nodeId: string) => void): () => void {
+    this.textEditRequestListeners.add(listener);
+    return () => {
+      this.textEditRequestListeners.delete(listener);
+    };
   }
 
   setTextEditing(target: TextEditingTarget | null): void {

@@ -154,14 +154,19 @@ export function computeTextLayout(
     const padding = resolveTextPadding(style.padding);
     const maxWidth =
       sizing === 'auto-width'
-        ? undefined
+        ? slot?.maxWidth
         : Math.max(0, (block.explicitWidth ?? node.width) - padding.left - padding.right);
 
     const measured = measureTextBlock(block, style, maxWidth, fonts);
     metrics.set(block.slot ?? block.id, measured);
 
     if (slot?.expandsContainer === false) continue;
-    contentWidth = Math.max(contentWidth, measured.width + padding.left + padding.right);
+    // 固定宽度折行的块 (如拖动边缘后的自动宽度节点) 按设定宽度占位，不随最长行收窄
+    const blockWidth =
+      sizing !== 'auto-width' && block.explicitWidth !== undefined
+        ? block.explicitWidth
+        : measured.width + padding.left + padding.right;
+    contentWidth = Math.max(contentWidth, blockWidth);
     contentHeight += (block.explicitHeight ?? measured.height) + padding.top + padding.bottom;
   }
 

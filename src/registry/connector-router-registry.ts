@@ -70,7 +70,7 @@ export class CurvedRouter extends ConnectorRouter {
     const through = input.controlPoints ?? [];
     if (through.length === 0) {
       const offset = Math.max(Math.hypot(dx, dy) * this.curviness, 20);
-      return bezierResult([
+      return cubicBezierRoute([
         [start.point, offsetPoint(start.point, startDir, offset), offsetPoint(end.point, endDir, offset), end.point]
       ]);
     }
@@ -92,7 +92,7 @@ export class CurvedRouter extends ConnectorRouter {
       const handle = Math.hypot(b.x - a.x, b.y - a.y) * this.curviness;
       segments.push([a, offsetPoint(a, tangentAt(i), handle), offsetPoint(b, tangentAt(i + 1), -handle), b]);
     }
-    return bezierResult(segments);
+    return cubicBezierRoute(segments);
   }
 }
 
@@ -100,8 +100,8 @@ function offsetPoint(p: Point, dir: Point, distance: number): Point {
   return { x: p.x + dir.x * distance, y: p.y + dir.y * distance };
 }
 
-/** 三次曲线段 → 路径指令与采样点 (拾取、包围盒与箭头朝向按真实曲线计算) */
-function bezierResult(segments: readonly (readonly [Point, Point, Point, Point])[]): ConnectorRouterResult {
+/** 三次曲线段 → 路径指令与采样点 (拾取、包围盒与箭头朝向按真实曲线计算)；插件自定义的曲线路由器同样可用 */
+export function cubicBezierRoute(segments: readonly (readonly [Point, Point, Point, Point])[]): ConnectorRouterResult {
   const [p0] = segments[0];
   const points: Point[] = [{ x: p0.x, y: p0.y }];
   let pathData = `M ${p0.x} ${p0.y}`;

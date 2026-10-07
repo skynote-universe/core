@@ -48,6 +48,8 @@ import { NodeTypeRegistry } from './registry/node-type-registry';
 import { ArrowMarkerRegistry } from './registry/arrow-marker-registry';
 import { CursorRegistry } from './registry/cursor-registry';
 import { ConnectorRouterRegistry } from './registry/connector-router-registry';
+import { LayoutRegistry } from './registry/layout-registry';
+import { ConnectorSourceRegistry } from './registry/connector-source-registry';
 import {
   RTreeSpatialIndex,
   SceneSpatialIndex,
@@ -103,6 +105,10 @@ export class SkyNoteEngine {
   /** 画布光标 (全部自绘)：插件与宿主应用可注册、覆盖与统一配色 */
   readonly cursors = new CursorRegistry();
   readonly routers = new ConnectorRouterRegistry();
+  /** 布局 (ADR-130)：导图等树形布局的排列规则，内核在同一事务内据此派生成员位置 */
+  readonly layouts = new LayoutRegistry();
+  /** 派生连线来源 (ADR-130)：由文档数据推导、不存在于文档中的连线 */
+  readonly connectorSources = new ConnectorSourceRegistry();
   readonly documentStore: DocumentStore;
   /** 本地会话状态：视口、选区与主题 */
   readonly session: SessionStore;
@@ -116,6 +122,7 @@ export class SkyNoteEngine {
   private currentHost: CanvasHost = DETACHED_CANVAS_HOST;
   private readonly unsubscribeDocument: () => void;
   private readonly unsubscribeRouters: () => void;
+  private readonly unsubscribeLayouts: () => void;
   /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
   private readonly routes = new Map<string, ComputedRoute>();
   private isDestroyed = false;
@@ -123,6 +130,8 @@ export class SkyNoteEngine {
   constructor(options?: SkyNoteEngineOptions) {
     this.documentStore = new DocumentStore(options?.initialDoc, {
       nodeTypes: this.nodeTypes,
+      layouts: this.layouts,
+      connectorSources: this.connectorSources,
       fonts: options?.fonts,
       connectorEnds: (id) => {
         const points = this.routes.get(id)?.points;
@@ -149,6 +158,8 @@ export class SkyNoteEngine {
       this.syncDerivedState(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
     });
+    // 布局晚于文档注册 (或被卸载) 时重新排版
+    this.unsubscribeLayouts = this.layouts.onChange(() => this.documentStore.refreshLayouts());
     // 路由器晚于文档注册时，重算对应类型的连线
     this.unsubscribeRouters = this.routers.onChange((routerId) => {
       this.updateConnectorRoutes(
@@ -375,6 +386,7 @@ export class SkyNoteEngine {
     this.isDestroyed = true;
     this.unsubscribeDocument();
     this.unsubscribeRouters();
+    this.unsubscribeLayouts();
     this.plugins.destroy();
     this.routes.clear();
     this.pointer.clear();

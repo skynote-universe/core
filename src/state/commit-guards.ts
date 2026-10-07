@@ -14,6 +14,7 @@ import type { CanvasDocument } from '../types/canvas';
 import type { CanvasPatch } from '../types/operation';
 import { normalizePatchPath } from '../operation/patch-path';
 import { isValidFractionalIndex } from '../utils/fractional-index';
+import { DERIVED_CONNECTOR_PREFIX } from '../protocols/connector-source.protocol';
 
 /**
  * 只匹配真实的内联媒体地址，避免误伤以 "Data:" 开头的普通文字：
@@ -56,7 +57,30 @@ function findInlineMediaSegments(value: unknown): (string | number)[] | null {
 export function findCommitViolation(doc: CanvasDocument, patches: readonly CanvasPatch[]): string | null {
   const inlineMedia = findInlineMediaInPatches(patches);
   if (inlineMedia) return `${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`;
-  return findParentCycle(doc, patches) ?? findInvalidZIndex(patches);
+  return findParentCycle(doc, patches) ?? findInvalidZIndex(patches) ?? findReservedConnectorId(patches);
+}
+
+/** 派生连线的 id 前缀保留给内核 (ADR-130)：文档中的连线用了它会与派生连线撞 id */
+function findReservedConnectorId(patches: readonly CanvasPatch[]): string | null {
+  const check = (ids: Iterable<string>): string | null => {
+    for (const id of ids) {
+      if (id.startsWith(DERIVED_CONNECTOR_PREFIX)) return `连线 id ${id} 使用了保留前缀 ${DERIVED_CONNECTOR_PREFIX}`;
+    }
+    return null;
+  };
+  const keysOf = (value: unknown): string[] => (value && typeof value === 'object' ? Object.keys(value) : []);
+  for (const patch of patches) {
+    if (patch.op !== 'set') continue;
+    const segments = normalizePatchPath(patch.path);
+    if (segments[0] !== 'content') continue;
+    let found: string | null = null;
+    if (segments.length === 1) found = check(keysOf((patch.value as { connectors?: unknown } | undefined)?.connectors));
+    else if (segments[1] !== 'connectors') continue;
+    else if (segments.length === 2) found = check(keysOf(patch.value));
+    else found = check([String(segments[2])]);
+    if (found) return found;
+  }
+  return null;
 }
 
 /**

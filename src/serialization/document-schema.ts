@@ -13,7 +13,7 @@
  */
 
 import type { CanvasDocument, CanvasMeta } from '../types/canvas';
-import type { NodeEntity, NodeStyle } from '../types/node';
+import type { NodeEntity, NodeLayout, NodeStyle } from '../types/node';
 import type { ConnectorEndpoint, ConnectorEntity, ConnectorTextBlock } from '../types/connector';
 import type { TextBlock, TextSizingMode } from '../types/text';
 import type { Point } from '../types/geometry';
@@ -156,6 +156,12 @@ function nodeStyle(value: unknown, path: Path): NodeStyle {
   return splitStyleAlpha(plainObject<NodeStyle>(value, path));
 }
 
+/** 布局根声明 (ADR-130)：options 归布局在读取时解析，这里只保证是纯数据 */
+function nodeLayout(value: unknown, path: Path): NodeLayout {
+  const l = record(value, path);
+  return { type: str(l.type, `${path}.type`, true), ...optional(l, 'options', path, plainObject) };
+}
+
 /** 校验单个节点实体 (只保留已知字段) */
 export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
   const n = record(value, path);
@@ -178,7 +184,10 @@ export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
     ...list('textBlocks', textBlock),
     ...optional(n, 'style', path, nodeStyle),
     ...optional(n, 'textStyle', path, plainObject),
-    ...optional(n, 'data', path, plainObject)
+    ...optional(n, 'data', path, plainObject),
+    ...optional(n, 'layout', path, nodeLayout),
+    // 成员属性的各键归使用它的插件，读取时由插件校验 (ADR-130)
+    ...optional(n, 'layoutItem', path, plainObject)
   };
 }
 

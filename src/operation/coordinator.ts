@@ -59,7 +59,8 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   /** 标记当前是否正处于 undo/redo 执行期间，防止循环入栈 */
   private isApplyingHistory = false;
 
-  private derivation: PatchDerivation<TDoc> | null = null;
+  /** 事务内派生的各段，按序执行 (如文字自动尺寸 → 布局排版)：后段读到前段应用后的文档 */
+  private derivations: readonly PatchDerivation<TDoc>[] = [];
   /** 栈顶分组条目的增量压缩状态：同组后续操作只处理新增补丁 */
   private groupCompaction: { entryId: string; forward: OverwriteCompactor; inverse: OverwriteCompactor } | null = null;
   /** 进行中的批处理：期间的可撤销本地事务以同一分组并入一个撤销条目 */
@@ -70,9 +71,9 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     this.maxHistorySize = options?.maxHistorySize ?? 100;
   }
 
-  /** 注册或移除事务内派生函数 */
-  setPatchDerivation(derivation: PatchDerivation<TDoc> | null): void {
-    this.derivation = derivation;
+  /** 设置事务内派生的各段 (按序执行，每段收到本事务至此的全部补丁) */
+  setPatchDerivations(derivations: readonly PatchDerivation<TDoc>[]): void {
+    this.derivations = derivations;
   }
 
   /** 是否可撤销 */
@@ -146,16 +147,20 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       ? clonePlainData(options.inversePatches)
       : applyResult.inversePatches;
 
-    if (origin === 'local' && this.derivation) {
-      const derived = clonePlainData(this.derivation(this.targetDoc, patches));
-      if (derived.length > 0) {
+    if (origin === 'local') {
+      // 回滚用的是应用器推导的对偶补丁 (与显式传入的逆向补丁无关)，失败时整体撤回已应用的各段
+      let appliedInverse = applyResult.inversePatches;
+      for (const derivation of this.derivations) {
+        const derived = clonePlainData(derivation(this.targetDoc, finalPatches));
+        if (derived.length === 0) continue;
         const derivedResult = applyPatches(this.targetDoc, derived);
         if (!derivedResult.success) {
-          applyPatches(this.targetDoc, [...applyResult.inversePatches].reverse());
+          applyPatches(this.targetDoc, [...appliedInverse].reverse());
           console.error('[SkyNote:OperationCoordinator] 派生补丁执行失败，整个事务已回滚:', derivedResult.error);
           return null;
         }
-        finalPatches = [...patches, ...derived];
+        appliedInverse = [...appliedInverse, ...derivedResult.inversePatches];
+        finalPatches = [...finalPatches, ...derived];
         finalInversePatches = [...finalInversePatches, ...derivedResult.inversePatches];
       }
     }

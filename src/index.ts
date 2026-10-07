@@ -21,6 +21,7 @@ export * from './plugin';
 export * from './routing/connector-route';
 export * from './routing/outline';
 export * from './routing/orthogonal-route';
+export * from './layout/layout-tree';
 export * from './layout/text-layout';
 export * from './layout/rich-text-constants';
 export * from './layout/rich-text-layout';

@@ -176,6 +176,14 @@ export class EntityStore implements EntityReader {
     return matrix;
   }
 
+  /**
+   * 父子索引中登记的父节点：实体被字段级补丁就地修改后、索引刷新前，这里仍是事务前的父节点
+   * (事务内派生据此找到被删除或改挂的节点原来所在的布局树)
+   */
+  getIndexedParentId(id: string): string | undefined {
+    return this.nodeParents.get(id);
+  }
+
   /** parentId 被字段级补丁就地修改后，刷新父子索引 */
   reindexNodeParent(id: string): void {
     this.indexNodeParent(id, this.nodes.get(id)?.entity);

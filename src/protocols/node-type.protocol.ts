@@ -49,6 +49,11 @@ export interface NodeTextSlotDefinition {
   readonly plainText?: boolean;
   /** 单行插槽：Enter 确认并退出编辑，粘贴的换行替换为空格 */
   readonly singleLine?: boolean;
+  /**
+   * 自动宽度 (auto-width) 的上限 (内容宽度，不含内边距)：文字超过时按此宽度折行、高度随之增长
+   * (如导图主题、按钮标签)；缺省为不限，始终单行
+   */
+  readonly maxWidth?: number;
 }
 
 /** 单个文本块的实际测量排版包围盒快照 */
@@ -60,6 +65,9 @@ export interface TextBlockMetrics {
 
 /** 缩放控制柄：四边中点与四角 (按节点自身未旋转的方位) */
 export type ResizeHandle = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
+
+/** 用户可调整的尺寸方向：宽高都可调，或只能调宽度 / 高度 (另一轴由内容决定) */
+export type NodeResizeAxes = 'both' | 'width' | 'height';
 
 /** 用户拖动控制柄后的目标尺寸 */
 export interface NodeResizeRequest {
@@ -95,7 +103,7 @@ export type NodeCreateContent<TData = Record<string, unknown>, TStyle extends No
   NodeEntity<TData, TStyle>,
   'width' | 'height'
 > &
-  Partial<Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'data'>>;
+  Partial<Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'data' | 'layout' | 'layoutItem'>>;
 
 /**
  * 各节点类型的新建选项表：节点插件以模块扩充登记，createNode 据 nodeType 推导 options 的类型
@@ -213,6 +221,11 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 拖角时等比缩放内容 (如自由文本按比例缩放字号)，与比例锁定无关；边控制柄不受影响
    */
   readonly scaleContentOnCorners?: boolean;
+  /**
+   * 用户可调整的尺寸方向 (缺省 both)。另一轴完全由内容决定的节点 (如导图主题只能调宽度) 单选时
+   * 不出现该轴的边控制柄，拖角与等比修饰键也只改可调的一轴
+   */
+  readonly resize?: NodeResizeAxes;
   /**
    * 裁剪超出外框的内容图元 (缺省 false，照常显示)
    * 文字的溢出方式另由插槽样式 textOverflow 决定 (如便签、形状标签显示省略号)

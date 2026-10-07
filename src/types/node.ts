@@ -48,6 +48,14 @@ export interface NodeStyle {
   opacity?: number;
 }
 
+/** 布局根声明 (ADR-130)：节点的成员子树按此布局自动排列 */
+export interface NodeLayout {
+  /** 已注册布局的 id，如 'mindmap' */
+  type: string;
+  /** 布局自有参数：由布局在读取时校验，非法值回落默认 */
+  options?: Record<string, unknown>;
+}
+
 /** 节点实体：持久化的纯数据，只经事务修改 */
 export interface NodeEntity<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> {
   id: string;
@@ -83,4 +91,11 @@ export interface NodeEntity<TData = Record<string, unknown>, TStyle extends Node
   textStyle?: NodeTextStyle;
   /** 业务自定义私有结构载荷 */
   data?: TData;
+  /** 布局根：成员子树按此布局排列 (ADR-130) */
+  layout?: NodeLayout;
+  /**
+   * 布局成员标记与成员属性 (ADR-130)：带此字段且父节点是成员或布局根的节点参与排版；
+   * 各键归使用它的插件 (如导图的左右侧、分支线来源的 branch)，内核不解释
+   */
+  layoutItem?: Record<string, unknown>;
 }

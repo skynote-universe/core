@@ -133,6 +133,18 @@ describe('文本驱动的自动尺寸', () => {
     expect(node.height).toBe(21);
   });
 
+  it('content-driven：自动宽度超过插槽 maxWidth 时折行；固定宽度折行的块按设定宽度占位', () => {
+    const engine = createEngine();
+    engine.nodeTypes.register({ ...LABEL, type: 'topic', slots: [{ slot: 'body', maxWidth: 60 }] });
+    const store = engine.documentStore;
+    store.addNode({ ...makeNode('t', 'topic', 'hello world'), nodeType: 'topic' });
+    expect(store.getNode('t')).toMatchObject({ width: 50, height: 42 });
+
+    const [block] = store.getNode('t')!.textBlocks!;
+    store.updateNode('t', { textBlocks: [{ ...block, sizing: 'auto-height', explicitWidth: 200 }] });
+    expect(store.getNode('t')).toMatchObject({ width: 200, height: 21 });
+  });
+
   it('只影响几何或样式的修改不触发测量；fixed 类型与未注册类型不派生尺寸', () => {
     const measurer = createFakeMeasurer();
     const engine = createEngine(measurer);

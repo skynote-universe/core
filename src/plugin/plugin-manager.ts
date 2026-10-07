@@ -13,6 +13,8 @@ import type { NodeTypeDefinition } from '../protocols/node-type.protocol';
 import type { ArrowMarkerDefinition } from '../protocols/arrow-marker.protocol';
 import type { CursorDefinition } from '../protocols/cursor.protocol';
 import type { ConnectorRouterDefinition } from '../protocols/connector-router.protocol';
+import type { LayoutDefinition, LayoutReader } from '../protocols/layout.protocol';
+import type { DerivedConnectorSource } from '../protocols/connector-source.protocol';
 import type { InputScope } from '../protocols/input-scope.protocol';
 import type {
   CanvasHost,
@@ -96,6 +98,7 @@ class PluginContext implements CanvasPluginContext {
   readonly spatial: NodeSpatialQuery;
   readonly connectors: ConnectorGeometryApi;
   readonly nodeTypes: NodeTypeReader;
+  readonly layouts: LayoutReader;
   readonly session: SessionController;
   readonly host: PluginHost;
   private readonly cleanups: Array<() => void> = [];
@@ -110,6 +113,10 @@ class PluginContext implements CanvasPluginContext {
     this.spatial = engine.spatialIndex;
     this.connectors = engine;
     this.nodeTypes = engine.nodeTypes;
+    this.layouts = {
+      get: (id) => engine.layouts.get(id),
+      onChange: (listener) => this.track(engine.layouts.onChange(listener))
+    };
     this.session = engine.session;
     this.host = new PluginHost(engine);
     this.cleanups.push(() => this.host.dispose());
@@ -148,6 +155,20 @@ class PluginContext implements CanvasPluginContext {
   registerConnectorRouter(definition: ConnectorRouterDefinition): void {
     this.engine.routers.register(definition);
     this.cleanups.push(() => this.engine.routers.unregister(definition.id));
+  }
+
+  registerLayout(definition: LayoutDefinition): void {
+    this.engine.layouts.register(definition);
+    this.cleanups.push(() => this.engine.layouts.unregister(definition));
+  }
+
+  registerConnectorSource(source: DerivedConnectorSource): void {
+    this.engine.connectorSources.register(source);
+    this.cleanups.push(() => this.engine.connectorSources.unregister(source));
+  }
+
+  refreshConnectorSource(sourceId: string): void {
+    this.engine.connectorSources.refresh(sourceId);
   }
 
   registerCursor(definition: CursorDefinition): void {

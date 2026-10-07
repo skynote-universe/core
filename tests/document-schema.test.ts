@@ -173,6 +173,24 @@ describe('复制、粘贴与替换内容', () => {
     expect(store.getNode(pastedId)).toBeUndefined();
   });
 
+  it('粘贴到指定容器：最顶层节点换算为容器局部位姿，世界外观不变', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode(makeNode('frame', { x: 100, y: 100, width: 200, height: 200, rotation: 90 }));
+    store.addNode(makeNode('card', { x: 400, y: 50, width: 40, height: 20 }));
+    const before = engine.getNodeWorldBounds('card')!;
+
+    const payload = store.copyEntities({ nodeIds: ['card'] })!;
+    const [pastedId] = store.pasteEntities(payload, { x: 0, y: 0 }, { parentId: 'frame' }).nodeIds;
+    expect(store.getNode(pastedId)!.parentId).toBe('frame');
+    expect(store.getNode(pastedId)!.rotation).toBeCloseTo(-90);
+    expect(engine.getNodeWorldBounds(pastedId)).toMatchObject({
+      left: expect.closeTo(before.left),
+      top: expect.closeTo(before.top),
+      right: expect.closeTo(before.right)
+    });
+  });
+
   it('replaceContent 整体替换内容，默认可撤销', () => {
     const engine = new SkyNoteEngine();
     const store = engine.documentStore;

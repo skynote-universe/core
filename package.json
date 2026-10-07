@@ -1,6 +1,6 @@
 {
   "name": "@skynote/core",
-  "version": "0.1.0",
+  "version": "0.1.0-beta.1",
   "type": "module",
   "description": "SkyNote platform-neutral in-memory canvas kernel & standard protocols",
   "license": "MIT",

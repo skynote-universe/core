@@ -97,7 +97,7 @@ describe('文档反序列化', () => {
     expect(result.ok && result.value.content.nodes.child.parentId).toBeUndefined();
   });
 
-  it('带透明度的填充色拆成不透明色值与 fillOpacity；主题色引用与描边原样保留', () => {
+  it('带透明度的填充色与描边色拆成不透明色值与单独的透明度；主题色引用原样保留', () => {
     const result = parseCanvasDocument(
       docWith([
         makeNode('a', { style: { fill: 'rgba(255, 0, 0, 0.5)' } }),
@@ -113,7 +113,7 @@ describe('文档反序列化', () => {
     expect(nodes.b.style!.fill).toBe('#00FF00');
     expect(nodes.b.style!.fillOpacity).toBeCloseTo(0.25, 2);
     expect(nodes.c.style).toEqual({ fill: '#0000FF', fillOpacity: 0.25 });
-    expect(nodes.d.style).toEqual({ fill: '$red', stroke: 'rgba(0, 0, 0, 0.5)' });
+    expect(nodes.d.style).toEqual({ fill: '$red', stroke: '#000000', strokeOpacity: 0.5 });
   });
 
   it('端点所连节点不存在的连线被丢弃，其余连线保留', () => {

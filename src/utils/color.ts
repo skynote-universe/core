@@ -7,6 +7,8 @@
  * 2. 在 sRGB 空间线性插值：与设计稿工具 (Figma / CSS color-mix in srgb) 的混色结果一致，便于设计对照。
  */
 
+import type { NodeStyle } from '../types/node';
+
 /** 0~255 的 RGB 通道与 0~1 的透明度 */
 export interface RgbaColor {
   readonly r: number;
@@ -60,6 +62,32 @@ export function splitColorAlpha(value: string): { color: string; alpha: number }
   const color = parseCssColor(value);
   if (!color || color.a >= 1) return null;
   return { color: formatHexColor({ ...color, a: 1 }), alpha: color.a };
+}
+
+/** 颜色字段与对应的透明度字段 */
+const STYLE_ALPHA_FIELDS = [
+  ['fill', 'fillOpacity'],
+  ['stroke', 'strokeOpacity']
+] as const;
+
+/**
+ * 节点样式中带透明度的填充色与描边色 (如 rgba(...)、#RRGGBBAA) 拆成不透明的色值，透明度乘进
+ * fillOpacity / strokeOpacity：文档里只有一种表示透明的方式，界面显示的不透明度即实际效果
+ */
+export function splitStyleAlpha<T extends Partial<NodeStyle>>(style: T): T {
+  let result = style;
+  for (const [colorKey, opacityKey] of STYLE_ALPHA_FIELDS) {
+    const value = result[colorKey];
+    const split = typeof value === 'string' ? splitColorAlpha(value) : null;
+    if (!split) continue;
+    const opacity = result[opacityKey];
+    result = {
+      ...result,
+      [colorKey]: split.color,
+      [opacityKey]: (typeof opacity === 'number' ? opacity : 1) * split.alpha
+    };
+  }
+  return result;
 }
 
 /** 格式化为 #rrggbb，透明度不足 1 时输出 #rrggbbaa */

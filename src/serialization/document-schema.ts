@@ -19,7 +19,7 @@ import type { TextBlock, TextSizingMode } from '../types/text';
 import type { Point } from '../types/geometry';
 import { DANGEROUS_KEYS } from '../utils/clone';
 import { isValidFractionalIndex } from '../utils/fractional-index';
-import { splitColorAlpha } from '../utils/color';
+import { splitStyleAlpha } from '../utils/color';
 import { sanitizeRichTextRuns } from '../layout/rich-text-edit';
 import { findInlineMediaUrl } from '../state/commit-guards';
 
@@ -151,21 +151,12 @@ function zIndex(value: unknown, path: Path): string {
   return value;
 }
 
-/** 校验单个节点实体 (只保留已知字段) */
-/**
- * 节点样式：带透明度的填充色 (如 rgba(...)、#RRGGBBAA) 拆成不透明的色值，透明度乘进 fillOpacity，
- * 文档里只有一种表示透明的方式
- */
+/** 节点样式：带透明度的填充色与描边色拆成不透明色值与单独的透明度 */
 function nodeStyle(value: unknown, path: Path): NodeStyle {
-  const style = plainObject<NodeStyle>(value, path);
-  const split = typeof style.fill === 'string' ? splitColorAlpha(style.fill) : null;
-  if (split) {
-    style.fill = split.color;
-    style.fillOpacity = (typeof style.fillOpacity === 'number' ? style.fillOpacity : 1) * split.alpha;
-  }
-  return style;
+  return splitStyleAlpha(plainObject<NodeStyle>(value, path));
 }
 
+/** 校验单个节点实体 (只保留已知字段) */
 export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
   const n = record(value, path);
   if (n.type !== 'node') fail(`${path}.type`, '应为 node');

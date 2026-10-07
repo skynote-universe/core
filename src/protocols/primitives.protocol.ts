@@ -62,6 +62,7 @@ export interface RectPrimitive {
   fill?: string;
   fillOpacity?: number;
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   strokeCap?: StrokeCap;
@@ -103,6 +104,7 @@ export interface CirclePrimitive {
   fill?: string;
   fillOpacity?: number;
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   opacity?: number;
@@ -120,6 +122,7 @@ export interface EllipsePrimitive {
   fill?: string;
   fillOpacity?: number;
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   opacity?: number;
@@ -133,6 +136,7 @@ export interface PolygonPrimitive {
   fill?: string;
   fillOpacity?: number;
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   strokeCap?: StrokeCap;
@@ -151,6 +155,7 @@ export interface PathPrimitive {
   fillOpacity?: number;
   fillRule?: PathFillRule;
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   strokeCap?: StrokeCap;
@@ -164,6 +169,7 @@ export interface LinePrimitive {
   id?: string;
   points: number[];
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   strokeCap?: StrokeCap;
@@ -211,6 +217,7 @@ export interface BoxPrimitive {
   fill?: string;
   fillOpacity?: number;
   stroke?: string;
+  strokeOpacity?: number;
   strokeWidth?: number;
   strokeDashArray?: number[];
   strokeCap?: StrokeCap;

@@ -51,7 +51,7 @@ export interface NodeTextSlotDefinition {
   readonly singleLine?: boolean;
   /**
    * 自动宽度 (auto-width) 的上限 (内容宽度，不含内边距)：文字超过时按此宽度折行、高度随之增长
-   * (如导图主题、按钮标签)；缺省为不限，始终单行
+   * (如标签、按钮文字)；缺省为不限，始终单行
    */
   readonly maxWidth?: number;
 }
@@ -222,7 +222,7 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    */
   readonly scaleContentOnCorners?: boolean;
   /**
-   * 用户可调整的尺寸方向 (缺省 both)。另一轴完全由内容决定的节点 (如导图主题只能调宽度) 单选时
+   * 用户可调整的尺寸方向 (缺省 both)。另一轴完全由内容决定的节点 (如高度随文字的标签只能调宽度) 单选时
    * 不出现该轴的边控制柄，拖角与等比修饰键也只改可调的一轴
    */
   readonly resize?: NodeResizeAxes;

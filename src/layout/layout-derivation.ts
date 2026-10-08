@@ -6,7 +6,8 @@
  * 1. 排在文字自动尺寸之后：读到的是文字撑开后的尺寸，打字、插入、删除、改挂都在同一事务内重新排版，一步撤销。
  * 2. 远端事务不派生：协同对方收到的补丁已含排好的位置，各端结果一致。
  * 3. 只在触及布局树时才扫描子节点：普通编辑 (含拖动非成员节点) 零额外开销。
- * 4. 成员位置由布局决定：直接写成员的 x / y 会被排回原位；根自身的位置归用户，移动根不触发排版。
+ * 4. 成员位置与朝向由布局决定 (arrange 给出的位姿，未给朝向即不旋转)：直接写成员的 x / y / rotation
+ *    都会被排回；根自身的位置与旋转归用户，移动根不触发排版。
  */
 
 import type { CanvasDocument } from '../types/canvas';
@@ -34,8 +35,8 @@ const TRIGGER_FIELDS: ReadonlySet<string | number> = new Set([
   'layout',
   'layoutItem'
 ]);
-/** 成员的位置由布局决定，被直接改写时要排回去 */
-const MEMBER_POSITION_FIELDS: ReadonlySet<string | number> = new Set(['x', 'y']);
+/** 成员的位置与朝向由布局决定，被直接改写时要排回去 */
+const MEMBER_PLACEMENT_FIELDS: ReadonlySet<string | number> = new Set(['x', 'y', 'rotation']);
 /** 小于此差值的位置变化不写补丁，避免浮点误差产生空转的提交 */
 const POSITION_EPSILON = 1e-6;
 
@@ -86,7 +87,7 @@ export function deriveLayoutPatches(
     const fields = touchedFields(patch, segments);
     const node = getNode(id);
     const isMember = node !== undefined && !node.layout && node.layoutItem !== undefined;
-    if (fields && !fields.some((f) => TRIGGER_FIELDS.has(f) || (isMember && MEMBER_POSITION_FIELDS.has(f)))) continue;
+    if (fields && !fields.some((f) => TRIGGER_FIELDS.has(f) || (isMember && MEMBER_PLACEMENT_FIELDS.has(f)))) continue;
     collectAffectedLayoutRoots(id, getNode, roots);
     const previousParentId = context.previousParentId(id);
     if (previousParentId !== undefined) collectAffectedLayoutRoots(previousParentId, getNode, roots);
@@ -126,6 +127,10 @@ export function deriveLayoutPatches(
         const path = ['content', 'nodes', child.node.id];
         if (Math.abs(x - child.node.x) > POSITION_EPSILON) derived.push({ op: 'set', path: [...path, 'x'], value: x });
         if (Math.abs(y - child.node.y) > POSITION_EPSILON) derived.push({ op: 'set', path: [...path, 'y'], value: y });
+        const rotation = targets.get(child.node.id)?.rotation ?? 0;
+        if (Math.abs(rotation - child.node.rotation) > POSITION_EPSILON) {
+          derived.push({ op: 'set', path: [...path, 'rotation'], value: rotation });
+        }
         visit(child);
       }
     };

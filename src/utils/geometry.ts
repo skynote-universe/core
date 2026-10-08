@@ -325,6 +325,38 @@ export function buildRoundedPolylinePath(points: readonly Point[], cornerRadius 
   return `${path} L ${last.x} ${last.y}`;
 }
 
+/** 可按矩阵逐点换算的路径指令 (绝对坐标，参数都是坐标点) */
+const POINT_COMMANDS = new Set(['M', 'L', 'Q', 'C', 'S', 'T']);
+
+/**
+ * 把路径指令按矩阵换算 (贝塞尔曲线在仿射变换下保持形状，逐个控制点换算即可)
+ * @returns 含无法逐点换算的指令 (相对坐标、H / V、圆弧) 时为 undefined，调用方改用路由点
+ */
+export function transformPathData(pathData: string, m: Matrix2D): string | undefined {
+  const tokens = pathData.match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/g) ?? [];
+  const out: string[] = [];
+  let i = 0;
+  while (i < tokens.length) {
+    const command = tokens[i++];
+    if (command === 'Z' || command === 'z') {
+      out.push('Z');
+      continue;
+    }
+    if (!POINT_COMMANDS.has(command)) return undefined;
+    out.push(command);
+    const coords: string[] = [];
+    while (i < tokens.length && !/[A-Za-z]/.test(tokens[i])) {
+      const x = Number(tokens[i++]);
+      const y = Number(tokens[i++]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
+      const p = applyMatrix(m, x, y);
+      coords.push(`${p.x} ${p.y}`);
+    }
+    out.push(coords.join(', '));
+  }
+  return out.join(' ');
+}
+
 // ================= 圆角 =================
 
 /** 圆角的四个角，与 CornerRadius 数组顺序一致：左上、右上、右下、左下 */

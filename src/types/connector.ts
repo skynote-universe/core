@@ -90,4 +90,9 @@ export interface ConnectorEntity<TData = Record<string, unknown>, TStyle extends
    * 仅在用户主动拖折连线时记录；自动路由生成的路径点属于运行时计算态，统一由 RouteStore 内存缓存维护，严禁持久化于此。
    */
   controlPoints?: Point[];
+  /**
+   * 布线坐标系：在该节点的局部坐标系中布线，再换算回世界 (派生连线用，如布局树的分支线在布局根的坐标系中布线，
+   * 整张图旋转或放进旋转的容器时，折线与曲线随之旋转)；缺省在世界坐标系中布线。文档连线不使用、不持久化
+   */
+  routeFrame?: string;
 }

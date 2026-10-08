@@ -16,7 +16,14 @@ import type { ComputedRoute } from '../types/runtime';
 import type { FontMeasurer } from '../protocols/font-measurer.protocol';
 import { layoutConnectorLabels } from '../layout/connector-label';
 import type { ConnectorRouteEnd, FloatingEndpointMode } from '../protocols/connector-router.protocol';
-import { applyMatrix, applyMatrixToVector, computeNodeWorldBounds, invertMatrix } from '../utils/geometry';
+import {
+  applyMatrix,
+  applyMatrixToVector,
+  computeNodeWorldBounds,
+  invertMatrix,
+  multiplyMatrix,
+  transformPathData
+} from '../utils/geometry';
 import type { ConnectorRouterRegistry } from '../registry/connector-router-registry';
 import { facingAnchor, outlineExit, projectOntoOutline, type OutlinePoint } from './outline';
 
@@ -34,7 +41,7 @@ export interface ResolvedEndpointNode {
 
 /** 路由所需的连线字段：已保存的连线，或拖拽中尚未提交的预览连线 */
 export type ConnectorRouteSource = Pick<ConnectorEntity, 'connectorType' | 'from' | 'to' | 'style' | 'controlPoints'> &
-  Partial<Pick<ConnectorEntity, 'textBlocks'>>;
+  Partial<Pick<ConnectorEntity, 'textBlocks' | 'routeFrame'>>;
 
 /** 连线的生效样式：路由器默认样式 < 连线自身样式 */
 export function resolveConnectorStyle(
@@ -125,18 +132,14 @@ export function computeConnectorRoute(
   routers: ConnectorRouterRegistry,
   fonts?: FontMeasurer | null
 ): ComputedRoute | null {
-  const router = routers.get(connector.connectorType);
-  const ends = resolveConnectorEnds(connector, resolveNode, router.floating ?? 'boundary');
-  if (!ends) return null;
-  const [start, end] = ends;
-
-  const result = router.route({
-    start,
-    end,
-    controlPoints: connector.controlPoints,
-    style: resolveConnectorStyle(connector, routers)
-  });
-  const points = result.points.length >= 2 ? result.points.map((p) => ({ x: p.x, y: p.y })) : [start.point, end.point];
+  const frame = connector.routeFrame === undefined ? undefined : resolveNode(connector.routeFrame)?.worldMatrix;
+  // 布线坐标系带旋转 (或翻转) 时：在其局部坐标系中布线再换算回世界；只有平移时两者结果相同，直接在世界中布线
+  const rotated = frame !== undefined && (frame.b !== 0 || frame.c !== 0 || frame.a < 0 || frame.d < 0);
+  const routed = rotated
+    ? routeInFrame(connector, resolveNode, routers, frame)
+    : routeInWorld(connector, resolveNode, routers);
+  if (!routed) return null;
+  const { points, pathData } = routed;
 
   let left = Infinity;
   let top = Infinity;
@@ -162,9 +165,64 @@ export function computeConnectorRoute(
 
   return {
     points,
-    pathData: result.pathData,
+    pathData,
     totalLength,
     bounds: { left, top, right, bottom },
     labels
+  };
+}
+
+/** 在世界坐标系中布线：调用路由器，点数不足时退回两端直连 */
+function routeInWorld(
+  connector: Readonly<ConnectorRouteSource>,
+  resolveNode: (nodeId: string) => ResolvedEndpointNode | undefined,
+  routers: ConnectorRouterRegistry
+): { points: Point[]; pathData?: string } | null {
+  const router = routers.get(connector.connectorType);
+  const ends = resolveConnectorEnds(connector, resolveNode, router.floating ?? 'boundary');
+  if (!ends) return null;
+  const [start, end] = ends;
+  const result = router.route({
+    start,
+    end,
+    controlPoints: connector.controlPoints,
+    style: resolveConnectorStyle(connector, routers)
+  });
+  const points = result.points.length >= 2 ? result.points.map((p) => ({ x: p.x, y: p.y })) : [start.point, end.point];
+  return { points, pathData: result.pathData };
+}
+
+/**
+ * 在 frame 节点的局部坐标系中布线：端点节点的矩阵、自由端与手动拐点换算到局部，布线后路由点与路径指令换算回世界
+ * (路由器只按坐标轴方向出线，这样折线、曲线随坐标系一起旋转)；路径指令无法换算时只保留路由点 (渲染端退回折线)
+ */
+function routeInFrame(
+  connector: Readonly<ConnectorRouteSource>,
+  resolveNode: (nodeId: string) => ResolvedEndpointNode | undefined,
+  routers: ConnectorRouterRegistry,
+  frame: Matrix2D
+): { points: Point[]; pathData?: string } | null {
+  const toLocal = invertMatrix(frame);
+  const localPoint = (p: Point): Point => applyMatrix(toLocal, p.x, p.y);
+  const localEnd = (end: Readonly<ConnectorEndpoint>): ConnectorEndpoint =>
+    end.position ? { ...end, position: localPoint(end.position) } : end;
+  const localResolve = (nodeId: string): ResolvedEndpointNode | undefined => {
+    const resolved = resolveNode(nodeId);
+    return resolved && { ...resolved, worldMatrix: multiplyMatrix(toLocal, resolved.worldMatrix) };
+  };
+  const local = routeInWorld(
+    {
+      ...connector,
+      from: localEnd(connector.from),
+      to: localEnd(connector.to),
+      controlPoints: connector.controlPoints?.map(localPoint)
+    },
+    localResolve,
+    routers
+  );
+  if (!local) return null;
+  return {
+    points: local.points.map((p) => applyMatrix(frame, p.x, p.y)),
+    pathData: local.pathData === undefined ? undefined : transformPathData(local.pathData, frame)
   };
 }

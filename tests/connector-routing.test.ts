@@ -9,6 +9,7 @@ import { outlineAnchors, projectOntoOutline } from '../src/routing/outline';
 import { parseNodeClipboard } from '../src/serialization/document-schema';
 import type { NodeEntity } from '../src/types/node';
 import type { Point, RectBounds } from '../src/types/geometry';
+import { applyMatrix, invertMatrix, transformPathData } from '../src/utils/geometry';
 
 function makeNode(id: string, x: number, y: number, width = 100, height = 100): NodeEntity {
   return { id, type: 'node', nodeType: 'rect', x, y, width, height, rotation: 0, zIndex: `a${id}`, locked: false };
@@ -299,6 +300,54 @@ describe('容器变换带动内部连线', () => {
     expect(store.getConnector(id)!.to).toEqual({ position: { x: 500, y: 500 } });
     store.moveEntities({ nodeIds: ['a'], connectorIds: [id] }, { x: 30 });
     expect(store.getConnector(id)!.to).toEqual({ position: { x: 530, y: 500 } });
+  });
+});
+
+describe('路径指令换算', () => {
+  it('绝对坐标的 M / L / Q / C 逐点换算；含相对坐标、H / V 或圆弧时放弃 (调用方改用路由点)', () => {
+    const shift = { a: 1, b: 0, c: 0, d: 1, e: 10, f: 20 };
+    expect(transformPathData('M 0 0 L 5 5 Q 1 2, 3 4 C 1 1, 2 2, 3 3', shift)).toBe(
+      'M 10 20 L 15 25 Q 11 22, 13 24 C 11 21, 12 22, 13 23'
+    );
+    expect(transformPathData('M 0 0 l 5 5', shift)).toBeUndefined();
+    expect(transformPathData('M 0 0 H 5', shift)).toBeUndefined();
+    expect(transformPathData('M 0 0 A 5 5 0 0 1 10 10', shift)).toBeUndefined();
+  });
+});
+
+describe('布线坐标系', () => {
+  it('指定 routeFrame 时在该节点的局部坐标系中布线：容器旋转后折线在局部仍横平竖直，路径指令一并换算；不指定时在世界中横平竖直', () => {
+    const engine = new SkyNoteEngine();
+    const store = engine.documentStore;
+    store.addNode({ ...makeNode('g', 0, 0, 600, 400), rotation: 45 });
+    store.addNode({ ...makeNode('a', 0, 0), parentId: 'g' });
+    store.addNode({ ...makeNode('b', 300, 150), parentId: 'g' });
+    const connector = {
+      connectorType: 'orthogonal',
+      from: { nodeId: 'a', anchor: { x: 1, y: 0.5 } },
+      to: { nodeId: 'b', anchor: { x: 0, y: 0.5 } }
+    };
+    const toLocal = invertMatrix(engine.entityStore.getWorldTransform('g')!);
+    const local = (points: readonly Point[]) =>
+      points.map((p) => {
+        const q = applyMatrix(toLocal, p.x, p.y);
+        return { x: Math.round(q.x * 1e6) / 1e6, y: Math.round(q.y * 1e6) / 1e6 };
+      });
+
+    const framed = engine.previewConnectorRoute({ ...connector, routeFrame: 'g' })!;
+    expect(isOrthogonal(local(framed.points))).toBe(true);
+    expect(local(framed.points)[0]).toEqual({ x: 100, y: 50 });
+    // 路径指令与路由点在同一 (世界) 坐标系中
+    const [mx, my] = framed
+      .pathData!.split(/[\s,]+/)
+      .slice(1, 3)
+      .map(Number);
+    expect(mx).toBeCloseTo(framed.points[0].x);
+    expect(my).toBeCloseTo(framed.points[0].y);
+
+    const world = engine.previewConnectorRoute(connector)!;
+    expect(isOrthogonal(world.points)).toBe(true);
+    expect(isOrthogonal(local(world.points))).toBe(false);
   });
 });
 

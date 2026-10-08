@@ -45,7 +45,7 @@ const outline: LayoutDefinition = {
     visit(tree.root);
     return positions;
   },
-  branch: () => ({
+  edge: () => ({
     router: 'orthogonal',
     fromAnchor: { x: 0, y: 1 },
     toAnchor: { x: 0, y: 0.5 },
@@ -110,6 +110,12 @@ describe('布局排版 (同一事务派生)', () => {
 
     store.updateNode('a1', { x: 999 });
     expect(position(engine, 'a1')).toEqual({ x: 40, y: 50 });
+    // 成员朝向由布局决定 (未给出即 0)：直接写旋转同样被排回；根可以旋转
+    store.updateNode('a1', { rotation: 30 });
+    expect(engine.documentStore.getNode('a1')!.rotation).toBe(0);
+    store.updateNode('root', { rotation: 30 });
+    expect(engine.documentStore.getNode('root')!.rotation).toBe(30);
+    store.updateNode('root', { rotation: 0 });
 
     const record = store.moveEntities({ nodeIds: ['root'] }, { x: 10, y: 0 })!;
     expect(record.patches.map((p) => normalizePatchPath(p.path).join('.'))).toEqual(['content.nodes.root.x']);
@@ -150,6 +156,29 @@ describe('复制分支到剪贴板', () => {
 
     const root = store.copyEntities({ nodeIds: ['root'] })!.nodes.find((node) => node.id === 'root')!;
     expect(root.layout).toEqual({ type: 'test:outline', options: { gap: 3 } });
+  });
+});
+
+describe('布局给出朝向', () => {
+  it('arrange 给出 rotation 时成员按布局的朝向摆放，用户写入的旋转被排回布局给出的值', () => {
+    const tilted: LayoutDefinition = {
+      ...outline,
+      id: 'test:tilted',
+      arrange(tree) {
+        const placements = new Map(outline.arrange(tree));
+        for (const [id, point] of placements) placements.set(id, { ...point, rotation: 15 });
+        return placements;
+      }
+    };
+    const engine = new SkyNoteEngine().use(layoutPlugin(tilted));
+    const store = engine.documentStore;
+    store.batch(() => {
+      store.addNode(makeNode('root', { layout: { type: 'test:tilted' } }));
+      store.addNode(makeNode('a', { parentId: 'root', layoutItem: {} }));
+    });
+    expect(store.getNode('a')!.rotation).toBe(15);
+    store.updateNode('a', { rotation: 90 });
+    expect(store.getNode('a')!.rotation).toBe(15);
   });
 });
 

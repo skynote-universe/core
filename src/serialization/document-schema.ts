@@ -97,7 +97,10 @@ function plain(value: unknown, path: Path, depth = 0): unknown {
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
       if (DANGEROUS_KEYS.has(key)) continue;
-      result[key] = plain((value as Record<string, unknown>)[key], `${path}.${key}`, depth + 1);
+      const propVal = (value as Record<string, unknown>)[key];
+      // 值为 undefined 的键视为未设置 (与 JSON 序列化规范一致)，丢弃而不抛错，避免破坏文档持久化恢复
+      if (propVal === undefined) continue;
+      result[key] = plain(propVal, `${path}.${key}`, depth + 1);
     }
     return result;
   }
@@ -162,12 +165,41 @@ function nodeLayout(value: unknown, path: Path): NodeLayout {
   return { type: str(l.type, `${path}.type`, true), ...optional(l, 'options', path, plainObject) };
 }
 
-/** 校验单个节点实体 (只保留已知字段) */
+const KNOWN_NODE_KEYS = new Set([
+  'id',
+  'type',
+  'nodeType',
+  'x',
+  'y',
+  'width',
+  'height',
+  'rotation',
+  'zIndex',
+  'locked',
+  'parentId',
+  'aspectLocked',
+  'textBlocks',
+  'style',
+  'textStyle',
+  'data',
+  'layout',
+  'layoutItem'
+]);
+
+/** 校验单个节点实体：已知核心字段严格校验，其余顶层自定义扩展字段经安全纯数据清洗后保留 */
 export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
   const n = record(value, path);
   if (n.type !== 'node') fail(`${path}.type`, '应为 node');
   const list = <T>(key: string, parse: (v: unknown, p: Path) => T) =>
     optional(n, key, path, (v, p) => array(v, p).map((item, i) => parse(item, `${p}[${i}]`)));
+
+  const customFields: Record<string, unknown> = {};
+  for (const [key, propVal] of Object.entries(n)) {
+    if (!KNOWN_NODE_KEYS.has(key) && !DANGEROUS_KEYS.has(key) && propVal !== undefined) {
+      customFields[key] = plain(propVal, `${path}.${key}`);
+    }
+  }
+
   return {
     id: str(n.id, `${path}.id`, true),
     type: 'node',
@@ -187,7 +219,8 @@ export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
     ...optional(n, 'data', path, plainObject),
     ...optional(n, 'layout', path, nodeLayout),
     // 成员属性的各键归使用它的插件，读取时由插件校验 (ADR-130)
-    ...optional(n, 'layoutItem', path, plainObject)
+    ...optional(n, 'layoutItem', path, plainObject),
+    ...customFields
   };
 }
 

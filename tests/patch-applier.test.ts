@@ -134,6 +134,25 @@ describe('PatchApplier 正交原子操作', () => {
     expect(target.style).toEqual({ fill: '#111111' });
   });
 
+  it('set (merge: true): 值为 undefined 时删除目标字典中的该键，逆向回滚可恢复原值', () => {
+    const target = { style: { fill: 'transparent', fillOpacity: 0.5 } as Record<string, unknown> };
+
+    const res = applyPatch(target, {
+      op: 'set',
+      path: 'style',
+      merge: true,
+      value: { fillOpacity: undefined }
+    });
+
+    expect(res.success).toBe(true);
+    expect(Object.hasOwn(target.style, 'fillOpacity')).toBe(false);
+    expect(target.style).toEqual({ fill: 'transparent' });
+
+    // 逆向回滚
+    applyPatches(target, res.inversePatches);
+    expect(target.style).toEqual({ fill: 'transparent', fillOpacity: 0.5 });
+  });
+
   it('set (merge: true): 目标字典不存在时逆向为 unset', () => {
     const target: Record<string, unknown> = {};
     const res = applyPatch(target, { op: 'set', path: 'style', merge: true, value: { fill: '#fff' } });

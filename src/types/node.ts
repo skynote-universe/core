@@ -56,8 +56,17 @@ export interface NodeLayout {
   options?: Record<string, unknown>;
 }
 
+/**
+ * 节点顶层自定义扩展字段：留给官方插件 (如形状 geometry) 与业务宿主系统声明合并扩展
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 供模块扩充的登记表，内核自身不登记任何类型
+export interface CustomNodeFields {}
+
 /** 节点实体：持久化的纯数据，只经事务修改 */
-export interface NodeEntity<TData = Record<string, unknown>, TStyle extends NodeStyle = NodeStyle> {
+export interface NodeEntity<
+  TData = Record<string, unknown>,
+  TStyle extends NodeStyle = NodeStyle
+> extends CustomNodeFields {
   id: string;
   type: 'node';
   /** 节点业务类型，对应已注册的 NodeTypeDefinition.type */

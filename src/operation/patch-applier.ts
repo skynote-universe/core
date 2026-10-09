@@ -83,12 +83,17 @@ function applySetPatch(root: unknown, patch: SetPatch): PatchApplyResult {
 
     for (let i = 0; i < patchKeys.length; i++) {
       const pKey = patchKeys[i];
+      const nextVal = patchValue[pKey];
       if (Object.hasOwn(targetDict, pKey)) {
         oldValues[pKey] = targetDict[pKey];
-      } else {
+      } else if (nextVal !== undefined) {
         addedKeys.push(pKey);
       }
-      targetDict[pKey] = clonePlainData(patchValue[pKey]);
+      if (nextVal === undefined) {
+        delete targetDict[pKey];
+      } else {
+        targetDict[pKey] = clonePlainData(nextVal);
+      }
     }
 
     const inversePatches: CanvasPatch[] = [];

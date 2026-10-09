@@ -8,7 +8,7 @@
  * 3. 严格类型约束：通过泛型严密绑定节点的私有 data 与 style，杜绝运行时属性未定义访问。
  */
 
-import type { NodeEntity, NodeStyle, TextBlock, TextSizingMode, NodeTextStyle } from '../types';
+import type { CustomNodeFields, NodeEntity, NodeStyle, TextBlock, TextSizingMode, NodeTextStyle } from '../types';
 import type { Point, RectBounds } from '../types/geometry';
 import type { CanvasPrimitive } from './primitives.protocol';
 import type { CanvasTheme } from '../types/theme';
@@ -103,7 +103,10 @@ export type NodeCreateContent<TData = Record<string, unknown>, TStyle extends No
   NodeEntity<TData, TStyle>,
   'width' | 'height'
 > &
-  Partial<Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'data' | 'layout' | 'layoutItem'>>;
+  Partial<
+    Pick<NodeEntity<TData, TStyle>, 'textBlocks' | 'style' | 'textStyle' | 'data' | 'layout' | 'layoutItem'> &
+      CustomNodeFields
+  >;
 
 /**
  * 各节点类型的新建选项表：节点插件以模块扩充登记，createNode 据 nodeType 推导 options 的类型

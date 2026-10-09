@@ -34,7 +34,7 @@ function docWith(nodes: NodeEntity[], connectors: ConnectorEntity[] = []) {
 }
 
 describe('文档反序列化', () => {
-  it('合法文档原样通过；未知字段丢弃、危险键丢弃，开放字段保留纯数据', () => {
+  it('合法文档原样通过；文档未知字段丢弃、危险键丢弃，节点支持顶层自定义扩展字段', () => {
     const raw = JSON.parse(
       JSON.stringify(
         docWith([
@@ -46,14 +46,16 @@ describe('文档反序列化', () => {
         ])
       )
     );
-    raw.content.nodes.a.unknownField = 1;
+    raw.unknownDocField = 1;
+    raw.content.nodes.a.customProp = 'valid';
     raw.content.nodes.a.data = JSON.parse('{"__proto__": {"polluted": true}, "ok": 1}');
 
     const result = parseCanvasDocument(raw);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    const node = result.value.content.nodes.a as NodeEntity & { unknownField?: number };
-    expect(node.unknownField).toBeUndefined();
+    expect((result.value as unknown as Record<string, unknown>).unknownDocField).toBeUndefined();
+    const node = result.value.content.nodes.a as NodeEntity & { customProp?: string };
+    expect(node.customProp).toBe('valid');
     expect(node.data).toEqual({ ok: 1 });
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect(node.textBlocks![0].runs).toEqual([{ text: 'hi', fontWeight: 'bold' }]);
@@ -203,5 +205,38 @@ describe('复制、粘贴与替换内容', () => {
     store.undo();
     expect(store.getNode('old')).toBeDefined();
     expect(store.getNode('new')).toBeUndefined();
+  });
+
+  it('开放字段中的 undefined 属性被自动忽略 (与 JSON 序列化规范一致)，不阻断反序列化', () => {
+    const raw = docWith([
+      makeNode('a', {
+        style: { fill: '$blue', fillOpacity: undefined },
+        data: { active: true, extra: undefined }
+      })
+    ]);
+    const result = parseCanvasDocument(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const node = result.value.content.nodes.a;
+    expect(node.style).toEqual({ fill: '$blue' });
+    expect(node.data).toEqual({ active: true });
+  });
+
+  it('顶层自定义扩展字段经安全纯数据清洗后完整保留，且丢弃危险原型键', () => {
+    const raw = docWith([makeNode('a')]);
+    const rawNode = raw.content.nodes.a as unknown as Record<string, unknown>;
+    rawNode.geometry = 'diamond';
+    rawNode.bizStatus = 'in_progress';
+    rawNode.extraScore = 98;
+    rawNode.__proto__ = { attack: true };
+
+    const result = parseCanvasDocument(raw);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const node = result.value.content.nodes.a as unknown as Record<string, unknown>;
+    expect(node.geometry).toBe('diamond');
+    expect(node.bizStatus).toBe('in_progress');
+    expect(node.extraScore).toBe(98);
+    expect(({} as Record<string, unknown>).attack).toBeUndefined();
   });
 });

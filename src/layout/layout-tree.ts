@@ -67,7 +67,7 @@ export function buildLayoutTree(
       parent,
       children: [],
       depth,
-      item: depth === 0 ? EMPTY_ITEM : node.layoutItem!
+      item: node.layoutItem ?? EMPTY_ITEM
     };
     members.set(node.id, member);
     if (depth === 0 || !node.layout) {

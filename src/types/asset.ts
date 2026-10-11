@@ -10,11 +10,12 @@
 /** 外部多媒体资产元数据 */
 export interface CanvasAssetMeta {
   id: string;
-  name: string;
+  /** 适配器引用；不一定是网络 URL，且不得是 data:/blob: 临时地址 */
+  src: string;
+  name?: string;
   mimeType: string;
-  sizeBytes: number;
+  sizeBytes?: number;
   width?: number;
   height?: number;
   sha256?: string;
-  url?: string;
 }

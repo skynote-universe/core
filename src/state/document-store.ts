@@ -20,6 +20,7 @@ import type {
   EntityRefs,
   FractionalIndex
 } from '../types/canvas';
+import type { CanvasAssetMeta } from '../types/asset';
 import type { NodeEntity, NodeLayout } from '../types/node';
 import type { Matrix2D, Point } from '../types/geometry';
 import type { ConnectorEndpoint, ConnectorEntity, ConnectorStyle } from '../types/connector';
@@ -82,7 +83,8 @@ export function createEmptyCanvasDocument(id = 'doc_root', name = '未命名画�
     id,
     name,
     meta: { version: 1, createdAt: now, updatedAt: now },
-    content: { nodes: {}, connectors: {} }
+    content: { nodes: {}, connectors: {} },
+    assets: {}
   };
 }
 
@@ -256,6 +258,7 @@ export class DocumentStore {
   constructor(initialDoc?: CanvasDocument, options?: DocumentStoreOptions) {
     // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
     this.document = initialDoc ? clonePlainData(initialDoc) : createEmptyCanvasDocument();
+    this.document.assets ??= {};
     // 资产表等 content 之外的字段同样不允许内联媒体，因此整份文档扫描一次
     const inlineMedia = findInlineMediaUrl(this.document);
     const violation = inlineMedia
@@ -431,6 +434,47 @@ export class DocumentStore {
    * @throws 节点类型未注册或不支持新建 (属调用方编程错误)
    */
   createNode<T extends string>(request: CreateNodeRequest<T>): string | null {
+    const node = this.createNodeEntity(request);
+    return this.addNode(node, { label: request.label }) ? node.id : null;
+  }
+
+  /** 在同一个原子事务中登记资产元数据并创建引用它的节点 */
+  createNodeWithAsset<T extends string>(request: CreateNodeRequest<T>, asset: CanvasAssetMeta): string | null {
+    const node = this.createNodeEntity(request);
+    if (Object.hasOwn(this.document.assets!, asset.id) || Object.hasOwn(this.document.content.nodes, node.id))
+      return null;
+    const record = this.commit({
+      label: request.label ?? '插入图片',
+      patches: [
+        { op: 'set', path: ['assets', asset.id], value: asset },
+        { op: 'set', path: ['content', 'nodes', node.id], value: node }
+      ]
+    });
+    return record ? node.id : null;
+  }
+
+  /** 将新资产登记并替换所选图片节点的引用；同一补丁保证撤销时图片与资产元数据同步恢复 */
+  replaceImagesWithAsset(nodeIds: Iterable<string>, asset: CanvasAssetMeta): CanvasOperationRecord | null {
+    if (Object.hasOwn(this.document.assets ?? {}, asset.id)) return null;
+    const patches: CanvasPatch[] = [{ op: 'set', path: ['assets', asset.id], value: asset }];
+    let replacedCount = 0;
+    for (const id of new Set(nodeIds)) {
+      const node = this.document.content.nodes[id];
+      const image = (node as (NodeEntity & { image?: { assetId?: unknown; [key: string]: unknown } }) | undefined)
+        ?.image;
+      if (!image || typeof image.assetId !== 'string') continue;
+      patches.push({
+        op: 'set',
+        path: ['content', 'nodes', id, 'image'],
+        value: { ...image, assetId: asset.id }
+      });
+      replacedCount++;
+    }
+    if (replacedCount === 0) return null;
+    return this.commit({ label: '替换图片', patches });
+  }
+
+  private createNodeEntity<T extends string>(request: CreateNodeRequest<T>): NodeEntity {
     const definition = this.nodeTypes.get(request.nodeType);
     if (!definition?.createContent) {
       throw new Error(`[DocumentStore] 节点类型 "${request.nodeType}" 未注册或不支持新建`);
@@ -454,7 +498,7 @@ export class DocumentStore {
       zIndex: this.createTopZIndex(request.parentId),
       locked: false
     };
-    return this.addNode(node, { label: request.label }) ? node.id : null;
+    return node;
   }
 
   /** 添加完整节点实体 (粘贴、导入)；id 已存在时拒绝 */
@@ -633,11 +677,17 @@ export class DocumentStore {
    * 整体替换文档内容 (导入文件、从本地存储恢复)；内容须先经 parseCanvasDocument 校验
    * 默认可撤销：导入后撤销一步即回到原内容
    */
-  replaceContent(content: CanvasContent, options?: CommandOptions): CanvasOperationRecord | null {
+  replaceContent(
+    content: CanvasContent,
+    options?: CommandOptions,
+    assets?: Record<string, CanvasAssetMeta>
+  ): CanvasOperationRecord | null {
+    const patches: CanvasPatch[] = [{ op: 'set', path: ['content'], value: content }];
+    if (assets !== undefined) patches.push({ op: 'set', path: ['assets'], value: assets });
     return this.commit({
       ...options,
       label: options?.label ?? '导入文档',
-      patches: [{ op: 'set', path: ['content'], value: content }]
+      patches
     });
   }
 

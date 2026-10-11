@@ -13,6 +13,7 @@
  */
 
 import type { CanvasDocument, CanvasMeta } from '../types/canvas';
+import type { CanvasAssetMeta } from '../types/asset';
 import type { NodeEntity, NodeLayout, NodeStyle } from '../types/node';
 import type { ConnectorEndpoint, ConnectorEntity, ConnectorTextBlock } from '../types/connector';
 import type { TextBlock, TextSizingMode } from '../types/text';
@@ -271,6 +272,30 @@ function entityTable<T extends { id: string }>(
   return table;
 }
 
+function assetTable(value: unknown, path: Path): Record<string, CanvasAssetMeta> {
+  const assets: Record<string, CanvasAssetMeta> = {};
+  for (const [key, raw] of Object.entries(record(value, path))) {
+    if (DANGEROUS_KEYS.has(key)) continue;
+    const asset = record(raw, `${path}.${key}`);
+    const id = str(asset.id, `${path}.${key}.id`, true);
+    if (id !== key) fail(`${path}.${key}.id`, '与所在键不一致');
+    const src = str(asset.src, `${path}.${key}.src`, true);
+    if (/^(?:javascript|vbscript|file|filesystem):/i.test(src)) fail(`${path}.${key}.src`, '不允许此类资产引用');
+    const parsed: CanvasAssetMeta = {
+      id,
+      src,
+      mimeType: str(asset.mimeType, `${path}.${key}.mimeType`, true),
+      ...optional(asset, 'name', `${path}.${key}`, (v, p) => str(v, p)),
+      ...optional(asset, 'sizeBytes', `${path}.${key}`, (v, p) => num(v, p, 0)),
+      ...optional(asset, 'width', `${path}.${key}`, (v, p) => num(v, p, 0)),
+      ...optional(asset, 'height', `${path}.${key}`, (v, p) => num(v, p, 0)),
+      ...optional(asset, 'sha256', `${path}.${key}`, (v, p) => str(v, p, true))
+    };
+    assets[key] = parsed;
+  }
+  return assets;
+}
+
 /** 父容器缺失的节点回落到根层级 (而不是丢弃整份内容) */
 function detachOrphans(nodes: Record<string, NodeEntity>): void {
   for (const node of Object.values(nodes)) {
@@ -324,7 +349,7 @@ export function parseCanvasDocument(value: unknown): ParseResult<CanvasDocument>
       name: str(d.name, 'name'),
       meta,
       content: { nodes, connectors },
-      ...optional(d, 'assets', '文档', plainObject),
+      ...optional(d, 'assets', '文档', assetTable),
       ...optional(d, 'resources', '文档', plainObject)
     };
     rejectInlineMedia(doc);

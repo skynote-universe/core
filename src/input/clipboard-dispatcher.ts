@@ -19,7 +19,7 @@ export interface ClipboardHandler {
   /** 剪切：复制后删除；没有可剪切的内容时返回 null */
   cut?(): ClipboardData | null;
   /** 粘贴；处理了返回 true */
-  paste?(data: ClipboardData): boolean;
+  paste?(data: ClipboardData, files?: readonly unknown[]): boolean;
 }
 
 interface ClipboardEntry {
@@ -61,8 +61,8 @@ export class ClipboardDispatcher {
   }
 
   /** @returns 是否有处理者处理了粘贴 */
-  paste(data: ClipboardData): boolean {
-    return this.entries.some(({ handler }) => handler.paste?.(data) === true);
+  paste(data: ClipboardData, files?: readonly unknown[]): boolean {
+    return this.entries.some(({ handler }) => handler.paste?.(data, files) === true);
   }
 
   clear(): void {

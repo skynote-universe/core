@@ -118,9 +118,12 @@ class PluginContext implements CanvasPluginContext {
       onChange: (listener) => this.track(engine.layouts.onChange(listener))
     };
     this.session = engine.session;
+    this.insertImage = (file, point) => engine.insertImage(file, point);
     this.host = new PluginHost(engine);
     this.cleanups.push(() => this.host.dispose());
   }
+
+  readonly insertImage: (file: unknown, point: Point) => Promise<string | null>;
 
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined {
     return this.engine.hitTestNode(point, accept);

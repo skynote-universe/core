@@ -15,4 +15,5 @@ export * from './connector-source.protocol';
 export * from './plugin.protocol';
 export * from './font-measurer.protocol';
 export * from './host.protocol';
+export * from './asset.protocol';
 export * from './renderer.protocol';

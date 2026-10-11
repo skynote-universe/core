@@ -57,7 +57,7 @@ export interface NodeLayout {
 }
 
 /**
- * 节点顶层自定义扩展字段：留给官方插件 (如形状 geometry) 与业务宿主系统声明合并扩展
+ * 节点顶层自定义字段登记表：插件通过模块扩展声明有明确结构的特性字段，避免将其埋入通用 data
  */
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type -- 供模块扩充的登记表，内核自身不登记任何类型
 export interface CustomNodeFields {}
@@ -98,7 +98,7 @@ export interface NodeEntity<
   style?: TStyle;
   /** 默认文本外观 */
   textStyle?: NodeTextStyle;
-  /** 业务自定义私有结构载荷 */
+  /** 开放式业务载荷；有明确结构与语义的节点特性应声明为具名扩展字段 */
   data?: TData;
   /** 布局根：成员子树按此布局排列 (ADR-130) */
   layout?: NodeLayout;

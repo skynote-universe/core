@@ -12,12 +12,14 @@
 
 import type { Point, RectBounds } from './types/geometry';
 import type { CanvasDocument, ViewportState } from './types/canvas';
+import type { CanvasAssetMeta } from './types/asset';
 import type { NodeEntity } from './types/node';
 import type { ConnectorEndpointSnap, ConnectorEntity } from './types/connector';
 import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
 import type { DocumentChangeSet } from './types/change-set';
 import type { FontMeasurer } from './protocols/font-measurer.protocol';
+import type { AssetAdapter, AssetUploadResult } from './protocols/asset.protocol';
 import type { SkyNotePlugin } from './protocols/plugin.protocol';
 import { DETACHED_CANVAS_HOST, type CanvasHost } from './protocols/host.protocol';
 import {
@@ -61,6 +63,7 @@ import { InputScopeManager } from './input/input-scope-manager';
 import { PointerDispatcher } from './input/pointer-dispatcher';
 import { ClipboardDispatcher } from './input/clipboard-dispatcher';
 import { PluginManager } from './plugin/plugin-manager';
+import { generateId } from './utils/id';
 
 export interface SkyNoteEngineOptions {
   /** 初始画布文档 (默认创建空文档) */
@@ -73,6 +76,8 @@ export interface SkyNoteEngineOptions {
   theme?: CanvasThemeConfig;
   /** 字体测量器 (由渲染适配层提供)，缺省时不做文本驱动的自动尺寸 */
   fonts?: FontMeasurer;
+  /** 媒体资产适配器：宿主负责上传、解析和释放实际资源 */
+  assets?: AssetAdapter;
   /** 节点空间索引工厂 (默认 R-Tree)：分层索引为每个容器各建一个实例 (ADR-114)；测试借此观测索引调用 */
   createNodeSpatialIndex?: () => SpatialIndex;
 }
@@ -99,6 +104,11 @@ const MAX_HIT_STROKE = 16;
 /** 连线端点吸附到吸附点或边框的屏幕像素距离 */
 const CONNECTOR_SNAP_PX = 8;
 
+interface PendingAssetTask {
+  readonly controller: AbortController;
+  readonly targetNodeIds: ReadonlySet<string> | null;
+}
+
 export class SkyNoteEngine {
   readonly nodeTypes = new NodeTypeRegistry();
   readonly arrowMarkers = new ArrowMarkerRegistry();
@@ -116,6 +126,7 @@ export class SkyNoteEngine {
   readonly inputScopes = new InputScopeManager();
   readonly pointer = new PointerDispatcher();
   readonly clipboard = new ClipboardDispatcher();
+  readonly assets: AssetAdapter | undefined;
   readonly plugins: PluginManager;
 
   private readonly nodeSpatialIndex: SceneSpatialIndex;
@@ -126,8 +137,12 @@ export class SkyNoteEngine {
   /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
   private readonly routes = new Map<string, ComputedRoute>();
   private isDestroyed = false;
+  /** 任务集合负责销毁时统一取消；节点索引只用于快速找到冲突替换任务 */
+  private readonly pendingAssetTasks = new Set<PendingAssetTask>();
+  private readonly imageReplacementTasks = new Map<string, PendingAssetTask>();
 
   constructor(options?: SkyNoteEngineOptions) {
+    this.assets = options?.assets;
     this.documentStore = new DocumentStore(options?.initialDoc, {
       nodeTypes: this.nodeTypes,
       layouts: this.layouts,
@@ -189,6 +204,81 @@ export class SkyNoteEngine {
   use(plugin: SkyNotePlugin): this {
     this.plugins.use(plugin);
     return this;
+  }
+
+  /** 上传图片并在一个可撤销批次内登记资产与创建节点；失败或销毁时丢弃过期结果 */
+  async insertImage(
+    file: unknown,
+    point: Point,
+    fit: 'fill' | 'cover' | 'contain' | 'none' = 'cover'
+  ): Promise<string | null> {
+    if (!this.assets || this.isDestroyed) return null;
+    const controller = new AbortController();
+    const task: PendingAssetTask = { controller, targetNodeIds: null };
+    this.pendingAssetTasks.add(task);
+    try {
+      const uploaded = await this.assets.upload(file, { signal: controller.signal });
+      if (controller.signal.aborted || this.isDestroyed) return null;
+      const meta = createImageAssetMeta(uploaded);
+      const assetId = meta.id;
+      const nodeId = this.documentStore.createNodeWithAsset(
+        {
+          nodeType: 'image',
+          x: point.x,
+          y: point.y,
+          origin: 'center',
+          options: {
+            assetId,
+            fit,
+            intrinsicWidth: uploaded.width ?? 0,
+            intrinsicHeight: uploaded.height ?? 0
+          },
+          label: '插入图片'
+        },
+        meta
+      );
+      if (!nodeId) throw new Error('无法登记图片资产或创建图片节点');
+      return nodeId;
+    } finally {
+      this.finishAssetTask(task);
+    }
+  }
+
+  /** 上传并原子替换所选图片的资产引用，保留节点几何、样式与各自的显示方式 */
+  async replaceImage(nodeIds: readonly string[], file: unknown): Promise<boolean> {
+    if (!this.assets || this.isDestroyed) return false;
+    const targetIds = [...new Set(nodeIds)].filter((id) => {
+      const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId?: unknown } }) | undefined;
+      return typeof node?.image?.assetId === 'string';
+    });
+    if (targetIds.length === 0) return false;
+
+    const controller = new AbortController();
+    const task: PendingAssetTask = { controller, targetNodeIds: new Set(targetIds) };
+    for (const id of targetIds) this.imageReplacementTasks.get(id)?.controller.abort();
+    this.pendingAssetTasks.add(task);
+    for (const id of targetIds) this.imageReplacementTasks.set(id, task);
+    try {
+      const uploaded = await this.assets.upload(file, { signal: controller.signal });
+      if (controller.signal.aborted || this.isDestroyed) return false;
+      const asset = createImageAssetMeta(uploaded);
+      return this.documentStore.replaceImagesWithAsset(targetIds, asset) !== null;
+    } finally {
+      this.finishAssetTask(task);
+    }
+  }
+
+  private finishAssetTask(task: PendingAssetTask): void {
+    this.pendingAssetTasks.delete(task);
+    for (const id of task.targetNodeIds ?? []) {
+      if (this.imageReplacementTasks.get(id) === task) this.imageReplacementTasks.delete(id);
+    }
+  }
+
+  private cancelPendingAssetTasks(): void {
+    for (const task of this.pendingAssetTasks) task.controller.abort();
+    this.pendingAssetTasks.clear();
+    this.imageReplacementTasks.clear();
   }
 
   /**
@@ -384,6 +474,7 @@ export class SkyNoteEngine {
   destroy(): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
+    this.cancelPendingAssetTasks();
     this.unsubscribeDocument();
     this.unsubscribeRouters();
     this.unsubscribeLayouts();
@@ -482,4 +573,26 @@ function isSameRoute(a: ComputedRoute, b: ComputedRoute): boolean {
       label.bounds.bottom === other.bounds.bottom
     );
   });
+}
+
+function createImageAssetMeta(uploaded: AssetUploadResult): CanvasAssetMeta {
+  if (
+    typeof uploaded.src !== 'string' ||
+    uploaded.src.length === 0 ||
+    typeof uploaded.mimeType !== 'string' ||
+    !uploaded.mimeType.startsWith('image/') ||
+    (uploaded.width !== undefined && (!Number.isFinite(uploaded.width) || uploaded.width <= 0)) ||
+    (uploaded.height !== undefined && (!Number.isFinite(uploaded.height) || uploaded.height <= 0))
+  )
+    throw new TypeError('图片资产适配器返回了无效元数据');
+  return {
+    id: generateId('asset'),
+    src: uploaded.src,
+    mimeType: uploaded.mimeType,
+    ...(uploaded.name !== undefined && { name: uploaded.name }),
+    ...(uploaded.sizeBytes !== undefined && { sizeBytes: uploaded.sizeBytes }),
+    ...(uploaded.width !== undefined && { width: uploaded.width }),
+    ...(uploaded.height !== undefined && { height: uploaded.height }),
+    ...(uploaded.sha256 !== undefined && { sha256: uploaded.sha256 })
+  };
 }

@@ -10,3 +10,4 @@ export * from './clone';
 export * from './color';
 export * from './theme';
 export * from './fractional-index';
+export * from './node-opacity';

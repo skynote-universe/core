@@ -35,6 +35,7 @@ import { compareHierarchicalNodes } from './layout/layer-order';
 import { resolveConnectorLayerPlacement } from './layout/connector-layer';
 import { compareFractionalIndex } from './utils/fractional-index';
 import { resolveNodeStyle } from './protocols/node-type.protocol';
+import { isNodeHiddenByOpacity } from './utils/node-opacity';
 import { isEqual } from './utils/equality';
 import {
   computeConnectorRoute,
@@ -327,7 +328,13 @@ export class SkyNoteEngine {
     const candidateIds = this.nodeSpatialIndex.hitTest(point);
     for (let i = 0; i < candidateIds.length; i++) {
       const node = getNode(candidateIds[i]);
-      if (!node || node.style?.opacity === 0 || (accept && !accept(node)) || !containsPoint(node)) continue;
+      if (
+        !node ||
+        isNodeHiddenByOpacity(node, nodeTypes.get(node.nodeType)) ||
+        (accept && !accept(node)) ||
+        !containsPoint(node)
+      )
+        continue;
       if (top && compareHierarchicalNodes(node, top, getNode, chainCache) < 0) continue;
       if (isClippedOut(node)) continue;
       top = node;
@@ -425,7 +432,9 @@ export class SkyNoteEngine {
     const candidates = this.nodeSpatialIndex
       .search(expandBounds({ left: point.x, top: point.y, right: point.x, bottom: point.y }, tolerance))
       .map((id) => this.resolveEndpointNode(id)!)
-      .filter(({ node }) => node.style?.opacity !== 0 && (!accept || accept(node)));
+      .filter(
+        ({ node }) => !isNodeHiddenByOpacity(node, this.nodeTypes.get(node.nodeType)) && (!accept || accept(node))
+      );
 
     const fixedAt = (resolved: ResolvedEndpointNode, local: Point, kind: 'anchor' | 'outline') => {
       const { node, worldMatrix } = resolved;

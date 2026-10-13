@@ -28,6 +28,9 @@ export type NodeSizingPolicy =
   | 'height-driven' // 宽度固定，高度由内容自适应向下撑高 (如便签卡片、长段落卡片)
   | 'content-driven'; // 宽高双向由内容自动撑大 (如思维导图气泡、自由文本)
 
+/** 节点透明度为零时的可见性语义 */
+export type NodeOpacityBehavior = 'whole-node' | 'renderer-defined';
+
 /** 节点文本插槽静态规则契约 (代码级 Blueprint，绝不污染持久化文档) */
 export interface NodeTextSlotDefinition {
   /** 插槽唯一标识，如 'title', 'body', 'footer' */
@@ -155,6 +158,9 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 绘制与界面面板经 resolveNodeStyle 读同一份生效样式，面板显示的值即画出的值
    */
   readonly defaultStyle?: TStyle;
+
+  /** style.opacity 为零时默认隐藏整个节点；renderer-defined 表示保留节点，由渲染实现决定透明度作用范围 */
+  readonly opacityBehavior?: NodeOpacityBehavior;
 
   /**
    * 节点的几何外框自适应策略 (默认为 'fixed')

@@ -29,6 +29,9 @@ import type { CanvasHit, ConnectorGeometryApi } from '../engine';
 import type { PointerHooks } from '../input/pointer-dispatcher';
 import type { ClipboardHandler } from '../input/clipboard-dispatcher';
 import type { NodeTypeReader } from '../registry/node-type-registry';
+import type { AssetTaskResult, AssetFailure } from './asset.protocol';
+import type { EntityIds } from '../types/canvas';
+import type { NodeClipboardPayload } from '../serialization/document-schema';
 
 /** 插件上下文：插件可用的全部内核能力 */
 export interface CanvasPluginContext {
@@ -49,7 +52,10 @@ export interface CanvasPluginContext {
   /** 宿主能力 (覆盖层、光标、指针捕获)；渲染器挂载前为空实现，插件卸载时其覆盖层会话自动清除 */
   readonly host: CanvasHost;
   /** 经宿主资产适配器上传并创建图片节点；未配置资产适配器时返回 null */
-  insertImage(file: unknown, point: Point): Promise<string | null>;
+  readonly assetReferenceScope: string | undefined;
+  insertImage(file: unknown, point: Point): Promise<AssetTaskResult<string>>;
+  pasteNodesWithAssets(payload: NodeClipboardPayload, offset: Point): Promise<AssetTaskResult<EntityIds>>;
+  reportAssetFailure(operation: 'copy-nodes' | 'paste-nodes', failure: AssetFailure): void;
 
   /** 点选最上层节点：含旋转精判、裁剪型容器与层叠顺序；accept 限定只在满足条件的节点中拾取 */
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined;

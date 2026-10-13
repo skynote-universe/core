@@ -31,6 +31,12 @@ export type NodeSizingPolicy =
 /** 节点透明度为零时的可见性语义 */
 export type NodeOpacityBehavior = 'whole-node' | 'renderer-defined';
 
+/** 节点类型解释自己的资产字段；通用事务只使用公开契约。 */
+export interface NodeAssetReferences {
+  collect(node: Readonly<NodeEntity>): readonly string[];
+  remap(node: Readonly<NodeEntity>, ids: ReadonlyMap<string, string>): Partial<CustomNodeFields>;
+}
+
 /** 节点文本插槽静态规则契约 (代码级 Blueprint，绝不污染持久化文档) */
 export interface NodeTextSlotDefinition {
   /** 插槽唯一标识，如 'title', 'body', 'footer' */
@@ -161,6 +167,7 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
 
   /** style.opacity 为零时默认隐藏整个节点；renderer-defined 表示保留节点，由渲染实现决定透明度作用范围 */
   readonly opacityBehavior?: NodeOpacityBehavior;
+  readonly assets?: NodeAssetReferences;
 
   /**
    * 节点的几何外框自适应策略 (默认为 'fixed')

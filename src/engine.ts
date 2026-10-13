@@ -19,7 +19,19 @@ import type { CanvasThemeConfig } from './types/theme';
 import type { ComputedRoute } from './types/runtime';
 import type { DocumentChangeSet } from './types/change-set';
 import type { FontMeasurer } from './protocols/font-measurer.protocol';
-import type { AssetAdapter, AssetUploadResult } from './protocols/asset.protocol';
+import {
+  AssetAdapterError,
+  type AssetAdapter,
+  type AssetUploadResult,
+  type AssetTaskResult,
+  type AssetTaskEvent,
+  type AssetTaskInfo,
+  type AssetTaskCancelReason,
+  type AssetFailure
+} from './protocols/asset.protocol';
+import type { NodeClipboardPayload } from './serialization/document-schema';
+import type { EntityIds } from './types/canvas';
+import { clonePlainData } from './utils/clone';
 import type { SkyNotePlugin } from './protocols/plugin.protocol';
 import { DETACHED_CANVAS_HOST, type CanvasHost } from './protocols/host.protocol';
 import {
@@ -105,9 +117,11 @@ const MAX_HIT_STROKE = 16;
 /** 连线端点吸附到吸附点或边框的屏幕像素距离 */
 const CONNECTOR_SNAP_PX = 8;
 
-interface PendingAssetTask {
+interface PendingAssetTask extends AssetTaskInfo {
   readonly controller: AbortController;
-  readonly targetNodeIds: ReadonlySet<string> | null;
+  reason?: AssetTaskCancelReason;
+  targets?: ReadonlyMap<string, string>;
+  committing?: boolean;
 }
 
 export class SkyNoteEngine {
@@ -141,6 +155,31 @@ export class SkyNoteEngine {
   /** 任务集合负责销毁时统一取消；节点索引只用于快速找到冲突替换任务 */
   private readonly pendingAssetTasks = new Set<PendingAssetTask>();
   private readonly imageReplacementTasks = new Map<string, PendingAssetTask>();
+  private readonly assetTaskListeners = new Set<(event: AssetTaskEvent) => void>();
+  private contentEpoch = 0;
+
+  get documentEpoch(): number {
+    return this.contentEpoch;
+  }
+
+  onAssetTaskEvent(listener: (event: AssetTaskEvent) => void): () => void {
+    this.assetTaskListeners.add(listener);
+    return () => this.assetTaskListeners.delete(listener);
+  }
+
+  reportAssetFailure(operation: 'copy-nodes' | 'paste-nodes', failure: AssetFailure): void {
+    this.emitAssetTaskEvent({ phase: 'rejected', operation, failure });
+  }
+
+  private emitAssetTaskEvent(event: AssetTaskEvent): void {
+    for (const listener of this.assetTaskListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.error('[SkyNote] 资产结果订阅失败:', error);
+      }
+    }
+  }
 
   constructor(options?: SkyNoteEngineOptions) {
     this.assets = options?.assets;
@@ -171,6 +210,14 @@ export class SkyNoteEngine {
 
     // 空间索引、路由与选区都是文档的派生状态：实体删除 (本地、远端或撤销) 后选区不会残留失效 id
     this.unsubscribeDocument = this.documentStore.subscribe((_view, _record, changes) => {
+      if (changes.contentReplaced) {
+        this.contentEpoch++;
+        this.cancelPendingAssetTasks('document-replaced');
+      }
+      if (this.imageReplacementTasks.size) {
+        for (const id of changes.nodes.removed) this.checkReplacementTarget(id);
+        for (const id of changes.nodes.data) this.checkReplacementTarget(id);
+      }
       this.syncDerivedState(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
     });
@@ -211,22 +258,21 @@ export class SkyNoteEngine {
   async insertImage(
     file: unknown,
     point: Point,
-    fit: 'fill' | 'cover' | 'contain' | 'none' = 'cover'
-  ): Promise<string | null> {
-    if (!this.assets || this.isDestroyed) return null;
-    const controller = new AbortController();
-    const task: PendingAssetTask = { controller, targetNodeIds: null };
-    this.pendingAssetTasks.add(task);
-    try {
-      const uploaded = await this.assets.upload(file, { signal: controller.signal });
-      if (controller.signal.aborted || this.isDestroyed) return null;
+    fit: 'fill' | 'cover' | 'contain' | 'none' = 'cover',
+    signal?: AbortSignal
+  ): Promise<AssetTaskResult<string>> {
+    const position = { ...point };
+    return this.runAssetTask('insert-image', signal, async (task) => {
+      if (!this.assets) throw new AssetAdapterError('unsupported-source', '没有配置图片资产适配器');
+      const uploaded = await this.assets.upload(file, { signal: task.controller.signal });
+      this.assertAssetTaskCurrent(task);
       const meta = createImageAssetMeta(uploaded);
       const assetId = meta.id;
       const nodeId = this.documentStore.createNodeWithAsset(
         {
           nodeType: 'image',
-          x: point.x,
-          y: point.y,
+          x: position.x,
+          y: position.y,
           origin: 'center',
           options: {
             assetId,
@@ -238,48 +284,199 @@ export class SkyNoteEngine {
         },
         meta
       );
-      if (!nodeId) throw new Error('无法登记图片资产或创建图片节点');
+      if (!nodeId) throw new AssetAdapterError('commit-rejected', '无法登记图片资产或创建图片节点');
       return nodeId;
-    } finally {
-      this.finishAssetTask(task);
-    }
+    });
   }
 
   /** 上传并原子替换所选图片的资产引用，保留节点几何、样式与各自的显示方式 */
-  async replaceImage(nodeIds: readonly string[], file: unknown): Promise<boolean> {
-    if (!this.assets || this.isDestroyed) return false;
+  async replaceImage(
+    nodeIds: readonly string[],
+    file: unknown,
+    signal?: AbortSignal
+  ): Promise<AssetTaskResult<readonly string[]>> {
     const targetIds = [...new Set(nodeIds)].filter((id) => {
       const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId?: unknown } }) | undefined;
-      return typeof node?.image?.assetId === 'string';
+      return !node?.locked && typeof node?.image?.assetId === 'string';
     });
-    if (targetIds.length === 0) return false;
-
-    const controller = new AbortController();
-    const task: PendingAssetTask = { controller, targetNodeIds: new Set(targetIds) };
-    for (const id of targetIds) this.imageReplacementTasks.get(id)?.controller.abort();
-    this.pendingAssetTasks.add(task);
-    for (const id of targetIds) this.imageReplacementTasks.set(id, task);
-    try {
-      const uploaded = await this.assets.upload(file, { signal: controller.signal });
-      if (controller.signal.aborted || this.isDestroyed) return false;
+    const references = targetIds.map(
+      (id) => this.documentStore.getNode(id) as NodeEntity & { image: { assetId: string } }
+    );
+    const originalAssets = references.map((node) => node.image.assetId);
+    return this.runAssetTask('replace-image', signal, async (task) => {
+      if (!this.assets || targetIds.length === 0)
+        throw new AssetAdapterError('unsupported-source', '没有可替换的图片或资产适配器');
+      task.targets = new Map(targetIds.map((id, index) => [id, originalAssets[index]]));
+      for (const id of targetIds) {
+        const previous = this.imageReplacementTasks.get(id);
+        if (previous) this.cancelAssetTask(previous, 'superseded');
+        this.imageReplacementTasks.set(id, task);
+      }
+      const uploaded = await this.assets.upload(file, { signal: task.controller.signal });
+      this.assertAssetTaskCurrent(task);
+      if (
+        targetIds.some((id, index) => {
+          const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId: string } }) | undefined;
+          return (
+            !node ||
+            node.locked ||
+            node.image?.assetId !== originalAssets[index] ||
+            this.imageReplacementTasks.get(id) !== task
+          );
+        })
+      ) {
+        this.cancelAssetTask(task, 'target-changed');
+        this.assertAssetTaskCurrent(task);
+      }
       const asset = createImageAssetMeta(uploaded);
-      return this.documentStore.replaceImagesWithAsset(targetIds, asset) !== null;
+      task.committing = true;
+      if (!this.documentStore.replaceImagesWithAsset(targetIds, asset))
+        throw new AssetAdapterError('commit-rejected', '图片替换提交被拒绝');
+      return targetIds;
+    });
+  }
+
+  async pasteNodesWithAssets(
+    payload: NodeClipboardPayload,
+    offset: Point,
+    signal?: AbortSignal
+  ): Promise<AssetTaskResult<EntityIds>> {
+    const snapshot = clonePlainData(payload);
+    const position = { ...offset };
+    return this.runAssetTask('paste-nodes', signal, async (task) => {
+      if (!this.assets?.checkReferences || !snapshot.source)
+        throw new AssetAdapterError('unsupported-source', '当前资产库不支持此图片粘贴来源');
+      const assetIds = new Set<string>();
+      for (const node of snapshot.nodes) {
+        const definition = this.nodeTypes.get(node.nodeType);
+        if (!definition) throw new AssetAdapterError('invalid-reference', `未注册节点类型：${node.nodeType}`);
+        for (const id of definition.assets?.collect(node) ?? []) assetIds.add(id);
+      }
+      if (
+        assetIds.size !== Object.keys(snapshot.assets).length ||
+        [...assetIds].some((id) => !Object.hasOwn(snapshot.assets, id))
+      )
+        throw new AssetAdapterError('invalid-reference', '剪贴板资产映射不完整');
+      await this.assets.checkReferences({
+        sourceScope: snapshot.source.referenceScope,
+        assets: Object.values(snapshot.assets),
+        signal: task.controller.signal
+      });
+      this.assertAssetTaskCurrent(task);
+      const mapping = new Map([...assetIds].map((id) => [id, generateId('asset')]));
+      const assets = Object.fromEntries([...mapping].map(([id, next]) => [next, { ...snapshot.assets[id], id: next }]));
+      const reserved = new Set([
+        'id',
+        'type',
+        'nodeType',
+        'parentId',
+        'x',
+        'y',
+        'width',
+        'height',
+        'rotation',
+        'zIndex',
+        'locked',
+        'style',
+        'data',
+        'textBlocks',
+        'textStyle',
+        'layout',
+        'layoutItem',
+        'aspectLocked'
+      ]);
+      const nodes = snapshot.nodes.map((node) => {
+        const contract = this.nodeTypes.get(node.nodeType)!.assets;
+        if (!contract) return node;
+        const fields = contract.remap(node, mapping);
+        if (Object.keys(fields).some((key) => reserved.has(key)))
+          throw new AssetAdapterError('invalid-reference', '资产映射改写了公共节点字段');
+        const remapped = { ...node, ...fields };
+        if (contract.collect(remapped).some((id) => !Object.hasOwn(assets, id)))
+          throw new AssetAdapterError('invalid-reference', '节点资产引用映射无效');
+        return remapped;
+      });
+      const result = this.documentStore.pasteEntities({ ...snapshot, nodes, assets }, position);
+      if (!result.nodeIds.length && !result.connectorIds.length)
+        throw new AssetAdapterError('commit-rejected', '粘贴提交被拒绝');
+      return result;
+    });
+  }
+
+  private assertAssetTaskCurrent(task: PendingAssetTask): void {
+    if (this.isDestroyed) this.cancelAssetTask(task, 'engine-destroyed');
+    else if (task.documentEpoch !== this.contentEpoch) this.cancelAssetTask(task, 'document-replaced');
+    if (task.controller.signal.aborted) throw new Error('资产任务已取消');
+  }
+
+  private checkReplacementTarget(id: string): void {
+    const task = this.imageReplacementTasks.get(id);
+    if (!task || task.committing) return;
+    const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId: string } }) | undefined;
+    if (!node || node.locked || node.image?.assetId !== task.targets?.get(id))
+      this.cancelAssetTask(task, 'target-changed');
+  }
+
+  private cancelAssetTask(task: PendingAssetTask, reason: AssetTaskCancelReason): void {
+    if (task.controller.signal.aborted) return;
+    task.reason = reason;
+    task.controller.abort();
+  }
+
+  private async runAssetTask<T extends string | readonly string[] | EntityIds>(
+    operation: AssetTaskInfo['operation'],
+    signal: AbortSignal | undefined,
+    run: (task: PendingAssetTask) => Promise<T>
+  ): Promise<AssetTaskResult<T>> {
+    const task: PendingAssetTask = {
+      requestId: generateId('task'),
+      operation,
+      documentEpoch: this.contentEpoch,
+      controller: new AbortController()
+    };
+    const info: AssetTaskInfo = { requestId: task.requestId, operation, documentEpoch: task.documentEpoch };
+    this.pendingAssetTasks.add(task);
+    const onAbort = () =>
+      this.cancelAssetTask(task, signal?.reason === 'owner-disposed' ? 'owner-disposed' : 'caller-aborted');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    this.emitAssetTaskEvent({ phase: 'started', task: info });
+    let wake!: () => void;
+    const aborted = new Promise<AssetTaskResult<T>>((resolve) => {
+      wake = () => resolve({ status: 'cancelled', reason: task.reason ?? 'caller-aborted' });
+    });
+    task.controller.signal.addEventListener('abort', wake, { once: true });
+    let result: AssetTaskResult<T>;
+    try {
+      this.assertAssetTaskCurrent(task);
+      const execution = run(task).then(
+        (value): AssetTaskResult<T> => ({ status: 'succeeded', value }),
+        (error: unknown): AssetTaskResult<T> => {
+          if (task.controller.signal.aborted) return { status: 'cancelled', reason: task.reason ?? 'caller-aborted' };
+          return {
+            status: 'failed',
+            failure: {
+              code: error instanceof AssetAdapterError ? error.code : 'unknown',
+              detail: error instanceof Error ? error.message : '资产操作失败'
+            }
+          };
+        }
+      );
+      result = await Promise.race([execution, aborted]);
+    } catch {
+      result = { status: 'cancelled', reason: task.reason ?? 'caller-aborted' };
     } finally {
-      this.finishAssetTask(task);
+      signal?.removeEventListener('abort', onAbort);
+      task.controller.signal.removeEventListener('abort', wake);
+      this.pendingAssetTasks.delete(task);
+      for (const [id, owner] of this.imageReplacementTasks) if (owner === task) this.imageReplacementTasks.delete(id);
     }
+    this.emitAssetTaskEvent({ phase: 'settled', task: info, result });
+    return result;
   }
 
-  private finishAssetTask(task: PendingAssetTask): void {
-    this.pendingAssetTasks.delete(task);
-    for (const id of task.targetNodeIds ?? []) {
-      if (this.imageReplacementTasks.get(id) === task) this.imageReplacementTasks.delete(id);
-    }
-  }
-
-  private cancelPendingAssetTasks(): void {
-    for (const task of this.pendingAssetTasks) task.controller.abort();
-    this.pendingAssetTasks.clear();
-    this.imageReplacementTasks.clear();
+  private cancelPendingAssetTasks(reason: AssetTaskCancelReason = 'engine-destroyed'): void {
+    for (const task of this.pendingAssetTasks) this.cancelAssetTask(task, reason);
   }
 
   /**
@@ -499,6 +696,9 @@ export class SkyNoteEngine {
     this.cursors.clear();
     this.routers.clear();
     this.documentStore.clearHistory();
+    this.pendingAssetTasks.clear();
+    this.imageReplacementTasks.clear();
+    this.assetTaskListeners.clear();
   }
 
   /** 按变更集增量维护空间索引与连线路由，只触达本次提交涉及的实体 */

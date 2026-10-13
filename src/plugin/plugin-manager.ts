@@ -118,12 +118,26 @@ class PluginContext implements CanvasPluginContext {
       onChange: (listener) => this.track(engine.layouts.onChange(listener))
     };
     this.session = engine.session;
-    this.insertImage = (file, point) => engine.insertImage(file, point);
+    const assetController = new AbortController();
+    this.cleanups.push(() => assetController.abort('owner-disposed'));
+    this.insertImage = (file, point) => engine.insertImage(file, point, 'cover', assetController.signal);
+    this.pasteNodesWithAssets = (payload, offset) =>
+      engine.pasteNodesWithAssets(payload, offset, assetController.signal);
     this.host = new PluginHost(engine);
     this.cleanups.push(() => this.host.dispose());
   }
 
-  readonly insertImage: (file: unknown, point: Point) => Promise<string | null>;
+  readonly insertImage: CanvasPluginContext['insertImage'];
+  readonly pasteNodesWithAssets: CanvasPluginContext['pasteNodesWithAssets'];
+  get assetReferenceScope(): string | undefined {
+    return this.engine.assets?.referenceScope;
+  }
+  reportAssetFailure(
+    operation: 'copy-nodes' | 'paste-nodes',
+    failure: Parameters<CanvasPluginContext['reportAssetFailure']>[1]
+  ): void {
+    this.engine.reportAssetFailure(operation, failure);
+  }
 
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined {
     return this.engine.hitTestNode(point, accept);

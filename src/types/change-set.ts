@@ -35,6 +35,10 @@ export interface NodeChanges extends EntityChanges {
 
 /** 单次提交的完整增量变更集 */
 export interface DocumentChangeSet {
+  /** 成功整体替换内容的事务边界，历史操作同样携带。 */
+  readonly contentReplaced: boolean;
+  /** 资产变更不修改节点版本，渲染器据此定向使引用缓存失效。 */
+  readonly assets: ReadonlySet<string>;
   readonly nodes: NodeChanges;
   readonly connectors: EntityChanges;
   /** 内容层层叠关系可能变化：实体增删替换，或 zIndex / parentId / 连线端点变化 */

@@ -234,6 +234,7 @@ describe('连线命令', () => {
     const parsed = parseNodeClipboard(
       JSON.stringify({
         kind: 'skynote/nodes',
+        assets: {},
         version: 1,
         nodes: [],
         connectors: [

@@ -32,6 +32,7 @@ import type {
 } from '../types/operation';
 import type { DocumentChangeSet, EntityChanges } from '../types/change-set';
 import { isAspectLocked, type CreateNodeRequest, type ResizeHandle } from '../protocols/node-type.protocol';
+import { AssetAdapterError } from '../protocols/asset.protocol';
 import type { WorldFrame } from '../utils/geometry';
 import type { FontMeasurer } from '../protocols/font-measurer.protocol';
 import { EntityStore, type EntityReader, type EntitySyncResult } from './entity-store';
@@ -245,6 +246,7 @@ export class DocumentStore {
   readonly layouts: LayoutRegistry;
   readonly connectorSources: ConnectorSourceRegistry;
   private readonly document: CanvasDocument;
+  private readonly assetIds = new Set<string>();
   private readonly entities = new EntityStore();
   private readonly coordinator: OperationCoordinator<CanvasDocument>;
   private readonly subscribers = new Set<DocumentSubscriber>();
@@ -259,6 +261,7 @@ export class DocumentStore {
     // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
     this.document = initialDoc ? clonePlainData(initialDoc) : createEmptyCanvasDocument();
     this.document.assets ??= {};
+    for (const id of Object.keys(this.document.assets)) this.assetIds.add(id);
     // 资产表等 content 之外的字段同样不允许内联媒体，因此整份文档扫描一次
     const inlineMedia = findInlineMediaUrl(this.document);
     const violation = inlineMedia
@@ -409,6 +412,8 @@ export class DocumentStore {
       inversePatches: []
     };
     this.broadcast(record, {
+      contentReplaced: false,
+      assets: new Set(),
       nodes: { ...createEntityChanges(), worldGeometry: new Set(), reparented: new Set() },
       connectors: connectorChanges,
       orderChanged
@@ -632,11 +637,20 @@ export class DocumentStore {
   copyEntities(refs: EntityRefs): NodeClipboardPayload | null {
     const subtrees = this.collectSubtrees(refs, true);
     if (subtrees.topmost.length === 0 && subtrees.connectors.length === 0) return null;
+    const assets: Record<string, CanvasAssetMeta> = {};
+    for (const node of [...subtrees.topmost, ...subtrees.descendants]) {
+      for (const id of this.nodeTypes.get(node.nodeType)?.assets?.collect(node) ?? []) {
+        const asset = this.document.assets?.[id];
+        if (!asset) throw new AssetAdapterError('missing-asset', '复制图片缺少资产元数据');
+        assets[id] = clonePlainData(asset);
+      }
+    }
     return {
       kind: NODE_CLIPBOARD_KIND,
       version: 1,
       nodes: [...subtrees.topmost, ...subtrees.descendants],
-      connectors: subtrees.connectors
+      connectors: subtrees.connectors,
+      assets
     };
   }
 
@@ -667,10 +681,15 @@ export class DocumentStore {
       return { ...node, ...pose, parentId };
     });
     const descendants = payload.nodes.filter((node) => !isTopmost(node));
-    return this.insertSubtrees({ topmost, descendants, connectors: payload.connectors }, offset, {
-      ...commandOptions,
-      label: commandOptions.label ?? '粘贴'
-    });
+    return this.insertSubtrees(
+      { topmost, descendants, connectors: payload.connectors },
+      offset,
+      {
+        ...commandOptions,
+        label: commandOptions.label ?? '粘贴'
+      },
+      payload.assets
+    );
   }
 
   /**
@@ -1199,12 +1218,23 @@ export class DocumentStore {
    * 把子树快照写入文档：全部换新 id；最顶层放进各自容器 (不存在时为根层级) 最上方并按世界位移偏移，
    * 后代与连线改接到新 id；自由端与手动拐点是世界坐标，随之偏移
    */
-  private insertSubtrees(subtrees: Subtrees, offset: Point, options: CommandOptions): EntityIds {
+  private insertSubtrees(
+    subtrees: Subtrees,
+    offset: Point,
+    options: CommandOptions,
+    assets: Record<string, CanvasAssetMeta> = {}
+  ): EntityIds {
     const { nodes } = this.document.content;
     const idMap = new Map<string, string>();
     for (const node of [...subtrees.topmost, ...subtrees.descendants]) idMap.set(node.id, generateId('node'));
 
-    const patches: CanvasPatch[] = [];
+    if (Object.keys(assets).some((id) => Object.hasOwn(this.document.assets ?? {}, id)))
+      return { nodeIds: [], connectorIds: [] };
+    const patches: CanvasPatch[] = Object.entries(assets).map(([id, asset]) => ({
+      op: 'set',
+      path: ['assets', id],
+      value: asset
+    }));
     const topKeys = new Map<string | undefined, FractionalIndex | null>();
     for (const node of subtrees.topmost) {
       const parentId = node.parentId !== undefined && Object.hasOwn(nodes, node.parentId) ? node.parentId : undefined;
@@ -1251,7 +1281,7 @@ export class DocumentStore {
     }
 
     const empty: EntityIds = { nodeIds: [], connectorIds: [] };
-    if (patches.length === 0) return empty;
+    if (subtrees.topmost.length === 0 && connectorIds.length === 0) return empty;
     const record = this.commit({ ...options, patches });
     return record ? { nodeIds: subtrees.topmost.map((node) => idMap.get(node.id)!), connectorIds } : empty;
   }
@@ -1290,6 +1320,8 @@ export class DocumentStore {
    * 事务提交后：对齐实体索引、递增双版本号，并把补丁按实体语义归类为变更集广播
    */
   private handleOperationCommitted(record: CanvasOperationRecord, doc: CanvasDocument): void {
+    let contentReplaced = false;
+    const assetChanges = new Set<string>();
     const nodeChanges = createEntityChanges();
     const connectorChanges = createEntityChanges();
     let fullSync = false;
@@ -1315,6 +1347,15 @@ export class DocumentStore {
     for (let i = 0; i < record.patches.length; i++) {
       const patch = record.patches[i];
       const segments = normalizePatchPath(patch.path);
+      if (segments[0] === 'assets') {
+        if (segments.length > 1) assetChanges.add(String(segments[1]));
+        else {
+          for (const id of this.assetIds) assetChanges.add(id);
+          for (const id of Object.keys(doc.assets ?? {})) assetChanges.add(id);
+          if (patch.op === 'set') for (const id of Object.keys((patch.oldValue ?? {}) as object)) assetChanges.add(id);
+        }
+      }
+      if (segments[0] === 'content' && segments.length === 1) contentReplaced = true;
       if (segments[0] !== 'content') continue;
 
       // 整体替换 content 或整个 nodes/connectors 集合
@@ -1363,6 +1404,10 @@ export class DocumentStore {
     }
 
     const { nodes, connectors } = doc.content;
+    for (const id of assetChanges) {
+      if (Object.hasOwn(doc.assets ?? {}, id)) this.assetIds.add(id);
+      else this.assetIds.delete(id);
+    }
     const store = this.entities;
 
     if (fullSync) {
@@ -1435,6 +1480,8 @@ export class DocumentStore {
     }
 
     this.broadcast(record, {
+      contentReplaced,
+      assets: assetChanges,
       nodes: { ...nodeChanges, worldGeometry, reparented },
       connectors: connectorChanges,
       orderChanged

@@ -32,6 +32,8 @@ export interface NodeClipboardPayload {
   readonly version: 1;
   readonly nodes: NodeEntity[];
   readonly connectors: ConnectorEntity[];
+  readonly assets: Record<string, CanvasAssetMeta>;
+  readonly source?: { readonly referenceScope: string };
 }
 
 export const NODE_CLIPBOARD_KIND = 'skynote/nodes';
@@ -373,7 +375,20 @@ export function parseNodeClipboard(json: string): ParseResult<NodeClipboardPaylo
       sanitizeConnectorEntity(item, `connectors[${i}]`)
     );
     if (nodes.length === 0 && connectors.length === 0) fail('剪贴板', '没有可粘贴的内容');
-    const payload: NodeClipboardPayload = { kind: NODE_CLIPBOARD_KIND, version: 1, nodes, connectors };
+    const assets = assetTable(p.assets, '剪贴板.assets');
+    const source = optional(p, 'source', '剪贴板', (v, path) => {
+      const origin = record(v, path);
+      return { referenceScope: str(origin.referenceScope, `${path}.referenceScope`, true) };
+    });
+    if (Object.keys(assets).length > 0 && !source.source) fail('剪贴板.source', '图片资产缺少来源');
+    const payload: NodeClipboardPayload = {
+      kind: NODE_CLIPBOARD_KIND,
+      version: 1,
+      nodes,
+      connectors,
+      assets,
+      ...source
+    };
     rejectInlineMedia(payload);
     return payload;
   });

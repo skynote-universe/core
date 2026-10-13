@@ -140,7 +140,7 @@ describe('文档反序列化', () => {
   it('剪贴板：不是画布节点数据或 JSON 不合法时失败', () => {
     expect(parseNodeClipboard('not json').ok).toBe(false);
     expect(parseNodeClipboard(JSON.stringify({ kind: 'other' })).ok).toBe(false);
-    const payload = { kind: NODE_CLIPBOARD_KIND, version: 1, nodes: [makeNode('a')], connectors: [] };
+    const payload = { kind: NODE_CLIPBOARD_KIND, version: 1, nodes: [makeNode('a')], connectors: [], assets: {} };
     expect(parseNodeClipboard(JSON.stringify(payload))).toMatchObject({ ok: true });
   });
 });

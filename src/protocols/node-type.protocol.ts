@@ -35,6 +35,8 @@ export type NodeOpacityBehavior = 'whole-node' | 'renderer-defined';
 export interface NodeAssetReferences {
   collect(node: Readonly<NodeEntity>): readonly string[];
   remap(node: Readonly<NodeEntity>, ids: ReadonlyMap<string, string>): Partial<CustomNodeFields>;
+  /** 外部文档的可恢复字段修复；纯函数，只返回本节点拥有的扩展字段，不制造资产。 */
+  repair?(node: Readonly<NodeEntity>): Partial<CustomNodeFields> | undefined;
 }
 
 /** 节点文本插槽静态规则契约 (代码级 Blueprint，绝不污染持久化文档) */

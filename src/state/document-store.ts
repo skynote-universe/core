@@ -26,6 +26,7 @@ import type { Matrix2D, Point } from '../types/geometry';
 import type { ConnectorEndpoint, ConnectorEntity, ConnectorStyle } from '../types/connector';
 import type {
   CanvasHistoryEntry,
+  CanvasHistorySnapshot,
   CanvasOperationRecord,
   CommitOperationOptions,
   CanvasPatch
@@ -64,6 +65,8 @@ import {
 } from '../layout/layer-order';
 import { generateKeyBetween, generateNKeysBetween } from '../utils/fractional-index';
 import { areStructuredValuesEqual } from '../utils/equality';
+import { parseCanvasHistory } from '../serialization/history-schema';
+import { parseCanvasDocument, type ParseResult } from '../serialization/document-schema';
 import {
   applyMatrix,
   applyMatrixToVector,
@@ -312,6 +315,37 @@ export class DocumentStore {
   /** 撤销栈 (旧 → 新)，供调试与界面展示 */
   get undoEntries(): readonly CanvasHistoryEntry[] {
     return this.coordinator.undoEntries;
+  }
+
+  getHistorySnapshot(): CanvasHistorySnapshot {
+    return this.coordinator.getHistorySnapshot();
+  }
+
+  /** 恢复可信校验后的完整本地状态；必须由宿主决定恢复来源，不作为普通文件导入。 */
+  restoreRecovery(document: unknown, history: unknown): ParseResult<void> {
+    const parsed = parseCanvasDocument(document);
+    if (!parsed.ok) return parsed;
+    const checked = parseCanvasHistory(parsed.value, history);
+    if (!checked.ok) return checked;
+    const patches: CanvasPatch[] = Object.entries(parsed.value).map(([key, value]) => ({
+      op: 'set',
+      path: [key],
+      value
+    }));
+    for (const key of Object.keys(this.document))
+      if (!Object.hasOwn(parsed.value, key)) patches.push({ op: 'unset', path: [key] });
+    const violation = findCommitViolation(this.document, patches);
+    if (violation) return { ok: false, error: violation };
+    const committed = this.coordinator.commitWithHistory(
+      { patches, source: 'system', label: '恢复本地检查点' },
+      checked.value
+    );
+    return committed ? { ok: true, value: undefined } : { ok: false, error: '当前事务或维护状态不允许恢复' };
+  }
+
+  /** 宿主维护能力，不向插件的 DocumentApi 开放。 */
+  suspendWrites(): () => void {
+    return this.coordinator.suspendWrites();
   }
 
   /** 订阅撤销 / 重做可用状态 (订阅时立即回调一次当前状态) */

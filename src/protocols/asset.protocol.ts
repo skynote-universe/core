@@ -11,7 +11,13 @@ import type { CanvasAssetMeta } from '../types/asset';
 import type { EntityIds } from '../types/canvas';
 
 export type AssetTaskCancelReason =
-  'document-replaced' | 'superseded' | 'target-changed' | 'caller-aborted' | 'owner-disposed' | 'engine-destroyed';
+  | 'document-replaced'
+  | 'superseded'
+  | 'target-changed'
+  | 'caller-aborted'
+  | 'owner-disposed'
+  | 'engine-destroyed'
+  | 'maintenance';
 export type AssetFailureCode =
   | 'unsupported-source'
   | 'missing-asset'
@@ -76,7 +82,38 @@ export interface AssetReadResult {
   readonly mimeType: string;
 }
 
+export type AssetProtectionPurpose =
+  | AssetTaskOperation
+  | 'upload'
+  | 'import'
+  | 'export'
+  | 'display'
+  | 'read'
+  | 'check'
+  | 'workspace'
+  | 'persist'
+  | 'clipboard';
+
+export interface AssetProtectionRequest {
+  readonly purpose: AssetProtectionPurpose;
+  /** 未提供地址时保护整个库；显式空数组只建立会话记录，不推断任何文件已无引用。 */
+  readonly sources?: readonly string[];
+  readonly signal: AbortSignal;
+}
+
+export interface AssetProtectionLease {
+  /** 幂等释放；宿主释放失败必须保留保护，不应让已提交操作被误报为失败。 */
+  release(): void;
+  /** 保存失败等未完成交接时保留保护，不按超时自动淘汰。 */
+  retain(reason: string): void;
+}
+
+export interface AssetProtectionProvider {
+  protect(request: AssetProtectionRequest): Promise<AssetProtectionLease>;
+}
+
 export interface AssetAdapter {
+  protect?(request: AssetProtectionRequest): Promise<AssetProtectionLease>;
   readonly referenceScope?: string;
   checkReferences?(check: AssetReferenceCheck): Promise<void>;
   upload(file: unknown, options: { readonly signal: AbortSignal }): Promise<AssetUploadResult>;

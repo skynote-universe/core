@@ -173,3 +173,9 @@ export interface CanvasHistoryEntry {
   readonly patches: CanvasPatch[];
   readonly inversePatches: CanvasPatch[];
 }
+
+/** 独立历史副本；两个数组均按栈底到栈顶排列，不向宿主泄露内部可变栈。 */
+export interface CanvasHistorySnapshot {
+  readonly undo: readonly CanvasHistoryEntry[];
+  readonly redo: readonly CanvasHistoryEntry[];
+}

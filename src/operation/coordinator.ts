@@ -19,6 +19,7 @@ import type {
   CanvasOperationRecord,
   CommitOperationOptions,
   CanvasHistoryEntry,
+  CanvasHistorySnapshot,
   CanvasPatch
 } from '../types/operation';
 import { applyPatches } from './patch-applier';
@@ -65,6 +66,21 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   private groupCompaction: { entryId: string; forward: OverwriteCompactor; inverse: OverwriteCompactor } | null = null;
   /** 进行中的批处理：期间的可撤销本地事务以同一分组并入一个撤销条目 */
   private activeBatch: { groupId: string; label: string | undefined } | null = null;
+  private writeSuspensions = 0;
+  private committing = false;
+
+  /** 宿主维护期间冻结文档与历史；不能从事务或批处理中途进入。恢复函数幂等且支持嵌套。 */
+  suspendWrites(): () => void {
+    if (this.activeBatch || this.committing || this.isApplyingHistory)
+      throw new Error('不能在事务执行期间进入维护状态');
+    this.writeSuspensions++;
+    let resumed = false;
+    return () => {
+      if (resumed) return;
+      resumed = true;
+      this.writeSuspensions--;
+    };
+  }
 
   constructor(targetDoc: TDoc, options?: OperationCoordinatorOptions) {
     this.targetDoc = targetDoc;
@@ -114,6 +130,32 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
    * 所有对文档状态的增删改查必须经由此通道
    */
   commitOperation(options: CommitOperationOptions): CanvasOperationRecord | null {
+    if (this.writeSuspensions > 0) return null;
+    const wasCommitting = this.committing;
+    this.committing = true;
+    try {
+      return this.executeCommit(options);
+    } finally {
+      this.committing = wasCommitting;
+    }
+  }
+
+  /** 仅供宿主经文档/历史校验后整体恢复；内容和双栈在同一次通知前切换。 */
+  commitWithHistory(options: CommitOperationOptions, history: CanvasHistorySnapshot): CanvasOperationRecord | null {
+    if (this.writeSuspensions > 0 || this.committing || this.activeBatch || this.isApplyingHistory) return null;
+    const copy = clonePlainData(history);
+    this.committing = true;
+    try {
+      return this.executeCommit({ ...options, undoable: false }, copy);
+    } finally {
+      this.committing = false;
+    }
+  }
+
+  private executeCommit(
+    options: CommitOperationOptions,
+    restoredHistory?: CanvasHistorySnapshot
+  ): CanvasOperationRecord | null {
     if (options.patches.length === 0) {
       return null;
     }
@@ -147,7 +189,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       ? clonePlainData(options.inversePatches)
       : applyResult.inversePatches;
 
-    if (origin === 'local') {
+    if (origin === 'local' && !restoredHistory) {
       // 回滚用的是应用器推导的对偶补丁 (与显式传入的逆向补丁无关)，失败时整体撤回已应用的各段
       let appliedInverse = applyResult.inversePatches;
       for (const derivation of this.derivations) {
@@ -179,23 +221,30 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     };
 
     // 历史栈管理：仅当处于用户本地操作、标记为可撤销、且非回放中时，记录到历史栈
-    if (undoable && origin === 'local' && !this.isApplyingHistory) {
+    if (restoredHistory) {
+      this.undoStack.splice(0, this.undoStack.length, ...restoredHistory.undo);
+      this.redoStack.splice(0, this.redoStack.length, ...restoredHistory.redo);
+      this.groupCompaction = null;
+    } else if (undoable && origin === 'local' && !this.isApplyingHistory) {
       this.recordToHistory(record);
     }
 
     // 通知事务监听者
     this.notifyOperationCommitted(record);
+    if (restoredHistory) this.notifyHistoryChanged();
 
     return record;
   }
 
   /** 撤销上一步操作；冲突时该条目作废 */
   undo(): boolean {
+    if (this.writeSuspensions > 0) return false;
     return this.replay('undo');
   }
 
   /** 重做上一步撤销的操作；冲突时该条目作废 */
   redo(): boolean {
+    if (this.writeSuspensions > 0) return false;
     return this.replay('redo');
   }
 
@@ -203,6 +252,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
    * 清空历史栈
    */
   clearHistory(): void {
+    if (this.writeSuspensions > 0) return;
     if (this.undoStack.length === 0 && this.redoStack.length === 0) {
       return;
     }
@@ -233,6 +283,10 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   /** 撤销栈 (旧 → 新)，供调试与界面展示 */
   get undoEntries(): readonly CanvasHistoryEntry[] {
     return this.undoStack;
+  }
+
+  getHistorySnapshot(): CanvasHistorySnapshot {
+    return clonePlainData({ undo: this.undoStack, redo: this.redoStack });
   }
 
   /**

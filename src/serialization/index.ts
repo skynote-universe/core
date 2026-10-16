@@ -5,3 +5,4 @@
 
 export * from './document-schema';
 export * from './document-assets';
+export * from './history-schema';

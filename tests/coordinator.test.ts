@@ -7,6 +7,69 @@ import { describe, it, expect } from 'vitest';
 import { OperationCoordinator } from '../src/operation/coordinator';
 
 describe('OperationCoordinator', () => {
+  it('维护冻结覆盖本地、远端事务和历史，嵌套恢复不提前放行', () => {
+    const doc = { count: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 1 }] });
+    coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 2 }] });
+    coordinator.undo();
+    const before = coordinator.getHistorySnapshot();
+    const resume = coordinator.suspendWrites();
+    const resumeNested = coordinator.suspendWrites();
+    for (const origin of ['local', 'remote'] as const)
+      expect(coordinator.commitOperation({ origin, patches: [{ op: 'set', path: 'count', value: 9 }] })).toBeNull();
+    coordinator.batch(() => coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 9 }] }));
+    expect(coordinator.undo()).toBe(false);
+    expect(coordinator.redo()).toBe(false);
+    coordinator.clearHistory();
+    expect(coordinator.getHistorySnapshot()).toEqual(before);
+    expect(doc.count).toBe(1);
+    resume();
+    resume();
+    expect(coordinator.redo()).toBe(false);
+    resumeNested();
+    expect(coordinator.redo()).toBe(true);
+    expect(doc.count).toBe(2);
+  });
+
+  it('拒绝从批处理或事务派生中途冻结，既有批次仍能回滚', () => {
+    const doc = { count: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    expect(() =>
+      coordinator.batch(() => {
+        coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 1 }] });
+        coordinator.suspendWrites();
+      })
+    ).toThrow('事务执行期间');
+    expect(doc.count).toBe(0);
+    coordinator.setPatchDerivations([
+      () => {
+        expect(() => coordinator.suspendWrites()).toThrow('事务执行期间');
+        return [];
+      }
+    ]);
+    expect(coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 2 }] })).not.toBeNull();
+  });
+
+  it('公开历史快照覆盖撤销和重做并深拷贝，修改副本不影响历史执行', () => {
+    const document = { data: { value: 0 } };
+    const coordinator = new OperationCoordinator(document, { maxHistorySize: 2 });
+    for (const value of [1, 2, 3])
+      coordinator.commitOperation({ patches: [{ op: 'set', path: 'data', value: { value } }] });
+    coordinator.undo();
+    const snapshot = coordinator.getHistorySnapshot();
+    expect(snapshot.undo).toHaveLength(1);
+    expect(snapshot.redo).toHaveLength(1);
+    const patch = snapshot.redo[0].patches[0];
+    if (patch.op !== 'set') throw new Error('测试补丁类型错误');
+    (patch.value as { value: number }).value = 99;
+    coordinator.redo();
+    expect(document.data.value).toBe(3);
+    expect(snapshot.redo).toHaveLength(1);
+    coordinator.clearHistory();
+    expect(coordinator.getHistorySnapshot()).toEqual({ undo: [], redo: [] });
+  });
+
   it('提交操作并记录到撤销栈', () => {
     const doc = { count: 0 };
     const coordinator = new OperationCoordinator(doc);

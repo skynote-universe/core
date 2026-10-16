@@ -154,6 +154,29 @@ export class SkyNoteEngine {
   private isDestroyed = false;
   /** 任务集合负责销毁时统一取消；节点索引只用于快速找到冲突替换任务 */
   private readonly pendingAssetTasks = new Set<PendingAssetTask>();
+  private readonly assetExecutions = new Set<Promise<void>>();
+  private maintenanceDepth = 0;
+
+  /**
+   * 同步冻结写入口并取消资产任务。drained 等待真实执行结束，包含此前已返回取消的上传。
+   * 宿主仍须排空自己的导入、导出、保存和显示任务，再交接库保护；resume 幂等。
+   */
+  beginMaintenance(): { readonly drained: Promise<void>; resume(): void } {
+    if (this.isDestroyed) throw new Error('已销毁的引擎不能进入维护状态');
+    const resumeWrites = this.documentStore.suspendWrites();
+    this.maintenanceDepth++;
+    this.cancelPendingAssetTasks('maintenance');
+    let resumed = false;
+    return {
+      drained: Promise.all([...this.assetExecutions]).then(() => undefined),
+      resume: () => {
+        if (resumed) return;
+        resumed = true;
+        this.maintenanceDepth--;
+        resumeWrites();
+      }
+    };
+  }
   private readonly imageReplacementTasks = new Map<string, PendingAssetTask>();
   private readonly assetTaskListeners = new Set<(event: AssetTaskEvent) => void>();
   private contentEpoch = 0;
@@ -428,6 +451,7 @@ export class SkyNoteEngine {
     signal: AbortSignal | undefined,
     run: (task: PendingAssetTask) => Promise<T>
   ): Promise<AssetTaskResult<T>> {
+    if (this.maintenanceDepth > 0) return { status: 'cancelled', reason: 'maintenance' };
     const task: PendingAssetTask = {
       requestId: generateId('task'),
       operation,
@@ -449,7 +473,26 @@ export class SkyNoteEngine {
     let result: AssetTaskResult<T>;
     try {
       this.assertAssetTaskCurrent(task);
-      const execution = run(task).then(
+      let finishExecution!: () => void;
+      const completion = new Promise<void>((resolve) => {
+        finishExecution = resolve;
+      });
+      this.assetExecutions.add(completion);
+      const execution = (async () => {
+        if (!this.assets?.protect) return run(task);
+        const protection = await this.assets.protect({ purpose: operation, signal: task.controller.signal });
+        try {
+          this.assertAssetTaskCurrent(task);
+          return await run(task);
+        } finally {
+          // 取消结果可先返回；实际异步执行结束后再释放，覆盖忽略取消的适配器。
+          try {
+            protection.release();
+          } catch (error) {
+            console.warn('[SkyNote:Assets] 宿主资产保护释放失败，不能更改已提交任务结果:', error);
+          }
+        }
+      })().then(
         (value): AssetTaskResult<T> => ({ status: 'succeeded', value }),
         (error: unknown): AssetTaskResult<T> => {
           if (task.controller.signal.aborted) return { status: 'cancelled', reason: task.reason ?? 'caller-aborted' };
@@ -462,6 +505,10 @@ export class SkyNoteEngine {
           };
         }
       );
+      void execution.then(() => {
+        this.assetExecutions.delete(completion);
+        finishExecution();
+      });
       result = await Promise.race([execution, aborted]);
     } catch {
       result = { status: 'cancelled', reason: task.reason ?? 'caller-aborted' };

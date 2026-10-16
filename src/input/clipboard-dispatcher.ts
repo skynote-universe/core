@@ -13,6 +13,12 @@
 /** 剪贴板数据：格式 (MIME，如 text/plain) → 文本内容 */
 export type ClipboardData = Readonly<Record<string, string>>;
 
+export interface ClipboardWriteEvent {
+  readonly operation: 'copy' | 'cut';
+  readonly status: 'completed' | 'partial';
+  readonly data: ClipboardData;
+}
+
 export interface ClipboardHandler {
   /** 复制当前选中的内容；没有可复制的内容时返回 null，交给下一个处理者 */
   copy?(): ClipboardData | null;
@@ -29,6 +35,24 @@ interface ClipboardEntry {
 
 export class ClipboardDispatcher {
   private entries: ClipboardEntry[] = [];
+  private readonly writeListeners = new Set<(event: ClipboardWriteEvent) => void>();
+
+  onWrite(listener: (event: ClipboardWriteEvent) => void): () => void {
+    this.writeListeners.add(listener);
+    return () => this.writeListeners.delete(listener);
+  }
+
+  /** 宿主写入后通知；部分格式失败仍可能留下媒体载荷，观察者不能改变剪切结果。 */
+  notifyWrite(operation: 'copy' | 'cut', data: ClipboardData, status: 'completed' | 'partial' = 'completed'): void {
+    const event = Object.freeze({ operation, status, data: Object.freeze({ ...data }) });
+    for (const listener of this.writeListeners) {
+      try {
+        listener(event);
+      } catch (error) {
+        console.warn('[SkyNote:Clipboard] 剪贴板写入观察失败:', error);
+      }
+    }
+  }
 
   /**
    * 注册处理者
@@ -67,5 +91,6 @@ export class ClipboardDispatcher {
 
   clear(): void {
     this.entries = [];
+    this.writeListeners.clear();
   }
 }

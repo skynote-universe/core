@@ -12,7 +12,13 @@
 
 import type { Point } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
-import type { CanvasPointerEvent, CanvasWheelEvent, EventModifiers } from '../protocols/events.protocol';
+import type {
+  CanvasPointerEvent,
+  CanvasPointerSample,
+  CanvasPointerType,
+  CanvasWheelEvent,
+  EventModifiers
+} from '../protocols/events.protocol';
 
 interface PointerEventState {
   /** 首个认领者 (便于排查认领冲突)；null 表示未被认领 */
@@ -26,9 +32,12 @@ export interface SyntheticPointerEventInit {
   /** 相对视口容器的像素坐标；缺省与 point 相同 (视口为单位矩阵时) */
   clientPoint?: Point;
   pointerId?: number;
+  pointerType?: CanvasPointerType;
   button?: number;
   modifiers?: Partial<EventModifiers>;
   pressure?: number;
+  /** 帧内合并前的采样序列；缺省为单点 [{ point, clientPoint, pressure }] */
+  samples?: readonly CanvasPointerSample[];
   /** 连击序号，缺省为 1 */
   clickCount?: number;
   /** 已知的命中节点；与 resolveTarget 二选一 */
@@ -43,9 +52,11 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
   readonly point: Point;
   readonly clientPoint: Point;
   readonly pointerId: number;
+  readonly pointerType: CanvasPointerType;
   readonly button: number;
   readonly modifiers: EventModifiers;
   readonly pressure: number;
+  readonly samples: readonly CanvasPointerSample[];
   readonly clickCount: number;
   private readonly state: PointerEventState;
   private readonly resolveTarget: (() => NodeEntity | undefined) | undefined;
@@ -55,6 +66,7 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
     this.point = init.point;
     this.clientPoint = init.clientPoint ?? init.point;
     this.pointerId = init.pointerId ?? 0;
+    this.pointerType = init.pointerType ?? 'mouse';
     this.button = init.button ?? 0;
     this.modifiers = {
       shift: init.modifiers?.shift ?? false,
@@ -63,6 +75,10 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
       meta: init.modifiers?.meta ?? false
     };
     this.pressure = init.pressure ?? 0.5;
+    this.samples =
+      init.samples && init.samples.length > 0
+        ? init.samples
+        : [{ point: this.point, clientPoint: this.clientPoint, pressure: this.pressure }];
     this.clickCount = init.clickCount ?? 1;
     this.resolveTarget = init.resolveTarget;
     this.onStopPropagation = init.onStopPropagation;

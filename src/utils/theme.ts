@@ -27,6 +27,7 @@ export const CANVAS_PALETTE: Readonly<Record<string, string>> = Object.freeze({
   purple: '#D9C2FF',
   blue: '#A8D1FF',
   teal: '#9FE3D6',
+  cyan: '#9FE3D6',
   green: '#B8E6A0',
   gray: '#E3E6EA',
   ink: '#1F2937',
@@ -121,7 +122,14 @@ export function resolveThemeColor(
   fallback?: string
 ): string | undefined {
   if (value === undefined) return fallback;
-  if (value.startsWith('$')) return theme.palette[value.slice(1)] ?? fallback;
+  if (value.startsWith('$')) {
+    const key = value.slice(1);
+    if (key === 'text') return theme.textColor;
+    if (key === 'accent') return theme.accent;
+    if (key === 'background') return theme.background;
+    if (key === 'foreground') return theme.foreground;
+    return theme.palette[key] ?? fallback;
+  }
   return value;
 }
 

@@ -17,6 +17,21 @@ export interface EventModifiers {
   readonly meta: boolean;
 }
 
+/** 归一化指针设备类型 */
+export type CanvasPointerType = 'mouse' | 'pen' | 'touch';
+
+/**
+ * 帧内单次指针采样点 (用于自由画笔等需要帧内完整轨迹与压感序列的工具)
+ */
+export interface CanvasPointerSample {
+  /** 纯逻辑世界坐标 (已自动剥离平移与缩放矩阵) */
+  readonly point: Point;
+  /** 相对视口容器的视口像素坐标 */
+  readonly clientPoint: Point;
+  /** 笔压感 (0.0 ~ 1.0) */
+  readonly pressure: number;
+}
+
 /**
  * 归一化虚拟指针事件 (CanvasPointerEvent)
  */
@@ -33,14 +48,23 @@ export interface CanvasPointerEvent {
   /** 原始指针唯一 ID */
   readonly pointerId: number;
 
+  /** 指针设备类型 (缺省为 'mouse') */
+  readonly pointerType: CanvasPointerType;
+
   /** 按键识别: 0 主键(左键), 1 中键, 2 次键(右键) */
   readonly button: number;
 
   /** 键盘修饰键 */
   readonly modifiers: EventModifiers;
 
-  /** 笔压感 (0.0 ~ 1.0，手写笔专用，鼠标恒为 0.5) */
+  /** 笔压感 (0.0 ~ 1.0，手写笔保留真实 0.0~1.0 压力，鼠标等无压感设备恒为 0.5) */
   readonly pressure: number;
+
+  /**
+   * 本帧合并前的原始采样序列 (按时间顺序，至少含当前点 1 项，末项即当前事件的最新点)
+   * 普通拖拽/悬停插件直接读取 point 即可；画笔工具遍历 samples 获取帧内完整轨迹与压感。
+   */
+  readonly samples: readonly CanvasPointerSample[];
 
   /** 按下的连击序号：1 单击、2 双击、3 三击 (间隔与位移都在阈值内的连续按下)；移动与抬起沿用按下时的值 */
   readonly clickCount: number;

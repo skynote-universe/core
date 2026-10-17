@@ -28,6 +28,8 @@ export interface SessionChange {
   readonly textEditingChanged: boolean;
   /** 当前工具切换 */
   readonly toolChanged: boolean;
+  /** 引擎维护冻结状态变化 (进入或退出 beginMaintenance) */
+  readonly maintenanceChanged: boolean;
   /** 选中态发生翻转的节点 id (新选中 ∪ 取消选中) */
   readonly toggledNodeIds: ReadonlySet<string>;
   /** 选中态发生翻转的连线 id */
@@ -99,6 +101,8 @@ export interface SessionController {
   readonly textEditing: TextEditingTarget | null;
   /** 当前工具 (缺省 SELECT_TOOL) */
   readonly tool: string;
+  /** 引擎当前是否处于维护冻结状态 (beginMaintenance 期间为 true，草稿类交互据此取消并清理预览) */
+  readonly inMaintenance: boolean;
   setViewport(viewport: Partial<ViewportState>): void;
   /** 以世界坐标 anchor (默认视口中心) 为不动点按倍率缩放 */
   zoomAt(factor: number, anchor?: Point): void;
@@ -137,6 +141,7 @@ const VIEWPORT_CHANGE: SessionChange = Object.freeze({
   themeChanged: false,
   textEditingChanged: false,
   toolChanged: false,
+  maintenanceChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -145,6 +150,7 @@ const THEME_CHANGE: SessionChange = Object.freeze({
   themeChanged: true,
   textEditingChanged: false,
   toolChanged: false,
+  maintenanceChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -153,6 +159,7 @@ const TEXT_EDITING_CHANGE: SessionChange = Object.freeze({
   themeChanged: false,
   textEditingChanged: true,
   toolChanged: false,
+  maintenanceChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -161,6 +168,16 @@ const TOOL_CHANGE: SessionChange = Object.freeze({
   themeChanged: false,
   textEditingChanged: false,
   toolChanged: true,
+  maintenanceChanged: false,
+  toggledNodeIds: EMPTY_ID_SET,
+  toggledConnectorIds: EMPTY_ID_SET
+});
+const MAINTENANCE_CHANGE: SessionChange = Object.freeze({
+  viewportChanged: false,
+  themeChanged: false,
+  textEditingChanged: false,
+  toolChanged: false,
+  maintenanceChanged: true,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -186,6 +203,7 @@ export class SessionStore implements SessionController {
   private connectorSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private editingTarget: TextEditingTarget | null = null;
   private currentTool = SELECT_TOOL;
+  private maintenanceState = false;
   private readonly listeners = new Set<SessionListener>();
   private readonly textEditRequestListeners = new Set<(nodeId: string) => void>();
 
@@ -232,10 +250,21 @@ export class SessionStore implements SessionController {
     return this.currentTool;
   }
 
+  get inMaintenance(): boolean {
+    return this.maintenanceState;
+  }
+
   setTool(tool: string): void {
     if (tool === this.currentTool) return;
     this.currentTool = tool;
     this.notify(TOOL_CHANGE);
+  }
+
+  /** 由引擎在进入或退出 beginMaintenance 时同步更新 */
+  setMaintenance(inMaintenance: boolean): void {
+    if (inMaintenance === this.maintenanceState) return;
+    this.maintenanceState = inMaintenance;
+    this.notify(MAINTENANCE_CHANGE);
   }
 
   requestTextEditing(nodeId: string): void {
@@ -335,6 +364,7 @@ export class SessionStore implements SessionController {
       themeChanged: false,
       textEditingChanged: false,
       toolChanged: false,
+      maintenanceChanged: false,
       toggledNodeIds,
       toggledConnectorIds
     });

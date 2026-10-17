@@ -25,7 +25,7 @@ import type {
   TextInputSession
 } from '../protocols/host.protocol';
 import type { CanvasPrimitive } from '../protocols/primitives.protocol';
-import type { Point } from '../types/geometry';
+import type { Point, RectBounds } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity } from '../types/connector';
 import type { CanvasOperationRecord } from '../types/operation';
@@ -112,7 +112,20 @@ class PluginContext implements CanvasPluginContext {
     this.entities = engine.entityStore;
     this.spatial = engine.spatialIndex;
     this.connectors = engine;
-    this.nodeTypes = engine.nodeTypes;
+    const resolveDataVersion = (node: Readonly<NodeEntity>, dataVersion?: number): number | undefined => {
+      if (dataVersion !== undefined) return dataVersion;
+      const runtimeNode = engine.entityStore.getNode(node.id);
+      return runtimeNode?.entity === node ? runtimeNode.runtime.dataVersion : undefined;
+    };
+    this.nodeTypes = {
+      get: (type) => engine.nodeTypes.get(type),
+      getValid: (node, dataVersion) => engine.nodeTypes.getValid(node, resolveDataVersion(node, dataVersion)),
+      has: (type) => engine.nodeTypes.has(type),
+      getAll: () => engine.nodeTypes.getAll(),
+      validateNode: (node, dataVersion) => engine.nodeTypes.validateNode(node, resolveDataVersion(node, dataVersion)),
+      isValidNode: (node, dataVersion) => engine.nodeTypes.isValidNode(node, resolveDataVersion(node, dataVersion)),
+      onChange: (listener) => this.track(engine.nodeTypes.onChange(listener))
+    };
     this.layouts = {
       get: (id) => engine.layouts.get(id),
       onChange: (listener) => this.track(engine.layouts.onChange(listener))
@@ -141,6 +154,10 @@ class PluginContext implements CanvasPluginContext {
 
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined {
     return this.engine.hitTestNode(point, accept);
+  }
+
+  intersectsNodeBounds(nodeId: string, worldBounds: RectBounds): boolean {
+    return this.engine.intersectsNodeBounds(nodeId, worldBounds);
   }
 
   hitTestConnector(point: Point, tolerancePx?: number): Readonly<ConnectorEntity> | undefined {

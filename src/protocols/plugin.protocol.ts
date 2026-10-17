@@ -16,7 +16,7 @@ import type { ConnectorRouterDefinition } from './connector-router.protocol';
 import type { LayoutDefinition, LayoutReader } from './layout.protocol';
 import type { DerivedConnectorSource } from './connector-source.protocol';
 import type { CanvasHost } from './host.protocol';
-import type { Point } from '../types/geometry';
+import type { Point, RectBounds } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorEntity } from '../types/connector';
 import type { CanvasOperationRecord } from '../types/operation';
@@ -59,6 +59,8 @@ export interface CanvasPluginContext {
 
   /** 点选最上层节点：含旋转精判、裁剪型容器与层叠顺序；accept 限定只在满足条件的节点中拾取 */
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined;
+  /** 节点是否与世界坐标系中的选框真实相交 (框选粗筛后的几何精判) */
+  intersectsNodeBounds(nodeId: string, worldBounds: RectBounds): boolean;
   /** 连线拾取：点到路由的距离不超过 tolerancePx 屏幕像素 */
   hitTestConnector(point: Point, tolerancePx?: number): Readonly<ConnectorEntity> | undefined;
   /** 点中的最上层实体 (节点或连线，按画面层叠)：点选、双击编辑与悬停据此判断 */

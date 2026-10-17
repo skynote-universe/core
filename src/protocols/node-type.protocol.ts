@@ -274,9 +274,34 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
 
   /**
    * 节点轮廓：自身局部坐标系中的闭合多边形 (缺省为外框矩形)
-   * 用于精确拾取与悬停高亮，椭圆、菱形等非矩形节点点在外框空角时不会被选中
+   * 用于精确拾取与悬停高亮，椭圆、菱形等非矩形节点点在外框空角时不会被选中；
+   * 开放路径请勿实现此方法 (否则悬停高亮会将其首尾闭合)，改用 hitTest 与 intersectsBounds。
    */
   outline?(node: NodeEntity<TData, TStyle>): readonly Point[];
+
+  /**
+   * 节点局部坐标系下的精确点选命中判定 (选填，用于自由笔迹、开放贝塞尔路径、镂空图形等)
+   * 提供时优先于 outline / 外框矩形 / extent 的默认包含判定：返回 false 即视为未命中，不再回退到 extent。
+   * @param node 当前节点
+   * @param localPoint 指针在节点局部坐标系中的位置
+   * @param tolerance 屏幕拾取容差换算到节点局部坐标系后的距离阈值
+   */
+  hitTest?(node: NodeEntity<TData, TStyle>, localPoint: Point, tolerance: number): boolean;
+
+  /**
+   * 节点局部坐标系下的选框相交判定 (选填，用于框选粗筛后的几何精判)
+   * 缺省时空间索引世界外接矩形相交即视为框选命中；细长斜向笔迹或开放曲线可实现此方法排除空白外框角。
+   * @param node 当前节点
+   * @param localBounds 选框转换到节点局部坐标系后的包围盒
+   */
+  intersectsBounds?(node: NodeEntity<TData, TStyle>, localBounds: RectBounds): boolean;
+
+  /**
+   * 节点特有结构的合法性校验 (选填，纯函数)
+   * 校验通过返回 null；若外部导入、剪贴板或历史数据中的节点特有字段损坏，返回非空错误描述字符串。
+   * 校验失败的节点在渲染层降级为占位框，在内核拾取与空间索引中回退为基础矩形外框，避免损坏数据导致整帧崩溃。
+   */
+  validate?(node: Readonly<NodeEntity<TData, TStyle>>): string | null;
 
   /**
    * 【模式 B：DOM 浮层逃生舱】(选填)

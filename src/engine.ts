@@ -41,12 +41,13 @@ import {
   expandBounds,
   invertMatrix,
   isPointInBounds,
-  isPointInPolygon
+  isPointInPolygon,
+  transformBounds
 } from './utils/geometry';
 import { compareHierarchicalNodes } from './layout/layer-order';
 import { resolveConnectorLayerPlacement } from './layout/connector-layer';
 import { compareFractionalIndex } from './utils/fractional-index';
-import { resolveNodeStyle } from './protocols/node-type.protocol';
+import { resolveNodeStyle, type NodeTypeDefinition } from './protocols/node-type.protocol';
 import { isNodeHiddenByOpacity } from './utils/node-opacity';
 import { isEqual } from './utils/equality';
 import {
@@ -110,6 +111,8 @@ export type CanvasHit =
   | { readonly kind: 'node'; readonly node: Readonly<NodeEntity> }
   | { readonly kind: 'connector'; readonly connector: Readonly<ConnectorEntity> };
 
+/** 节点精确拾取 (声明了 hitTest 的笔迹、路径等) 的默认屏幕像素容差 */
+const NODE_HIT_TOLERANCE_PX = 6;
 /** 连线拾取的默认屏幕像素容差 */
 const CONNECTOR_HIT_TOLERANCE_PX = 6;
 /** 粗筛时按此线宽放宽 (世界坐标)：比它更粗的线在线条中段仍能命中，只是边缘外侧的容差略少 */
@@ -147,6 +150,7 @@ export class SkyNoteEngine {
   private readonly nodeSpatialIndex: SceneSpatialIndex;
   private currentHost: CanvasHost = DETACHED_CANVAS_HOST;
   private readonly unsubscribeDocument: () => void;
+  private readonly unsubscribeNodeTypes: () => void;
   private readonly unsubscribeRouters: () => void;
   private readonly unsubscribeLayouts: () => void;
   /** 连线路由缓存：连线自身或两端节点几何变化时整体替换 */
@@ -165,6 +169,7 @@ export class SkyNoteEngine {
     if (this.isDestroyed) throw new Error('已销毁的引擎不能进入维护状态');
     const resumeWrites = this.documentStore.suspendWrites();
     this.maintenanceDepth++;
+    this.session.setMaintenance(true);
     this.cancelPendingAssetTasks('maintenance');
     let resumed = false;
     return {
@@ -173,6 +178,7 @@ export class SkyNoteEngine {
         if (resumed) return;
         resumed = true;
         this.maintenanceDepth--;
+        if (this.maintenanceDepth === 0) this.session.setMaintenance(false);
         resumeWrites();
       }
     };
@@ -224,7 +230,10 @@ export class SkyNoteEngine {
     this.nodeSpatialIndex = new SceneSpatialIndex(
       this.entityStore,
       options?.createNodeSpatialIndex ?? (() => new RTreeSpatialIndex()),
-      (node) => this.nodeTypes.get(node.nodeType)?.extent?.(node as NodeEntity)
+      (node) => {
+        const runtimeNode = this.entityStore.getNode(node.id);
+        return this.nodeTypes.getValid(node, runtimeNode?.runtime.dataVersion)?.extent?.(node as NodeEntity);
+      }
     );
     this.plugins = new PluginManager(this);
 
@@ -235,7 +244,10 @@ export class SkyNoteEngine {
     this.unsubscribeDocument = this.documentStore.subscribe((_view, _record, changes) => {
       if (changes.contentReplaced) {
         this.contentEpoch++;
+        this.nodeTypes.clearValidationCache();
         this.cancelPendingAssetTasks('document-replaced');
+      } else {
+        for (const id of changes.nodes.removed) this.nodeTypes.evictValidationCache(id);
       }
       if (this.imageReplacementTasks.size) {
         for (const id of changes.nodes.removed) this.checkReplacementTarget(id);
@@ -243,6 +255,31 @@ export class SkyNoteEngine {
       }
       this.syncDerivedState(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
+    });
+    // 节点类型晚于文档注册 (或被卸载) 时，重算对应类型节点的空间占据范围与依附连线路由
+    this.unsubscribeNodeTypes = this.nodeTypes.onChange((type) => {
+      const affectedNodes = new Set<string>();
+      const affectedConnectors = new Set<string>();
+      for (const { entity } of this.entityStore.getAllNodes()) {
+        if (entity.nodeType !== type) continue;
+        affectedNodes.add(entity.id);
+        for (const connectorId of this.entityStore.getConnectorIdsOfNode(entity.id)) {
+          affectedConnectors.add(connectorId);
+        }
+      }
+      if (affectedNodes.size > 0) {
+        this.nodeSpatialIndex.applyChanges({
+          added: new Set(),
+          removed: new Set(),
+          geometry: affectedNodes,
+          data: affectedNodes,
+          reparented: new Set(),
+          worldGeometry: affectedNodes
+        });
+      }
+      if (affectedConnectors.size > 0) {
+        this.updateConnectorRoutes(affectedConnectors);
+      }
     });
     // 布局晚于文档注册 (或被卸载) 时重新排版
     this.unsubscribeLayouts = this.layouts.onChange(() => this.documentStore.refreshLayouts());
@@ -538,17 +575,20 @@ export class SkyNoteEngine {
   }
 
   /**
-   * 点选最上层节点：空间索引粗筛后按世界矩阵精判 (含自身与祖先旋转)，节点类型声明了轮廓时按轮廓判断；
+   * 点选最上层节点：空间索引粗筛后按世界矩阵精判 (含自身与祖先旋转)，节点类型声明了 hitTest 或轮廓时按声明判断；
    * 落在裁剪型祖先 (画框) 之外的部分不可拾取；候选返回顺序与层叠无关，必须显式比较层级
    * @param accept 只在满足条件的节点中拾取 (如拖放时只找可接收子节点且不是被拖节点的容器)
    */
   hitTestNode(point: Point, accept?: (node: Readonly<NodeEntity>) => boolean): Readonly<NodeEntity> | undefined {
     const { entityStore, nodeTypes } = this;
+    const tolerance = NODE_HIT_TOLERANCE_PX / this.session.viewport.zoom;
     const chainCache = new Map<string, Readonly<NodeEntity>[]>();
     const getNode = (id: string) => entityStore.getNode(id)?.entity;
-    const containsPoint = (node: Readonly<NodeEntity>): boolean => {
+    const containsPoint = (node: Readonly<NodeEntity>, definition: NodeTypeDefinition | undefined): boolean => {
       const local = applyMatrix(invertMatrix(entityStore.getWorldTransform(node.id)!), point.x, point.y);
-      const definition = nodeTypes.get(node.nodeType);
+      if (definition?.hitTest) {
+        return definition.hitTest(node as NodeEntity, local, tolerance);
+      }
       const inShape = definition?.outline
         ? isPointInPolygon(local, definition.outline(node as NodeEntity))
         : local.x >= 0 && local.x <= node.width && local.y >= 0 && local.y <= node.height;
@@ -569,21 +609,35 @@ export class SkyNoteEngine {
       });
 
     let top: Readonly<NodeEntity> | undefined;
-    const candidateIds = this.nodeSpatialIndex.hitTest(point);
+    const candidateIds = this.nodeSpatialIndex.search(
+      expandBounds({ left: point.x, top: point.y, right: point.x, bottom: point.y }, tolerance)
+    );
     for (let i = 0; i < candidateIds.length; i++) {
-      const node = getNode(candidateIds[i]);
-      if (
-        !node ||
-        isNodeHiddenByOpacity(node, nodeTypes.get(node.nodeType)) ||
-        (accept && !accept(node)) ||
-        !containsPoint(node)
-      )
+      const runtimeNode = entityStore.getNode(candidateIds[i]);
+      if (!runtimeNode) continue;
+      const { entity: node, runtime } = runtimeNode;
+      const definition = nodeTypes.getValid(node, runtime.dataVersion);
+      if (isNodeHiddenByOpacity(node, definition) || (accept && !accept(node)) || !containsPoint(node, definition))
         continue;
       if (top && compareHierarchicalNodes(node, top, getNode, chainCache) < 0) continue;
       if (isClippedOut(node)) continue;
       top = node;
     }
     return top;
+  }
+
+  /**
+   * 节点是否与世界坐标系中的选框真实相交 (框选粗筛后的几何精判)
+   * 未声明 intersectsBounds 的节点类型已由空间索引完成外接矩形判定，直接返回 true。
+   */
+  intersectsNodeBounds(nodeId: string, worldBounds: RectBounds): boolean {
+    const runtimeNode = this.entityStore.getNode(nodeId);
+    if (!runtimeNode) return false;
+    const { entity: node, runtime } = runtimeNode;
+    const definition = this.nodeTypes.getValid(node, runtime.dataVersion);
+    if (!definition?.intersectsBounds) return true;
+    const localBounds = transformBounds(worldBounds, invertMatrix(this.entityStore.getWorldTransform(nodeId)!));
+    return definition.intersectsBounds(node as NodeEntity, localBounds);
   }
 
   /**
@@ -676,9 +730,13 @@ export class SkyNoteEngine {
     const candidates = this.nodeSpatialIndex
       .search(expandBounds({ left: point.x, top: point.y, right: point.x, bottom: point.y }, tolerance))
       .map((id) => this.resolveEndpointNode(id)!)
-      .filter(
-        ({ node }) => !isNodeHiddenByOpacity(node, this.nodeTypes.get(node.nodeType)) && (!accept || accept(node))
-      );
+      .filter(({ node }) => {
+        const runtimeNode = this.entityStore.getNode(node.id);
+        return (
+          !isNodeHiddenByOpacity(node, this.nodeTypes.getValid(node, runtimeNode?.runtime.dataVersion)) &&
+          (!accept || accept(node))
+        );
+      });
 
     const fixedAt = (resolved: ResolvedEndpointNode, local: Point, kind: 'anchor' | 'outline') => {
       const { node, worldMatrix } = resolved;
@@ -729,6 +787,7 @@ export class SkyNoteEngine {
     this.isDestroyed = true;
     this.cancelPendingAssetTasks();
     this.unsubscribeDocument();
+    this.unsubscribeNodeTypes();
     this.unsubscribeRouters();
     this.unsubscribeLayouts();
     this.plugins.destroy();
@@ -771,7 +830,7 @@ export class SkyNoteEngine {
     const runtimeNode = this.entityStore.getNode(nodeId);
     if (!runtimeNode) return undefined;
     const node = runtimeNode.entity;
-    const definition = this.nodeTypes.get(node.nodeType);
+    const definition = this.nodeTypes.getValid(node, runtimeNode.runtime.dataVersion);
     const outline = resolveNodeOutline(node, definition);
     return {
       node,

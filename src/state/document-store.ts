@@ -871,10 +871,23 @@ export class DocumentStore {
       let width = size.width ?? node.width;
       let height = size.height ?? node.height;
       let scale = 1;
-      if (handle !== 'se' && isAspectLocked(node, definition) && node.width > 0 && node.height > 0) {
-        scale = handle === 'e' ? width / node.width : height / node.height;
-        width = node.width * scale;
-        height = node.height * scale;
+      if (isAspectLocked(node, definition)) {
+        if (handle === 'e' && node.width > 0) {
+          scale = width / node.width;
+          width = node.width * scale;
+          height = node.height * scale;
+        } else if (handle === 's' && node.height > 0) {
+          scale = height / node.height;
+          width = node.width * scale;
+          height = node.height * scale;
+        } else if (handle === 'se' && (node.width > 0 || node.height > 0)) {
+          scale =
+            node.width > 0 && node.height > 0
+              ? Math.max(width / node.width, height / node.height)
+              : node.width > 0
+                ? width / node.width
+                : height / node.height;
+        }
       }
       // 旧节点局部坐标中左上角仍在原点，新中心 (w/2, h/2) 经旧世界矩阵换算即可
       const frame = computeWorldFrame({ width, height }, this.entities.getWorldTransform(id)!);

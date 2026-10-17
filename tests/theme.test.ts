@@ -67,9 +67,13 @@ describe('deriveCanvasTheme', () => {
 describe('颜色引用解析与图元主题化', () => {
   const theme = deriveCanvasTheme({ seed: { ...LIGHT_CANVAS_THEME_SEED, palette: { yellow: '#FDE68A' } } });
 
-  it('未设置取缺省、$名称查调色板、显式色值原样保留', () => {
+  it('未设置取缺省、$名称查调色板、语义色名取主题属性、显式色值原样保留', () => {
     expect(resolveThemeColor(undefined, theme, theme.nodeFill)).toBe(theme.nodeFill);
     expect(resolveThemeColor('$yellow', theme)).toBe('#FDE68A');
+    expect(resolveThemeColor('$text', theme)).toBe(theme.textColor);
+    expect(resolveThemeColor('$accent', theme)).toBe(theme.accent);
+    const defaultTheme = deriveCanvasTheme({ seed: LIGHT_CANVAS_THEME_SEED });
+    expect(resolveThemeColor('$cyan', defaultTheme)).toBe('#9FE3D6');
     expect(resolveThemeColor('$missing', theme, theme.nodeFill)).toBe(theme.nodeFill);
     expect(resolveThemeColor('#123456', theme, theme.nodeFill)).toBe('#123456');
   });

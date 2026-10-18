@@ -30,6 +30,8 @@ export interface SessionChange {
   readonly toolChanged: boolean;
   /** 引擎维护冻结状态变化 (进入或退出 beginMaintenance) */
   readonly maintenanceChanged: boolean;
+  /** 只读模式变化 (进入或退出只读浏览) */
+  readonly readOnlyChanged: boolean;
   /** 选中态发生翻转的节点 id (新选中 ∪ 取消选中) */
   readonly toggledNodeIds: ReadonlySet<string>;
   /** 选中态发生翻转的连线 id */
@@ -103,6 +105,8 @@ export interface SessionController {
   readonly tool: string;
   /** 引擎当前是否处于维护冻结状态 (beginMaintenance 期间为 true，草稿类交互据此取消并清理预览) */
   readonly inMaintenance: boolean;
+  /** 画布当前是否处于只读浏览状态 (只读状态下禁止选区、变换、编辑与文字输入) */
+  readonly isReadOnly: boolean;
   setViewport(viewport: Partial<ViewportState>): void;
   /** 以世界坐标 anchor (默认视口中心) 为不动点按倍率缩放 */
   zoomAt(factor: number, anchor?: Point): void;
@@ -117,6 +121,11 @@ export interface SessionController {
   requestTextEditing(nodeId: string): void;
   onTextEditRequest(listener: (nodeId: string) => void): () => void;
   setTool(tool: string): void;
+  /**
+   * 切换只读浏览模式
+   * 开启只读时自动清空选区、重置工具为选择工具并退出文字编辑
+   */
+  setReadOnly(readOnly: boolean): void;
   /**
    * 显式切换主题
    * @throws 配置中含非法颜色
@@ -133,6 +142,8 @@ export interface SessionStoreOptions {
   zoomRange?: ZoomRange;
   /** 默认浅色主题 */
   theme?: CanvasThemeConfig;
+  /** 是否初始化为只读浏览模式 (默认 false) */
+  readOnly?: boolean;
 }
 
 const EMPTY_ID_SET: ReadonlySet<string> = new Set();
@@ -142,6 +153,7 @@ const VIEWPORT_CHANGE: SessionChange = Object.freeze({
   textEditingChanged: false,
   toolChanged: false,
   maintenanceChanged: false,
+  readOnlyChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -151,6 +163,7 @@ const THEME_CHANGE: SessionChange = Object.freeze({
   textEditingChanged: false,
   toolChanged: false,
   maintenanceChanged: false,
+  readOnlyChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -160,6 +173,7 @@ const TEXT_EDITING_CHANGE: SessionChange = Object.freeze({
   textEditingChanged: true,
   toolChanged: false,
   maintenanceChanged: false,
+  readOnlyChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -169,6 +183,7 @@ const TOOL_CHANGE: SessionChange = Object.freeze({
   textEditingChanged: false,
   toolChanged: true,
   maintenanceChanged: false,
+  readOnlyChanged: false,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -178,6 +193,17 @@ const MAINTENANCE_CHANGE: SessionChange = Object.freeze({
   textEditingChanged: false,
   toolChanged: false,
   maintenanceChanged: true,
+  readOnlyChanged: false,
+  toggledNodeIds: EMPTY_ID_SET,
+  toggledConnectorIds: EMPTY_ID_SET
+});
+const READONLY_CHANGE: SessionChange = Object.freeze({
+  viewportChanged: false,
+  themeChanged: false,
+  textEditingChanged: false,
+  toolChanged: false,
+  maintenanceChanged: false,
+  readOnlyChanged: true,
   toggledNodeIds: EMPTY_ID_SET,
   toggledConnectorIds: EMPTY_ID_SET
 });
@@ -204,6 +230,7 @@ export class SessionStore implements SessionController {
   private editingTarget: TextEditingTarget | null = null;
   private currentTool = SELECT_TOOL;
   private maintenanceState = false;
+  private readOnlyState = false;
   private readonly listeners = new Set<SessionListener>();
   private readonly textEditRequestListeners = new Set<(nodeId: string) => void>();
 
@@ -216,6 +243,7 @@ export class SessionStore implements SessionController {
     const initial = { x: 0, y: 0, zoom: 1, ...options?.viewport };
     this.viewportState = { ...initial, zoom: clamp(initial.zoom, range.min, range.max) };
     this.themeState = deriveCanvasTheme(options?.theme ?? { seed: LIGHT_CANVAS_THEME_SEED });
+    if (options?.readOnly) this.readOnlyState = true;
   }
 
   get viewport(): Readonly<ViewportState> {
@@ -254,7 +282,23 @@ export class SessionStore implements SessionController {
     return this.maintenanceState;
   }
 
+  get isReadOnly(): boolean {
+    return this.readOnlyState;
+  }
+
+  setReadOnly(readOnly: boolean): void {
+    if (readOnly === this.readOnlyState) return;
+    this.readOnlyState = readOnly;
+    if (readOnly) {
+      this.currentTool = SELECT_TOOL;
+      this.setSelection({ nodeIds: [], connectorIds: [] });
+      this.setTextEditing(null);
+    }
+    this.notify(READONLY_CHANGE);
+  }
+
   setTool(tool: string): void {
+    if (this.readOnlyState && tool !== SELECT_TOOL) return;
     if (tool === this.currentTool) return;
     this.currentTool = tool;
     this.notify(TOOL_CHANGE);
@@ -268,6 +312,7 @@ export class SessionStore implements SessionController {
   }
 
   requestTextEditing(nodeId: string): void {
+    if (this.readOnlyState) return;
     for (const listener of this.textEditRequestListeners) listener(nodeId);
   }
 
@@ -279,6 +324,7 @@ export class SessionStore implements SessionController {
   }
 
   setTextEditing(target: TextEditingTarget | null): void {
+    if (this.readOnlyState && target !== null) return;
     const current = this.editingTarget;
     if (
       current?.kind === target?.kind &&
@@ -338,6 +384,25 @@ export class SessionStore implements SessionController {
   }
 
   setSelection(selection: SelectionUpdate): void {
+    if (this.readOnlyState) {
+      if (this.nodeSelection.size === 0 && this.connectorSelection.size === 0) return;
+      const toggledNodeIds = new Set(this.nodeSelection);
+      const toggledConnectorIds = new Set(this.connectorSelection);
+      this.nodeSelection = EMPTY_ID_SET;
+      this.connectorSelection = EMPTY_ID_SET;
+      this.notify({
+        viewportChanged: false,
+        themeChanged: false,
+        textEditingChanged: false,
+        toolChanged: false,
+        maintenanceChanged: false,
+        readOnlyChanged: false,
+        toggledNodeIds,
+        toggledConnectorIds
+      });
+      return;
+    }
+
     let toggledNodeIds: ReadonlySet<string> = EMPTY_ID_SET;
     let toggledConnectorIds: ReadonlySet<string> = EMPTY_ID_SET;
 
@@ -365,6 +430,7 @@ export class SessionStore implements SessionController {
       textEditingChanged: false,
       toolChanged: false,
       maintenanceChanged: false,
+      readOnlyChanged: false,
       toggledNodeIds,
       toggledConnectorIds
     });

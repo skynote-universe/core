@@ -5,4 +5,5 @@
 
 export * from './patch-path';
 export * from './patch-applier';
+export * from './overwrite-compactor';
 export * from './coordinator';

@@ -80,6 +80,37 @@ describe('SessionStore', () => {
 
     expect([...engine.session.selectedNodeIds]).toEqual(['b']);
   });
+
+  it('只读模式切换时自动清空选区与编辑态，并拦截修改类操作', () => {
+    const session = new SessionStore();
+    session.setSelection({ nodeIds: ['a', 'b'] });
+    expect(session.selectedNodeIds.size).toBe(2);
+
+    const changes: SessionChange[] = [];
+    session.subscribe((c) => changes.push(c));
+
+    session.setReadOnly(true);
+    expect(session.isReadOnly).toBe(true);
+    expect(session.selectedNodeIds.size).toBe(0);
+    expect(changes.some((c) => c.readOnlyChanged)).toBe(true);
+
+    // 只读模式下 setSelection / setTool / setTextEditing 受阻
+    session.setSelection({ nodeIds: ['c'] });
+    expect(session.selectedNodeIds.size).toBe(0);
+
+    session.setTool('connector');
+    expect(session.tool).toBe('select');
+
+    session.setTextEditing({ kind: 'node', id: 'a', blockId: 'b0', scrollY: 0, composition: null });
+    expect(session.textEditing).toBeNull();
+
+    // 退出只读模式
+    session.setReadOnly(false);
+    expect(session.isReadOnly).toBe(false);
+
+    session.setSelection({ nodeIds: ['c'] });
+    expect([...session.selectedNodeIds]).toEqual(['c']);
+  });
 });
 
 describe('插件上下文的会话与变更订阅', () => {

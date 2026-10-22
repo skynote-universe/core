@@ -42,7 +42,8 @@ export interface SetPatch<TValue = unknown> {
   readonly value: TValue;
   /**
    * 是否采用字典增量浅合并 (默认 false 为直接覆盖赋值)
-   * 当 value 为普通键值对象且 merge 为 true 时，相当于 Object.assign 增量合并
+   * 当 value 为普通键值对象且 merge 为 true 时增量合并；键值为 undefined 表示删除。
+   * 提交后删除会展开为明确 unset，保证广播与历史的 JSON 语义。
    */
   readonly merge?: boolean;
   /** 逆向回滚的旧值 (用于瞬时反向撤销，由内核自动推导或显式传入) */

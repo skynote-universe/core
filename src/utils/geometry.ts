@@ -144,7 +144,7 @@ export function computeNodeLocalMatrix(node: RotatableBox): Matrix2D {
  * 写入文档的几何值去除矩阵运算的浮点噪声 (如 7e-15、89.99999999999999)，
  * 避免产生无意义的补丁与难读的数据；1e-9 远小于任何可见精度
  */
-function roundPersisted(value: number): number {
+export function roundPersisted(value: number): number {
   const rounded = Math.round(value * 1e9) / 1e9;
   // 顺带把 -0 规整为 0
   return rounded === 0 ? 0 : rounded;

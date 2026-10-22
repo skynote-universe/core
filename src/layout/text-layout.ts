@@ -228,6 +228,8 @@ export function deriveTextLayoutPatches(
       continue;
     }
     if (!size) continue;
+    // 测量保留浮点精度，持久化外框按整像素向上取整，避免裁切文字及缩放时反复抖动。
+    size = { width: Math.ceil(size.width), height: Math.ceil(size.height) };
 
     if (Math.abs(size.width - node.width) > SIZE_EPSILON) {
       patches.push({ op: 'set', path: ['content', 'nodes', id, 'width'], value: size.width });
@@ -237,4 +239,63 @@ export function deriveTextLayoutPatches(
     }
   }
   return patches;
+}
+
+/** 只换算文本块中明确的像素值；scale=1 可规范 hook 的最终结果，比例行高不变。 */
+export function scaleTextBlockPixels(
+  block: Readonly<TextBlock>,
+  scale: number,
+  style: NodeTextStyle | undefined = block.style
+): TextBlock {
+  return {
+    ...block,
+    ...(block.explicitWidth !== undefined
+      ? { explicitWidth: Math.max(1, Math.round(block.explicitWidth * scale)) }
+      : {}),
+    ...(block.explicitHeight !== undefined
+      ? { explicitHeight: Math.max(1, Math.round(block.explicitHeight * scale)) }
+      : {}),
+    ...(style
+      ? {
+          style: {
+            ...style,
+            ...(style.fontSize !== undefined ? { fontSize: Math.max(1, Math.round(style.fontSize * scale)) } : {}),
+            ...(typeof style.lineHeight === 'string'
+              ? { lineHeight: `${Math.max(1, Math.round(parseFloat(style.lineHeight) * scale))}px` as const }
+              : {}),
+            ...(style.letterSpacing !== undefined ? { letterSpacing: Math.round(style.letterSpacing * scale) } : {}),
+            ...(style.padding !== undefined
+              ? {
+                  padding:
+                    typeof style.padding === 'number'
+                      ? Math.round(style.padding * scale)
+                      : (style.padding.map((value) => Math.round(value * scale)) as [number, number, number, number])
+                }
+              : {})
+          }
+        }
+      : {}),
+    runs: block.runs.map((run) => ({
+      ...run,
+      ...(run.fontSize !== undefined ? { fontSize: Math.max(1, Math.round(run.fontSize * scale)) } : {}),
+      ...(typeof run.lineHeight === 'string'
+        ? { lineHeight: `${Math.max(1, Math.round(parseFloat(run.lineHeight) * scale))}px` as const }
+        : {}),
+      ...(run.letterSpacing !== undefined ? { letterSpacing: Math.round(run.letterSpacing * scale) } : {})
+    }))
+  };
+}
+
+/** 基于起始文本及有效默认样式缩放，容器与自由文本共用。 */
+export function scaleNodeTextBlocks(
+  node: NodeEntity,
+  definition: NodeTypeDefinition | undefined,
+  scale: number
+): TextBlock[] {
+  // 回到起始倍率时保留继承层级，不能把插槽/节点默认值固化为块级覆盖。
+  if (scale === 1) return [...(node.textBlocks ?? [])];
+  return (node.textBlocks ?? []).map((block) => {
+    const style = resolveTextBlockStyle(node, block, definition);
+    return scaleTextBlockPixels(block, scale, { ...style, fontSize: style.fontSize ?? 16 });
+  });
 }

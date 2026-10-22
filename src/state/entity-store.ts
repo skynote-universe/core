@@ -5,8 +5,8 @@
  * 设计考量 (Why):
  * 1. 双版本号：移动只递增 geomVersion，样式与文本递增 dataVersion，渲染器据此跳过不必要的图元重建。
  * 2. 邻接与父子索引：节点移动或删除时按度数定位依附连线，级联操作按子树规模定位后代，都不扫描全部实体。
- * 3. 世界矩阵缓存 (ADR-114)：按需自顶向下复合，以「自身 geomVersion + 父级矩阵引用 + parentId」校验，
- *    祖先移动或改挂后下次读取自动重算，无需显式失效。
+ * 3. 世界矩阵缓存 (ADR-114)：几何写入推进校验代次，读取迭代复合并复用本代已验证的共享祖先；
+ *    「自身 geomVersion + 父矩阵引用 + parentId」未变时保持矩阵引用，不在写入时遍历后代。
  * 4. 读写分离：写入方法只供 DocumentStore 在事务提交后调用；其他模块只拿到 EntityReader，
  *    类型上既不能让索引与文档失配，也不能就地改写实体绕过事务。
  */
@@ -42,6 +42,7 @@ export interface EntityReader {
 }
 
 interface WorldTransformCache {
+  validatedAt: number;
   readonly matrix: Matrix2D;
   readonly geomVersion: number;
   readonly parentId: string | undefined;
@@ -68,6 +69,8 @@ export class EntityStore implements EntityReader {
   /** connectorId -> 已登记进邻接索引的两端节点 id (就地修改端点后据此解除旧关联) */
   private readonly connectorEndpoints = new Map<string, readonly (string | undefined)[]>();
   private readonly worldTransforms = new Map<string, WorldTransformCache>();
+  /** 几何写入仅推进代次；一次读取批次内，共享祖先只校验一次，不在写入时遍历后代。 */
+  private transformRevision = 0;
   /**
    * 全局单调版本时钟：所有版本号均从此取值，
    * 实体被删除后以同 id 恢复（撤销删除）时不会复用旧版本号，下游按 `!==` 比较的缓存必然失效
@@ -151,29 +154,48 @@ export class EntityStore implements EntityReader {
 
   getWorldTransform(nodeId: string): Matrix2D | undefined {
     const runtimeNode = this.nodes.get(nodeId);
-    return runtimeNode ? this.resolveWorldTransform(nodeId, runtimeNode) : undefined;
-  }
-
-  /** 提交守卫保证容器无环，递归深度即容器嵌套深度 */
-  private resolveWorldTransform(nodeId: string, runtimeNode: RuntimeNode): Matrix2D {
-    const node = runtimeNode.entity;
-    const parentId = node.parentId;
-    const parentRuntime = parentId === undefined ? undefined : this.nodes.get(parentId);
-    const parentMatrix = parentRuntime ? this.resolveWorldTransform(parentId!, parentRuntime) : null;
-
-    const cached = this.worldTransforms.get(nodeId);
-    if (
-      cached &&
-      cached.geomVersion === runtimeNode.runtime.geomVersion &&
-      cached.parentMatrix === parentMatrix &&
-      cached.parentId === parentId
-    ) {
-      return cached.matrix;
+    if (!runtimeNode) return undefined;
+    const hit = this.worldTransforms.get(nodeId);
+    if (hit?.validatedAt === this.transformRevision) return hit.matrix;
+    const path: RuntimeNode[] = [];
+    let current: RuntimeNode | undefined = runtimeNode;
+    let parentMatrix: Matrix2D | null = null;
+    // 提交守卫保证无环；命中本代已验证的祖先即可停止，深链也不占用调用栈。
+    while (current) {
+      const cached = this.worldTransforms.get(current.entity.id);
+      if (cached?.validatedAt === this.transformRevision) {
+        parentMatrix = cached.matrix;
+        break;
+      }
+      path.push(current);
+      const parentId: string | undefined = current.entity.parentId;
+      current = parentId === undefined ? undefined : this.nodes.get(parentId);
     }
-    const local = computeNodeLocalMatrix(node);
-    const matrix = parentMatrix ? multiplyMatrix(parentMatrix, local) : local;
-    this.worldTransforms.set(nodeId, { matrix, geomVersion: runtimeNode.runtime.geomVersion, parentId, parentMatrix });
-    return matrix;
+    for (let i = path.length - 1; i >= 0; i--) {
+      const { entity: node, runtime } = path[i];
+      const cached = this.worldTransforms.get(node.id);
+      if (
+        cached &&
+        cached.geomVersion === runtime.geomVersion &&
+        cached.parentMatrix === parentMatrix &&
+        cached.parentId === node.parentId
+      ) {
+        cached.validatedAt = this.transformRevision;
+        parentMatrix = cached.matrix;
+        continue;
+      }
+      const local = computeNodeLocalMatrix(node);
+      const matrix: Matrix2D = parentMatrix ? multiplyMatrix(parentMatrix, local) : local;
+      this.worldTransforms.set(node.id, {
+        validatedAt: this.transformRevision,
+        matrix,
+        geomVersion: runtime.geomVersion,
+        parentId: node.parentId,
+        parentMatrix
+      });
+      parentMatrix = matrix;
+    }
+    return parentMatrix!;
   }
 
   /**
@@ -186,6 +208,7 @@ export class EntityStore implements EntityReader {
 
   /** parentId 被字段级补丁就地修改后，刷新父子索引 */
   reindexNodeParent(id: string): void {
+    if (this.nodeParents.get(id) !== this.nodes.get(id)?.entity.parentId) this.transformRevision++;
     this.indexNodeParent(id, this.nodes.get(id)?.entity);
   }
 
@@ -198,6 +221,7 @@ export class EntityStore implements EntityReader {
 
     if (!entity) {
       if (!existing) return 'unchanged';
+      this.transformRevision++;
       this.nodes.delete(id);
       this.worldTransforms.delete(id);
       this.indexNodeParent(id, undefined);
@@ -205,6 +229,7 @@ export class EntityStore implements EntityReader {
     }
 
     if (!existing) {
+      this.transformRevision++;
       this.nodes.set(id, {
         entity,
         runtime: { geomVersion: ++this.versionClock, dataVersion: ++this.versionClock }
@@ -214,6 +239,7 @@ export class EntityStore implements EntityReader {
     }
 
     if (existing.entity === entity) return 'unchanged';
+    this.transformRevision++;
     this.indexNodeParent(id, entity);
     (existing as { entity: NodeEntity }).entity = entity;
     existing.runtime.geomVersion = ++this.versionClock;
@@ -258,8 +284,10 @@ export class EntityStore implements EntityReader {
   bumpNodeVersion(id: string, kind: 'geom' | 'data'): boolean {
     const node = this.nodes.get(id);
     if (!node) return false;
-    if (kind === 'geom') node.runtime.geomVersion = ++this.versionClock;
-    else node.runtime.dataVersion = ++this.versionClock;
+    if (kind === 'geom') {
+      node.runtime.geomVersion = ++this.versionClock;
+      this.transformRevision++;
+    } else node.runtime.dataVersion = ++this.versionClock;
     return true;
   }
 

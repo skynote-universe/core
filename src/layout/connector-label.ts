@@ -18,6 +18,7 @@ import type { TextEditingTarget } from '../state/session-store';
 import { layoutText } from './rich-text-layout';
 import { editingTextBounds, editingTextPrimitive } from './rich-text-edit';
 import { expandBounds } from '../utils/geometry';
+import { scaleTextBlockPixels } from './text-layout';
 
 /** 连线文字的默认样式 (文字块自身的样式覆盖它) */
 export const CONNECTOR_LABEL_STYLE: Readonly<NodeTextStyle> = Object.freeze({
@@ -29,6 +30,20 @@ export const CONNECTOR_LABEL_STYLE: Readonly<NodeTextStyle> = Object.freeze({
 const LABEL_MAX_WIDTH = 240;
 /** 底色比文字四周多出的留白：遮住文字下面的线 */
 export const CONNECTOR_LABEL_PADDING = 4;
+
+/** 复用文字像素规则；沿线比例保持不变，单位倍率恢复默认继承和未设置的偏移。 */
+export function scaleConnectorTextBlocks(blocks: readonly ConnectorTextBlock[], scale: number): ConnectorTextBlock[] {
+  if (scale === 1) return [...blocks];
+  return blocks.map((block) => ({
+    ...block,
+    ...scaleTextBlockPixels({ ...block, explicitWidth: block.explicitWidth ?? LABEL_MAX_WIDTH }, scale, {
+      ...CONNECTOR_LABEL_STYLE,
+      ...block.style
+    }),
+    ...(block.offsetX !== undefined ? { offsetX: Math.round(block.offsetX * scale) } : {}),
+    ...(block.offsetY !== undefined ? { offsetY: Math.round(block.offsetY * scale) } : {})
+  }));
+}
 
 /** 一段连线文字的排版结果 */
 export interface ConnectorLabelLayout {
@@ -90,8 +105,9 @@ export function layoutConnectorLabels(
   return blocks.map((block) => {
     const style = { ...CONNECTOR_LABEL_STYLE, ...block.style };
     let layout = layoutText(block.runs, style, {}, fonts);
-    const wraps = layout.width > LABEL_MAX_WIDTH;
-    if (wraps) layout = layoutText(block.runs, style, { width: LABEL_MAX_WIDTH }, fonts);
+    const maxWidth = block.explicitWidth ?? LABEL_MAX_WIDTH;
+    const wraps = layout.width > maxWidth;
+    if (wraps) layout = layoutText(block.runs, style, { width: maxWidth }, fonts);
     const center = pointAlongPolyline(points, block.position);
     const x = center.x + (block.offsetX ?? 0) - layout.width / 2;
     const y = center.y + (block.offsetY ?? 0) - layout.height / 2;
@@ -103,7 +119,7 @@ export function layoutConnectorLabels(
         id: block.id,
         x,
         y,
-        ...(wraps && { width: LABEL_MAX_WIDTH }),
+        ...(wraps && { width: maxWidth }),
         runs: block.runs,
         style
       },

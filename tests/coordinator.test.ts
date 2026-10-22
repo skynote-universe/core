@@ -7,6 +7,116 @@ import { describe, it, expect } from 'vitest';
 import { OperationCoordinator } from '../src/operation/coordinator';
 
 describe('OperationCoordinator', () => {
+  it('派生器抛错时撤回未记录事务，再由批次回滚，历史和文档均不残留半成品', () => {
+    const doc = { count: 0, derived: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    coordinator.commitOperation({ groupId: 'edit', patches: [{ op: 'set', path: 'count', value: 1 }] });
+    const before = coordinator.getHistorySnapshot();
+    expect(() =>
+      coordinator.batch(
+        () => {
+          coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 2 }] });
+          coordinator.setPatchDerivations([
+            () => [{ op: 'set', path: 'derived', value: 10 }],
+            () => {
+              throw new Error('排版失败');
+            }
+          ]);
+          coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 3 }] });
+        },
+        { groupId: 'edit' }
+      )
+    ).toThrow('排版失败');
+    expect(doc).toEqual({ count: 1, derived: 0 });
+    expect(coordinator.getHistorySnapshot()).toEqual(before);
+    coordinator.setPatchDerivations([]);
+    expect(coordinator.undo()).toBe(true);
+    expect(doc.count).toBe(0);
+  });
+
+  it('同组后续批次失败只回滚本批，保留此前编辑与撤销重做', () => {
+    const doc = { count: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    const set = (value: number) => coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value }] });
+    coordinator.batch(() => set(1), { groupId: 'slider' });
+    const before = coordinator.getHistorySnapshot();
+    expect(() =>
+      coordinator.batch(
+        () => {
+          set(2);
+          coordinator.batch(() => set(3));
+          throw new Error('中断');
+        },
+        { groupId: 'slider' }
+      )
+    ).toThrow('中断');
+    expect(doc.count).toBe(1);
+    expect(coordinator.getHistorySnapshot()).toEqual(before);
+    coordinator.batch(() => set(4), { groupId: 'slider' });
+    expect(coordinator.undoEntries).toHaveLength(1);
+    expect(coordinator.undo()).toBe(true);
+    expect(doc.count).toBe(0);
+    expect(coordinator.redo()).toBe(true);
+    expect(doc.count).toBe(4);
+  });
+
+  it('批次失败恢复被容量截断的历史与原重做分支', () => {
+    const doc = { count: 0 };
+    const coordinator = new OperationCoordinator(doc, { maxHistorySize: 1 });
+    const set = (value: number) => coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value }] });
+    set(1);
+    const before = coordinator.getHistorySnapshot();
+    expect(() =>
+      coordinator.batch(() => {
+        set(2);
+        throw new Error('中断');
+      })
+    ).toThrow();
+    expect(doc.count).toBe(1);
+    expect(coordinator.getHistorySnapshot()).toEqual(before);
+    coordinator.undo();
+    const undone = coordinator.getHistorySnapshot();
+    expect(() =>
+      coordinator.batch(() => {
+        set(5);
+        throw new Error('中断');
+      })
+    ).toThrow();
+    expect(doc.count).toBe(0);
+    expect(coordinator.getHistorySnapshot()).toEqual(undone);
+    expect(coordinator.redo()).toBe(true);
+    expect(doc.count).toBe(1);
+  });
+
+  it('失败批次即使抵消了同组旧历史，也恢复旧条目；未写入就失败不撤销旧编辑', () => {
+    const doc = { count: 0 };
+    const coordinator = new OperationCoordinator(doc);
+    coordinator.commitOperation({ groupId: 'slider', patches: [{ op: 'set', path: 'count', value: 1 }] });
+    const before = coordinator.getHistorySnapshot();
+    expect(() =>
+      coordinator.batch(
+        () => {
+          coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 0 }] });
+          expect(coordinator.canUndo).toBe(false);
+          throw new Error('中断');
+        },
+        { groupId: 'slider' }
+      )
+    ).toThrow();
+    expect(doc.count).toBe(1);
+    expect(coordinator.getHistorySnapshot()).toEqual(before);
+    expect(() =>
+      coordinator.batch(
+        () => {
+          throw new Error('中断');
+        },
+        { groupId: 'slider' }
+      )
+    ).toThrow();
+    expect(doc.count).toBe(1);
+    expect(coordinator.getHistorySnapshot()).toEqual(before);
+  });
+
   it('维护冻结覆盖本地、远端事务和历史，嵌套恢复不提前放行', () => {
     const doc = { count: 0 };
     const coordinator = new OperationCoordinator(doc);

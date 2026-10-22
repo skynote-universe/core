@@ -106,13 +106,17 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
     this.clear();
     const depthCache = new Map<string, number>();
     const depthOf = (node: Readonly<NodeEntity>): number => {
-      let depth = depthCache.get(node.id);
-      if (depth === undefined) {
-        const parent = node.parentId === undefined ? undefined : this.entities.getNode(node.parentId)?.entity;
-        depth = parent ? depthOf(parent) + 1 : 0;
-        depthCache.set(node.id, depth);
+      const cached = depthCache.get(node.id);
+      if (cached !== undefined) return cached;
+      const path: string[] = [];
+      let current: Readonly<NodeEntity> | undefined = node;
+      while (current && !depthCache.has(current.id)) {
+        path.push(current.id);
+        current = current.parentId === undefined ? undefined : this.entities.getNode(current.parentId)?.entity;
       }
-      return depth;
+      let depth = current ? depthCache.get(current.id)! : -1;
+      for (let i = path.length - 1; i >= 0; i--) depthCache.set(path[i], ++depth);
+      return depthCache.get(node.id)!;
     };
     const nodes = this.entities.getAllNodes().map((runtimeNode) => runtimeNode.entity);
     nodes.sort((a, b) => depthOf(b) - depthOf(a));
@@ -155,24 +159,44 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
         this.containers.delete(id);
       }
     }
-    for (const ids of [changes.added, changes.geometry, changes.reparented, relocate]) {
-      for (const id of ids) {
+    // 父节点恢复或延迟到达时，既存孤儿的 parentId 未变，变更集不会单独列出它们。
+    // 只检查新增父节点的直接子节点；后代仍保留局部索引，无需遍历整个子树。
+    for (const id of changes.added) {
+      for (const childId of this.entities.getChildIds(id)) {
+        const previous = this.placements.get(childId);
+        if (previous && previous.container !== id) relocate.add(childId);
+      }
+    }
+    const changed = new Set([...changes.added, ...changes.geometry, ...changes.reparented, ...relocate]);
+    // 先解除旧父关系：旧容器也必须在本批调度开始前变脏，不能在它处理完成后才收到改挂通知。
+    for (const id of changed) {
+      const node = this.entities.getNode(id)?.entity;
+      const previous = this.placements.get(id);
+      if (node && previous && previous.container !== this.resolveContainer(node))
+        this.removePlacement(id, previous, dirty);
+    }
+
+    const work = new Set([...changed, ...dirty]);
+    if (work.size <= 1) {
+      // 单节点热路径仍按需逐级传播；父范围不变即停止，不为它规划整条祖先链。
+      for (const id of changed) {
+        dirty.delete(id);
         const node = this.entities.getNode(id)?.entity;
         if (node) this.place(node, dirty);
       }
-    }
-
-    // 子树包围盒自底向上传播：容器条目变化时其父容器继续变脏，直到不再变化或到达根层级
-    while (dirty.size > 0) {
-      const containers = [...dirty];
-      dirty.clear();
-      for (const key of containers) {
-        const node = this.entities.getNode(key)?.entity;
-        if (node) this.place(node, dirty);
+      while (dirty.size > 0) {
+        const containers = [...dirty];
+        dirty.clear();
+        for (const id of containers) {
+          const node = this.entities.getNode(id)?.entity;
+          if (node) this.place(node, dirty);
+        }
       }
+    } else {
+      this.placeBatch(work, changed, dirty);
     }
 
-    // 同一节点可能被写入多次 (自身变化 + 子树传播)，load 按顺序后写覆盖先写
+    // 按容器批量提交最终条目，保留工厂索引的 load 装载协议。
     for (const [key, entries] of this.pendingWrites) this.containers.get(key)?.index.load(entries);
     this.pendingWrites.clear();
   }
@@ -211,19 +235,26 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
   clear(): void {
     this.containers.clear();
     this.placements.clear();
+    this.pendingWrites.clear();
   }
 
   private collect(key: ContainerKey, localQuery: RectBounds, worldQuery: RectBounds, result: string[]): void {
     const state = this.containers.get(key);
     if (!state) return;
-    const ids = state.index.search(localQuery);
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i];
+    // 显式栈保留原来的深度优先顺序及局部查询范围，深层文档不消耗 JS 调用栈。
+    const stack = [{ key, query: localQuery, ids: state.index.search(localQuery), offset: 0 }];
+    while (stack.length > 0) {
+      const current = stack[stack.length - 1];
+      if (current.offset === current.ids.length) {
+        stack.pop();
+        continue;
+      }
+      const id = current.ids[current.offset++];
       const placement = this.placements.get(id)!;
       // 根层级局部坐标即世界坐标；嵌套节点先在容器局部坐标中快速排除，再按世界外接矩形精判
-      if (key === undefined) {
+      if (current.key === undefined) {
         if (!placement.hasChildren || doBoundsIntersect(placement.own, worldQuery)) result.push(id);
-      } else if (doBoundsIntersect(placement.own, localQuery)) {
+      } else if (doBoundsIntersect(placement.own, current.query)) {
         const worldBounds = transformBounds(
           this.extentOf(this.entities.getNode(id)!.entity),
           this.entities.getWorldTransform(id)!
@@ -232,7 +263,9 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
       }
       if (placement.hasChildren) {
         const node = this.entities.getNode(id)!.entity;
-        this.collect(id, transformBounds(localQuery, invertMatrix(computeNodeLocalMatrix(node))), worldQuery, result);
+        const child = this.containers.get(id)!;
+        const query = transformBounds(current.query, invertMatrix(computeNodeLocalMatrix(node)));
+        stack.push({ key: id, query, ids: child.index.search(query), offset: 0 });
       }
     }
   }
@@ -242,8 +275,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
   }
 
   /** 节点占据范围在父容器局部坐标中的外接矩形；未旋转时直接平移 */
-  private computeOwnBounds(node: Readonly<NodeEntity>): RectBounds {
-    const extent = this.extentOf(node);
+  private computeOwnBounds(node: Readonly<NodeEntity>, extent: RectBounds): RectBounds {
     if (!node.rotation) {
       return {
         left: node.x + extent.left,
@@ -271,7 +303,8 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
 
   /** 求节点条目：子树包围盒 (自身占据范围 ∪ 直接子条目并集) 变换到父容器局部坐标 */
   private computePlacement(node: Readonly<NodeEntity>, container: ContainerKey): Placement {
-    const own = this.computeOwnBounds(node);
+    const extent = this.extentOf(node);
+    const own = this.computeOwnBounds(node, extent);
     const state = this.containers.get(node.id);
     if (!state || state.members.size === 0) return { container, entry: own, own, hasChildren: false };
 
@@ -284,7 +317,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
       state.union = union;
       state.stale = false;
     }
-    const subtree = unionBounds(this.extentOf(node), state.union!);
+    const subtree = unionBounds(extent, state.union!);
     return { container, entry: transformBounds(subtree, computeNodeLocalMatrix(node)), own, hasChildren: true };
   }
 
@@ -324,6 +357,37 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
     } else {
       state.members.add(node.id);
       this.placements.set(node.id, next);
+    }
+  }
+
+  /** 只规划受影响的父链并集；所有子条目就绪后才求父范围，每个节点至多登记一次。 */
+  private placeBatch(work: ReadonlySet<string>, changed: ReadonlySet<string>, dirty: Set<string>): void {
+    const scheduled = new Map<string, { node: Readonly<NodeEntity>; parent: ContainerKey; children: number }>();
+    for (const id of work) {
+      let current: string | undefined = id;
+      while (current !== undefined && !scheduled.has(current)) {
+        const node = this.entities.getNode(current)?.entity;
+        if (!node) break;
+        const parent = this.resolveContainer(node);
+        scheduled.set(current, { node, parent, children: 0 });
+        current = parent;
+      }
+    }
+    for (const item of scheduled.values()) {
+      const parent = item.parent === undefined ? undefined : scheduled.get(item.parent);
+      if (parent) parent.children++;
+    }
+    const ready: string[] = [];
+    for (const [id, item] of scheduled) if (item.children === 0) ready.push(id);
+    for (let i = 0; i < ready.length; i++) {
+      const id = ready[i];
+      const item = scheduled.get(id)!;
+      if (changed.has(id) || dirty.has(id)) {
+        dirty.delete(id);
+        this.place(item.node, dirty);
+      }
+      const parent = item.parent === undefined ? undefined : scheduled.get(item.parent);
+      if (parent && --parent.children === 0) ready.push(item.parent!);
     }
   }
 

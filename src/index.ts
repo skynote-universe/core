@@ -29,4 +29,5 @@ export * from './layout/rich-text-edit';
 export * from './layout/layer-order';
 export * from './layout/connector-label';
 export * from './layout/connector-layer';
+export * from './layout/group-bounds-derivation';
 export * from './engine';

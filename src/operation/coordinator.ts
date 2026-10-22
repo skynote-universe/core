@@ -23,6 +23,7 @@ import type {
   CanvasPatch
 } from '../types/operation';
 import { applyPatches } from './patch-applier';
+import { normalizeMergePatches } from './normalize-merge-patches';
 import { getValueByPath, normalizePatchPath } from './patch-path';
 import { OverwriteCompactor } from './overwrite-compactor';
 import { isEqual } from '../utils/equality';
@@ -65,7 +66,12 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   /** 栈顶分组条目的增量压缩状态：同组后续操作只处理新增补丁 */
   private groupCompaction: { entryId: string; forward: OverwriteCompactor; inverse: OverwriteCompactor } | null = null;
   /** 进行中的批处理：期间的可撤销本地事务以同一分组并入一个撤销条目 */
-  private activeBatch: { groupId: string; label: string | undefined } | null = null;
+  private activeBatch: {
+    groupId: string;
+    label: string | undefined;
+    patches: CanvasPatch[];
+    inversePatches: CanvasPatch[];
+  } | null = null;
   private writeSuspensions = 0;
   private committing = false;
 
@@ -107,16 +113,40 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
    * 每次提交仍即时生效并广播，后续语义操作能读到前序结果 (如先建节点再连线)；
    * fn 抛错时撤回本批已记录的改动再抛出，不留下半个批次
    */
-  batch<T>(fn: () => T, label?: string): T {
+  batch<T>(fn: () => T, options?: string | { label?: string; groupId?: string }): T {
     if (this.activeBatch) return fn();
-    const batch = { groupId: generateId('batch'), label };
+    const label = typeof options === 'string' ? options : options?.label;
+    const customGroupId = typeof options === 'object' ? options?.groupId : undefined;
+    // 历史条目不可变，保留栈的浅副本即可恢复折叠、容量截断和重做分支；文档回滚只使用本批的逆补丁。
+    const undoBefore = this.undoStack.slice();
+    const redoBefore = this.redoStack.slice();
+    const batch = {
+      groupId: customGroupId ?? generateId('batch'),
+      label,
+      patches: [] as CanvasPatch[],
+      inversePatches: [] as CanvasPatch[]
+    };
     this.activeBatch = batch;
     try {
       return fn();
     } catch (err) {
-      if (this.undoStack.at(-1)?.groupId === batch.groupId && this.undo()) {
-        // 回滚不是用户的撤销，不应留下可重做的条目
-        this.redoStack.pop();
+      if (batch.inversePatches.length > 0) {
+        const patches = [...batch.inversePatches].reverse();
+        const result = applyPatches(this.targetDoc, patches);
+        if (!result.success) throw new Error('批次回滚失败', { cause: result.error });
+        this.undoStack.splice(0, this.undoStack.length, ...undoBefore);
+        this.redoStack.splice(0, this.redoStack.length, ...redoBefore);
+        this.groupCompaction = null;
+        this.notifyOperationCommitted({
+          id: generateId('op_rollback'),
+          label: `回滚: ${label ?? '批处理'}`,
+          timestamp: Date.now(),
+          origin: 'local',
+          source: 'system',
+          undoable: false,
+          patches,
+          inversePatches: batch.patches
+        });
         this.notifyHistoryChanged();
       }
       throw err;
@@ -176,7 +206,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       }
     }
 
-    const patches = clonePlainData(options.patches);
+    const patches = normalizeMergePatches(clonePlainData(options.patches));
     const applyResult = applyPatches(this.targetDoc, patches);
     if (!applyResult.success) {
       console.error('[SkyNote:OperationCoordinator] 补丁事务执行失败，已自动回滚:', applyResult.error);
@@ -186,14 +216,22 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     // 优先使用显式传入的逆向补丁，未传入时使用应用器推导出的对偶补丁
     let finalPatches = patches;
     let finalInversePatches = options.inversePatches
-      ? clonePlainData(options.inversePatches)
+      ? // 逆向列表按自然时间存储、整体倒序执行；先按执行顺序展开，再恢复存储顺序。
+        [...normalizeMergePatches(clonePlainData([...options.inversePatches].reverse()))].reverse()
       : applyResult.inversePatches;
 
     if (origin === 'local' && !restoredHistory) {
       // 回滚用的是应用器推导的对偶补丁 (与显式传入的逆向补丁无关)，失败时整体撤回已应用的各段
       let appliedInverse = applyResult.inversePatches;
       for (const derivation of this.derivations) {
-        const derived = clonePlainData(derivation(this.targetDoc, finalPatches));
+        let derived: readonly CanvasPatch[];
+        try {
+          derived = normalizeMergePatches(clonePlainData(derivation(this.targetDoc, finalPatches)));
+        } catch (err) {
+          // 插件排版抛错时，该事务尚未形成历史记录；先撤回其原始及已完成的派生补丁，再交给外层批次处理。
+          applyPatches(this.targetDoc, [...appliedInverse].reverse());
+          throw err;
+        }
         if (derived.length === 0) continue;
         const derivedResult = applyPatches(this.targetDoc, derived);
         if (!derivedResult.success) {
@@ -226,6 +264,10 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       this.redoStack.splice(0, this.redoStack.length, ...restoredHistory.redo);
       this.groupCompaction = null;
     } else if (undoable && origin === 'local' && !this.isApplyingHistory) {
+      if (this.activeBatch) {
+        for (const patch of record.patches) this.activeBatch.patches.push(patch);
+        for (const patch of record.inversePatches) this.activeBatch.inversePatches.push(patch);
+      }
       this.recordToHistory(record);
     }
 

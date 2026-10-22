@@ -77,8 +77,17 @@ export interface TextBlockMetrics {
 /** 缩放控制柄：四边中点与四角 (按节点自身未旋转的方位) */
 export type ResizeHandle = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
 
-/** 用户可调整的尺寸方向：宽高都可调，或只能调宽度 / 高度 (另一轴由内容决定) */
-export type NodeResizeAxes = 'both' | 'width' | 'height';
+/** 用户可调整的尺寸方向：宽高、单轴，或完全由内容决定而不可手动调整 */
+export type NodeResizeAxes = 'both' | 'width' | 'height' | 'none';
+
+/** 控制柄调整外框或整体内容；布局可强制覆盖用户偏好。 */
+export type NodeResizeBehavior = 'resize-bounds' | 'scale-contents';
+
+export interface NodeResizePolicy {
+  behavior: NodeResizeBehavior;
+  axes: NodeResizeAxes;
+  lockAspect: boolean;
+}
 
 /** 用户拖动控制柄后的目标尺寸 */
 export interface NodeResizeRequest {
@@ -149,6 +158,8 @@ export interface CreateNodeRequest<T extends string = string> {
   options?: NodeCreateOptions<T>;
   /** 撤销记录名称 */
   label?: string;
+  /** 创建容器节点 (acceptsChildren) 时是否自动收纳完全落入其外框内的同层节点，默认 true */
+  autoWrap?: boolean;
 }
 
 /**
@@ -239,11 +250,22 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 拖角时等比缩放内容 (如自由文本按比例缩放字号)，与比例锁定无关；边控制柄不受影响
    */
   readonly scaleContentOnCorners?: boolean;
+  /** 支持整体缩放后代；实际控制柄行为由 getResizeBehavior 决定。 */
+  readonly supportsContentScale?: boolean;
+  /** 只声明控制柄行为；数值面板仍使用外框尺寸语义。 */
+  getResizeBehavior?(node: NodeEntity<TData, TStyle>, handle: ResizeHandle): NodeResizeBehavior;
+  /**
+   * 整体等比缩放的最终字段，基于起始快照计算，不得改写入参。
+   * 未返回 textBlocks 时内核统一缩放文本；显式返回时以 hook 为准（不再缩放一遍），像素值仍由内核取整。
+   */
+  applyContentScale?(node: NodeEntity<TData, TStyle>, scale: number): Partial<NodeEntity<TData, TStyle>>;
   /**
    * 用户可调整的尺寸方向 (缺省 both)。另一轴完全由内容决定的节点 (如高度随文字的标签只能调宽度) 单选时
    * 不出现该轴的边控制柄，拖角与等比修饰键也只改可调的一轴
    */
   readonly resize?: NodeResizeAxes;
+  /** 按当前节点状态声明可调整轴，优先于静态 resize；none 表示尺寸完全由内容派生。 */
+  getResizeAxes?(node: NodeEntity<TData, TStyle>): NodeResizeAxes;
   /**
    * 裁剪超出外框的内容图元 (缺省 false，照常显示)
    * 文字的溢出方式另由插槽样式 textOverflow 决定 (如便签、形状标签显示省略号)
@@ -255,6 +277,7 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 例如自由文本拖边时切换为固定宽度 / 固定尺寸，拖角时按比例缩放字号。
    * 写成方法签名：实现方可按自身数据结构收窄返回值。
    * @param node 缩放开始时的节点 (同一次拖拽的每一帧都以它为基准，结果不累积误差)
+   * 整体缩放回退调用本 hook 时，显式返回的 textBlocks 同样视为最终结果。
    */
   applyResize?(node: NodeEntity<TData, TStyle>, request: NodeResizeRequest): Partial<NodeEntity<TData, TStyle>>;
 

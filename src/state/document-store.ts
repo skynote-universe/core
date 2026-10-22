@@ -32,7 +32,12 @@ import type {
   CanvasPatch
 } from '../types/operation';
 import type { DocumentChangeSet, EntityChanges } from '../types/change-set';
-import { isAspectLocked, type CreateNodeRequest, type ResizeHandle } from '../protocols/node-type.protocol';
+import {
+  isAspectLocked,
+  type CreateNodeRequest,
+  type ResizeHandle,
+  type NodeResizePolicy
+} from '../protocols/node-type.protocol';
 import { AssetAdapterError } from '../protocols/asset.protocol';
 import type { WorldFrame } from '../utils/geometry';
 import type { FontMeasurer } from '../protocols/font-measurer.protocol';
@@ -45,8 +50,16 @@ import { clonePlainData } from '../utils/clone';
 import { generateId } from '../utils/id';
 import { findCommitViolation, findInlineMediaUrl } from './commit-guards';
 import { NODE_CLIPBOARD_KIND, type NodeClipboardPayload } from '../serialization/document-schema';
-import { collectTextLayoutTargets, createFitContext, deriveTextLayoutPatches } from '../layout/text-layout';
-import { deriveLayoutPatches } from '../layout/layout-derivation';
+import {
+  collectTextLayoutTargets,
+  createFitContext,
+  deriveTextLayoutPatches,
+  scaleNodeTextBlocks,
+  scaleTextBlockPixels
+} from '../layout/text-layout';
+import { deriveContainerPatches } from '../layout/container-derivation';
+import { scaleConnectorTextBlocks } from '../layout/connector-label';
+import { GROUP_NODE_TYPE } from '../layout/group-bounds-derivation';
 import { findMemberRootId } from '../layout/layout-tree';
 import { ConnectorSourceRegistry } from '../registry/connector-source-registry';
 import {
@@ -77,6 +90,7 @@ import {
   decomposeNodeMatrix,
   invertMatrix,
   multiplyMatrix,
+  roundPersisted,
   unionBounds
 } from '../utils/geometry';
 
@@ -120,6 +134,27 @@ export interface NodeTransform {
   frame: WorldFrame;
   /** 节点类型 applyResize 的结果 (如文本尺寸模式、字号)，与外框一并提交 */
   fields?: Partial<NodeEntity>;
+  /** 整体等比缩放后代、文本和内部连线；与仅修改外框尺寸分开。 */
+  scaleContents?: boolean;
+  /** 指针按下时的完整内容快照；每帧从原始数据计算，避免文字测量反写尺寸后破坏后续比例。 */
+  scaleSnapshot?: NodeScaleSnapshot;
+  /** 仅调整容器外框时保持内容世界位置，使用手势起始快照的直接子节点位姿。 */
+  preserveContents?: boolean;
+  /** 旋转手势的必要连线几何；每帧从起点计算，避免对已经取整的拐点累积变换。 */
+  connectorSnapshot?: NodeConnectorTransformSnapshot;
+  /** 共同手势显式声明的起点到目标矩阵；配合共享连线快照处理不同根之间的内部连线。 */
+  connectorTransform?: { snapshot: NodeConnectorTransformSnapshot; matrix: Matrix2D };
+}
+
+export interface NodeConnectorTransformSnapshot {
+  frame: WorldFrame;
+  nodeIds: readonly string[];
+  controlPoints: ReadonlyMap<string, readonly Point[] | undefined>;
+}
+
+export interface NodeScaleSnapshot {
+  nodes: ReadonlyMap<string, { node: NodeEntity; frame: WorldFrame }>;
+  connectors: ReadonlyMap<string, ConnectorEntity>;
 }
 
 /** 新建连线的请求 */
@@ -172,6 +207,7 @@ export type DocumentApi = Pick<
   | 'createConnector'
   | 'moveEntities'
   | 'transformNodes'
+  | 'captureConnectorTransformSnapshot'
   | 'resizeNodes'
   | 'rotateNodes'
   | 'setAspectLocked'
@@ -182,7 +218,14 @@ export type DocumentApi = Pick<
   | 'copyEntities'
   | 'pasteEntities'
   | 'reparentNodes'
+  | 'groupNodes'
+  | 'ungroupNodes'
+  | 'canGroupNodes'
+  | 'canUngroupNodes'
   | 'moveLayers'
+  | 'holdLayoutMembers'
+  | 'releaseLayoutMembers'
+  | 'getNodeResizePolicy'
   | 'batch'
   | 'undo'
   | 'redo'
@@ -259,6 +302,8 @@ export class DocumentStore {
   /** 来源 id → 它当前拥有的派生连线 id */
   private readonly sourceConnectorIds = new Map<string, Set<string>>();
   private readonly connectorEnds: (connectorId: string) => readonly [Point, Point] | undefined;
+  /** 交互中暂时托管、布局派生不回写位置的成员 (本地瞬态) */
+  private readonly heldLayoutMembers = new Set<string>();
 
   constructor(initialDoc?: CanvasDocument, options?: DocumentStoreOptions) {
     // 外部传入文档属于不可信输入边界：深拷贝净化并切断与调用方的引用共享
@@ -377,8 +422,8 @@ export class DocumentStore {
    * 将多个语义操作合并为一步撤销 (如新建节点并连线、粘贴一组实体)
    * 期间每次提交即时生效；fn 抛错时本批改动整体撤回
    */
-  batch<T>(fn: () => T, label?: string): T {
-    return this.coordinator.batch(fn, label);
+  batch<T>(fn: () => T, options?: string | { label?: string; groupId?: string }): T {
+    return this.coordinator.batch(fn, options);
   }
 
   undo(): boolean {
@@ -402,13 +447,15 @@ export class DocumentStore {
 
   /**
    * 注入或移除字体测量器：注入后本地事务中的文本与宽度变更会在同一事务内派生节点尺寸
-   * 派生流水线：文字自动尺寸 → 布局排版 (布局读到文字撑开后的尺寸)
+   * 派生流水线：文字自动尺寸 → 按容器深度交错派生布局与组合外框 (ADR-130, ADR-145)
    */
   setFontMeasurer(measurer: FontMeasurer | null): void {
     this.fontMeasurer = measurer;
     const layoutContext = {
       layouts: this.layouts,
-      previousParentId: (id: string) => this.entities.getIndexedParentId(id)
+      previousParentId: (id: string) => this.entities.getIndexedParentId(id),
+      previousChildIds: (id: string) => this.entities.getChildIds(id),
+      isHeld: (id: string) => this.heldLayoutMembers.has(id)
     };
     this.coordinator.setPatchDerivations([
       ...(measurer
@@ -417,17 +464,50 @@ export class DocumentStore {
               deriveTextLayoutPatches(doc, collectTextLayoutTargets(patches), measurer, this.nodeTypes)
           ]
         : []),
-      (doc, patches) => deriveLayoutPatches(doc, patches, layoutContext)
+      (doc, patches) => deriveContainerPatches(doc, patches, layoutContext)
     ]);
   }
 
   /** 布局注册表变化后 (插件晚于文档注册或被卸载)：全部布局树重新排版，系统事务，不进撤销栈 */
   refreshLayouts(): void {
-    const patches = deriveLayoutPatches(this.document, [{ op: 'set', path: ['content', 'nodes'], value: null }], {
+    const patches = deriveContainerPatches(this.document, [{ op: 'set', path: ['content', 'nodes'], value: null }], {
       layouts: this.layouts,
-      previousParentId: () => undefined
+      previousParentId: () => undefined,
+      previousChildIds: (id) => this.entities.getChildIds(id),
+      isHeld: (id) => this.heldLayoutMembers.has(id)
     });
     if (patches.length > 0) this.commit({ label: '重新排版', source: 'system', undoable: false, patches });
+  }
+
+  /**
+   * 托管布局成员 (本地瞬态，不持久化、不同步)：交互期间 (如拖拽堆叠成员跟随指针) 成员仍参与排版并占据槽位，
+   * 但布局派生不回写其位置；以新集合整体替换此前的托管集合
+   */
+  holdLayoutMembers(nodeIds: Iterable<string>): void {
+    this.heldLayoutMembers.clear();
+    for (const id of nodeIds) this.heldLayoutMembers.add(id);
+  }
+
+  /**
+   * 释放全部托管成员，并把它们仍所在的布局树重新排版归位
+   * 归位补丁以 options 提交 (传入交互的 groupId 即与该交互同一步撤销)；无托管或无位置变化时不提交
+   */
+  releaseLayoutMembers(options?: CommandOptions): CanvasOperationRecord | null {
+    if (this.heldLayoutMembers.size === 0) return null;
+    const released = [...this.heldLayoutMembers];
+    this.heldLayoutMembers.clear();
+    // 只借 layoutItem 触发字段找出受影响的布局树；这些探测补丁本身不提交
+    const probes: CanvasPatch[] = released
+      .filter((id) => Object.hasOwn(this.document.content.nodes, id))
+      .map((id) => ({ op: 'set', path: ['content', 'nodes', id, 'layoutItem'], value: null }));
+    if (probes.length === 0) return null;
+    const patches = deriveContainerPatches(this.document, probes, {
+      layouts: this.layouts,
+      previousParentId: () => undefined,
+      previousChildIds: (id) => this.entities.getChildIds(id)
+    });
+    if (patches.length === 0) return null;
+    return this.commit({ ...options, label: options?.label ?? '布局归位', patches });
   }
 
   /** 全量重算某来源的派生连线 (来源注册、卸载或其依赖的外部条件变化)，有变化时广播 */
@@ -474,7 +554,20 @@ export class DocumentStore {
    */
   createNode<T extends string>(request: CreateNodeRequest<T>): string | null {
     const node = this.createNodeEntity(request);
-    return this.addNode(node, { label: request.label }) ? node.id : null;
+    if (Object.hasOwn(this.document.content.nodes, node.id)) {
+      console.error(`[SkyNote:DocumentStore] 节点 id 已存在，拒绝覆盖: ${node.id}`);
+      return null;
+    }
+    const patches: CanvasPatch[] = [{ op: 'set', path: ['content', 'nodes', node.id], value: node }];
+    const definition = this.nodeTypes.get(node.nodeType);
+    if (definition?.acceptsChildren && request.autoWrap !== false) {
+      this.appendAutoWrapPatches(node, patches);
+    }
+    const record = this.commit({
+      label: request.label ?? '添加节点',
+      patches
+    });
+    return record ? node.id : null;
   }
 
   /** 在同一个原子事务中登记资产元数据并创建引用它的节点 */
@@ -801,77 +894,481 @@ export class DocumentStore {
 
   /**
    * 变换节点 (缩放、旋转)：frame 为世界坐标中的新外框，换算为父容器局部坐标后一次提交，只写有变化的字段
-   * 后代坐标相对容器，随容器移动与旋转，不产生补丁 (ADR-114)；高频拖拽通过 groupId 折叠为一步撤销
+   * 后代坐标相对容器，随容器移动与旋转，不产生补丁 (ADR-114)；组合 (group) 发生尺寸缩放时将缩放比例传播至后代 (ADR-145)；
+   * 高频拖拽通过 groupId 折叠为一步撤销
    */
   transformNodes(transforms: readonly NodeTransform[], options?: CommandOptions): CanvasOperationRecord | null {
     const { nodes } = this.document.content;
     const patches: CanvasPatch[] = [];
     const carried = new Set<string>();
-    for (const { id, frame, fields } of transforms) {
+    const explicitIds = new Set(transforms.map((t) => t.id));
+    const effective: (NodeTransform & { fieldsNormalized?: boolean })[] = [];
+    const scaledNodes = new Map<string, Partial<NodeEntity>>();
+
+    const pending = [...transforms];
+    for (let index = 0; index < pending.length; index++) {
+      const item = pending[index];
+      const { id, frame } = item;
       if (!Object.hasOwn(nodes, id)) continue;
       const node = nodes[id];
-      const world = computeFrameMatrix(frame);
-      const parentMatrix = node.parentId === undefined ? undefined : this.entities.getWorldTransform(node.parentId);
-      const local = parentMatrix ? multiplyMatrix(invertMatrix(parentMatrix), world) : world;
-      const pose = decomposeNodeMatrix(local, frame.width, frame.height);
-      const next: Partial<NodeEntity> = { ...pose, width: frame.width, height: frame.height, ...fields };
-      for (const [key, value] of Object.entries(next)) {
-        if (key === 'id' || key === 'type') continue;
-        if (areStructuredValuesEqual(node[key as keyof NodeEntity], value)) continue;
-        patches.push({ op: 'set', path: ['content', 'nodes', id, key], value });
+      const original = item.scaleSnapshot?.nodes.get(id);
+      const sourceNode = original?.node ?? node;
+      const sourceNodes = item.scaleSnapshot?.nodes;
+      const sourceConnectors = item.scaleSnapshot?.connectors;
+      const resized = Math.abs(frame.width - node.width) > 1e-6 || Math.abs(frame.height - node.height) > 1e-6;
+      if (item.scaleContents && (resized || original)) {
+        const kx = frame.width / sourceNode.width;
+        const ky = frame.height / sourceNode.height;
+        if (!Number.isFinite(kx) || Math.abs(kx - ky) > 1e-4) return null;
+        const fields = this.scaleContentFields(sourceNode, kx);
+        effective.push({ ...item, fields: { ...item.fields, ...fields }, fieldsNormalized: true });
+        const scope = this.collectContentScaleIds(id, explicitIds, sourceNodes);
+        for (let childIndex = 1; childIndex < scope.length; childIndex++) {
+          const childId = scope[childIndex];
+          const child = sourceNodes?.get(childId)?.node ?? nodes[childId];
+          const scaled = {
+            x: Math.round(child.x * kx),
+            y: Math.round(child.y * kx),
+            width: child.width === 0 ? 0 : Math.max(1, Math.round(child.width * kx)),
+            height: child.height === 0 ? 0 : Math.max(1, Math.round(child.height * kx)),
+            ...this.scaleContentFields(child, kx)
+          };
+          scaledNodes.set(childId, scaled);
+          this.appendTransformPatches(childId, scaled, patches);
+        }
+        const oldFrame = original?.frame ?? computeWorldFrame(node, this.entities.getWorldTransform(id)!);
+        const delta = multiplyMatrix(
+          multiplyMatrix(computeFrameMatrix(frame), { a: kx, b: 0, c: 0, d: kx, e: 0, f: 0 }),
+          invertMatrix(computeFrameMatrix(oldFrame))
+        );
+        this.carryConnectors(scope, delta, carried, patches, sourceConnectors, kx);
+        continue;
+      }
+      if (node.nodeType === GROUP_NODE_TYPE && (resized || original)) {
+        const leaves: string[] = [];
+        const scope = new Set([id]);
+        this.collectGroupLeaves(id, explicitIds, leaves, scope, sourceNodes);
+        if (leaves.length > 0) {
+          const oldGroupFrame = original?.frame ?? computeWorldFrame(node, this.entities.getWorldTransform(id)!);
+          const toOldGroup = invertMatrix(computeFrameMatrix(oldGroupFrame));
+          const fromNewGroup = computeFrameMatrix(frame);
+          const kx = oldGroupFrame.width > 0 ? frame.width / oldGroupFrame.width : 1;
+          const ky = oldGroupFrame.height > 0 ? frame.height / oldGroupFrame.height : 1;
+          const uniform = Math.abs(kx - ky) < 1e-4;
+          const scale = uniform ? kx : 1;
+          const dRot = frame.rotation - oldGroupFrame.rotation;
+          const groupDelta = multiplyMatrix(
+            multiplyMatrix(fromNewGroup, { a: kx, b: 0, c: 0, d: ky, e: 0, f: 0 }),
+            toOldGroup
+          );
+          // 连线只属于本次实际变换的成员；锁定组、独立显式目标及其后代不能被提前认领。
+          if (uniform) {
+            for (const leafId of leaves) {
+              if (!this.nodeTypes.get(nodes[leafId].nodeType)?.supportsContentScale) continue;
+              for (const memberId of this.collectContentScaleIds(leafId, explicitIds, sourceNodes)) scope.add(memberId);
+            }
+          }
+          this.carryConnectors([...scope], groupDelta, carried, patches, sourceConnectors, uniform ? scale : undefined);
+          for (const leafId of leaves) {
+            if (sourceNodes && !sourceNodes.has(leafId)) continue;
+            const leaf = sourceNodes?.get(leafId)?.node ?? nodes[leafId];
+            const leafFrame =
+              sourceNodes?.get(leafId)?.frame ?? computeWorldFrame(leaf, this.entities.getWorldTransform(leafId)!);
+            const c = applyMatrix(toOldGroup, leafFrame.cx, leafFrame.cy);
+            const center = applyMatrix(fromNewGroup, c.x * kx, c.y * ky);
+            const nextLeafFrame: WorldFrame = {
+              cx: center.x,
+              cy: center.y,
+              width: leafFrame.width === 0 ? 0 : Math.max(1, leafFrame.width * kx),
+              height: leafFrame.height === 0 ? 0 : Math.max(1, leafFrame.height * ky),
+              rotation: leafFrame.rotation + dRot
+            };
+            if (this.nodeTypes.get(leaf.nodeType)?.supportsContentScale && uniform) {
+              pending.push({
+                id: leafId,
+                frame: nextLeafFrame,
+                scaleContents: true,
+                scaleSnapshot: item.scaleSnapshot
+              });
+            } else {
+              const fields = uniform
+                ? this.scaleContentFields(leaf, scale)
+                : this.nodeTypes.get(leaf.nodeType)?.applyResize?.(leaf, {
+                    handle: 'se',
+                    width: nextLeafFrame.width,
+                    height: nextLeafFrame.height,
+                    scale
+                  });
+              effective.push({ id: leafId, frame: nextLeafFrame, fields, fieldsNormalized: uniform });
+            }
+          }
+          continue;
+        }
+        // 没有可变换叶子时，外框仍由内容派生；不能写入再被派生撤回而制造空历史。
+        continue;
+      }
+      effective.push(item);
+    }
+
+    const planned = this.planTransformGeometry(effective, scaledNodes);
+    for (const [id, fields] of planned.fields) this.appendTransformPatches(id, fields, patches);
+    const sharedConnectors = new Map<NodeConnectorTransformSnapshot, Matrix2D>();
+    for (const { id, preserveContents, connectorSnapshot, connectorTransform } of effective) {
+      if (!Object.hasOwn(nodes, id)) continue;
+      if (preserveContents) continue;
+      const source = connectorTransform?.snapshot ?? connectorSnapshot;
+      if (connectorTransform) {
+        const previous = sharedConnectors.get(connectorTransform.snapshot);
+        if (previous) {
+          // 同一快照声明共同矩阵；重复根不能再次扫描整个选区，也不能静默采用冲突矩阵。
+          if (!areStructuredValuesEqual(previous, connectorTransform.matrix)) return null;
+          continue;
+        }
+        sharedConnectors.set(connectorTransform.snapshot, connectorTransform.matrix);
       }
       // 容器内的连线随后代一起移动旋转：自由端与手动拐点是世界坐标，按容器自身坐标系的变化一并换算
-      const delta = multiplyMatrix(world, invertMatrix(this.entities.getWorldTransform(id)!));
-      this.carryConnectors([id, ...this.entities.collectDescendantIds(id)], delta, carried, patches);
+      const delta =
+        connectorTransform?.matrix ??
+        multiplyMatrix(
+          planned.world.get(id)!,
+          invertMatrix(source ? computeFrameMatrix(source.frame) : this.entities.getWorldTransform(id)!)
+        );
+      const scope =
+        source && (connectorTransform || explicitIds.size === 1)
+          ? source.nodeIds
+          : this.collectContentScaleIds(id, explicitIds);
+      this.carryConnectors(scope, delta, carried, patches, undefined, undefined, source?.controlPoints);
     }
     if (patches.length === 0) return null;
     return this.commit({ ...options, label: options?.label ?? '变换节点', patches });
   }
 
+  /** 只冻结成员和内部拐点；独立子目标可排除其子树，避免嵌套多选重复保存与认领。 */
+  captureConnectorTransformSnapshot(
+    nodeIds: Iterable<string>,
+    frame: WorldFrame,
+    excludedRoots?: ReadonlySet<string>
+  ): NodeConnectorTransformSnapshot {
+    const members: string[] = [];
+    const ids = [...new Set(nodeIds)].filter((id) => this.entities.hasNode(id));
+    // 单根不需要判定选中祖先，深层嵌套逐根捕获时不能重复遍历完整父链。
+    for (const id of ids.length === 1 ? ids : this.collectTopmost(ids)) {
+      if (excludedRoots) {
+        for (const memberId of this.collectContentScaleIds(id, excludedRoots)) members.push(memberId);
+      } else {
+        members.push(id);
+        for (const childId of this.entities.collectDescendantIds(id)) members.push(childId);
+      }
+    }
+    const inside = new Set(members);
+    const controlPoints = new Map<string, readonly Point[] | undefined>();
+    for (const id of members) {
+      for (const connectorId of this.documentConnectorIdsOfNode(id)) {
+        if (controlPoints.has(connectorId)) continue;
+        const connector = this.document.content.connectors[connectorId];
+        if (!inside.has(connector.from.nodeId!) || !inside.has(connector.to.nodeId!)) continue;
+        controlPoints.set(
+          connectorId,
+          connector.controlPoints?.map((point) => ({ ...point }))
+        );
+      }
+    }
+    return { frame, nodeIds: members, controlPoints };
+  }
+
+  /** 父子显式目标共用提交前的最终几何规划；祖先只求解一次，派生 Group 仍沿用现有局部坐标系。 */
+  private planTransformGeometry(
+    transforms: readonly (NodeTransform & { fieldsNormalized?: boolean })[],
+    scaledNodes: ReadonlyMap<string, Partial<NodeEntity>>
+  ): { fields: Map<string, Partial<NodeEntity>>; world: Map<string, Matrix2D> } {
+    const { nodes } = this.document.content;
+    const targets = new Map(transforms.map((item) => [item.id, item]));
+    const preserved = new Map<string, WorldFrame>();
+    for (const { id, preserveContents, scaleSnapshot } of transforms) {
+      if (!preserveContents || !scaleSnapshot) continue;
+      for (const childId of this.entities.getChildIds(id)) {
+        const child = scaleSnapshot.nodes.get(childId);
+        if (child && !targets.has(childId)) preserved.set(childId, child.frame);
+      }
+    }
+    const fields = new Map<string, Partial<NodeEntity>>();
+    const world = new Map<string, Matrix2D>();
+    const changedWorld = new Set<string>();
+    for (const id of [...targets.keys(), ...preserved.keys()]) {
+      const path: string[] = [];
+      let current: string | undefined = id;
+      while (current !== undefined && Object.hasOwn(nodes, current) && !world.has(current)) {
+        path.push(current);
+        current = nodes[current].parentId;
+      }
+      for (let i = path.length - 1; i >= 0; i--) {
+        const nodeId = path[i];
+        const node = nodes[nodeId];
+        const parent = node.parentId === undefined ? undefined : world.get(node.parentId);
+        const target = targets.get(nodeId);
+        const frame = target?.frame ?? preserved.get(nodeId);
+        let next = scaledNodes.get(nodeId);
+        if (!frame && !next && (node.parentId === undefined || !changedWorld.has(node.parentId))) {
+          // 未受本次规划影响的祖先复用运行时矩阵，深层叶子变换不为整条祖先链重复分配矩阵。
+          world.set(nodeId, this.entities.getWorldTransform(nodeId)!);
+          continue;
+        }
+        if (frame) {
+          const matrix = computeFrameMatrix(frame);
+          const local = parent ? multiplyMatrix(invertMatrix(parent), matrix) : matrix;
+          const pose = decomposeNodeMatrix(local, frame.width, frame.height);
+          next = { x: Math.round(pose.x), y: Math.round(pose.y), rotation: Math.round(pose.rotation) };
+          if (target) {
+            next = {
+              ...next,
+              width: frame.width === 0 ? 0 : Math.max(1, Math.round(frame.width)),
+              height: frame.height === 0 ? 0 : Math.max(1, Math.round(frame.height)),
+              ...this.roundResizeFields(target.fields ?? {}, !target.fieldsNormalized)
+            };
+          }
+          fields.set(nodeId, next);
+        }
+        const local = computeNodeLocalMatrix(next ? { ...node, ...next } : node);
+        world.set(nodeId, parent ? multiplyMatrix(parent, local) : local);
+        changedWorld.add(nodeId);
+      }
+    }
+    return { fields, world };
+  }
+
+  /** 变换字段与普通更新保持同一删除语义，避免 set undefined 的历史在 JSON 往返后失效。 */
+  private appendTransformPatches(id: string, fields: Partial<NodeEntity>, patches: CanvasPatch[]): void {
+    const node = this.document.content.nodes[id];
+    for (const [key, value] of Object.entries(fields)) {
+      if (key === 'id' || key === 'type') continue;
+      const path = ['content', 'nodes', id, key];
+      if (value === undefined) {
+        if (Object.hasOwn(node, key)) patches.push({ op: 'unset', path });
+      } else if (!areStructuredValuesEqual(node[key as keyof NodeEntity], value))
+        patches.push({ op: 'set', path, value });
+    }
+  }
+
+  /** 整体缩放显式固化有效字号、像素行高及文本内边距，避免默认样式或行内样式留在原比例。 */
+  private scaleContentFields(node: NodeEntity, scale: number): Partial<NodeEntity> {
+    const definition = this.nodeTypes.get(node.nodeType);
+    const fields = this.roundResizeFields(
+      definition?.applyContentScale?.(node, scale) ??
+        definition?.applyResize?.(node, {
+          handle: 'se',
+          width: node.width * scale,
+          height: node.height * scale,
+          scale
+        }) ??
+        {},
+      true
+    );
+    // hook 的显式文本是最终值，包括移除；没有返回文本时才使用统一默认缩放。
+    if (Object.hasOwn(fields, 'textBlocks') || !node.textBlocks) return fields;
+    return { ...fields, textBlocks: scaleNodeTextBlocks(node, definition, scale) };
+  }
+
+  /** 类型插件可返回小数描边；只规范像素属性，透明度等比例值保留原语义。 */
+  private roundResizeFields(fields: Partial<NodeEntity>, includeText = false): Partial<NodeEntity> {
+    if (includeText && fields.textBlocks)
+      fields = { ...fields, textBlocks: fields.textBlocks.map((block) => scaleTextBlockPixels(block, 1)) };
+    if (!fields.style) return fields;
+    const { strokeWidth, radius } = fields.style;
+    return {
+      ...fields,
+      style: {
+        ...fields.style,
+        ...(strokeWidth !== undefined
+          ? { strokeWidth: strokeWidth === 0 ? 0 : Math.max(1, Math.round(strokeWidth)) }
+          : {}),
+        ...(radius !== undefined
+          ? {
+              radius:
+                typeof radius === 'number'
+                  ? Math.round(radius)
+                  : (radius.map(Math.round) as [number, number, number, number])
+            }
+          : {})
+      }
+    };
+  }
+
+  /** 用迭代器栈保持深度优先顺序，非组合容器作为整体叶子；深链不占调用栈，也不复制宽层成员数组。 */
+  private collectGroupLeaves(
+    groupId: string,
+    explicitIds: ReadonlySet<string>,
+    out: string[],
+    scope?: Set<string>,
+    sourceNodes?: NodeScaleSnapshot['nodes']
+  ): void {
+    const { nodes } = this.document.content;
+    const stack = [{ id: groupId, children: this.entities.getChildIds(groupId).values(), complete: true }];
+    while (stack.length > 0) {
+      const current = stack[stack.length - 1];
+      const next = current.children.next();
+      if (next.done) {
+        stack.pop();
+        // 含排除成员的逻辑组不一定按同一仿射矩阵改变外框，不能替它认领连线。
+        if (!current.complete) {
+          scope?.delete(current.id);
+          if (stack.length > 0) stack[stack.length - 1].complete = false;
+        }
+        continue;
+      }
+      const child = nodes[next.value];
+      if (!child || child.locked || explicitIds.has(child.id) || (sourceNodes && !sourceNodes.has(child.id))) {
+        current.complete = false;
+        continue;
+      }
+      scope?.add(child.id);
+      if (child.nodeType === GROUP_NODE_TYPE) {
+        stack.push({ id: child.id, children: this.entities.getChildIds(child.id).values(), complete: true });
+      } else {
+        out.push(child.id);
+      }
+    }
+  }
+
+  /** 显式目标拥有自己的子树；快照之外的新成员不能回退到 live 起点参与绝对倍率计算。 */
+  private collectContentScaleIds(
+    id: string,
+    explicitIds: ReadonlySet<string>,
+    sourceNodes?: NodeScaleSnapshot['nodes']
+  ): string[] {
+    const scope = [id];
+    for (let index = 0; index < scope.length; index++) {
+      for (const childId of this.entities.getChildIds(scope[index])) {
+        if (explicitIds.has(childId) || (sourceNodes && !sourceNodes.has(childId))) continue;
+        scope.push(childId);
+      }
+    }
+    return scope;
+  }
+
   /**
-   * 两端都连在 subtree 内节点上的连线：手动拐点按矩阵 m 换算 (每条连线只处理一次)
+   * 两端都连在 subtree 内节点上的连线：拐点按矩阵换算，整体等比缩放时标注像素同步换算，每条只处理一次。
    * @param carried 本次事务已处理的连线
    */
-  private carryConnectors(subtree: readonly string[], m: Matrix2D, carried: Set<string>, patches: CanvasPatch[]): void {
+  private carryConnectors(
+    subtree: readonly string[],
+    m: Matrix2D,
+    carried: Set<string>,
+    patches: CanvasPatch[],
+    originals?: ReadonlyMap<string, ConnectorEntity>,
+    contentScale?: number,
+    pointOriginals?: ReadonlyMap<string, readonly Point[] | undefined>
+  ): void {
     const { connectors } = this.document.content;
     const inside = new Set(subtree);
     const contains = (end: ConnectorEndpoint) => end.nodeId !== undefined && inside.has(end.nodeId);
     const map = (p: Point): Point => applyMatrix(m, p.x, p.y);
     for (const nodeId of subtree) {
       for (const id of this.documentConnectorIdsOfNode(nodeId)) {
-        const c = connectors[id];
-        if (carried.has(id) || !c.controlPoints || !contains(c.from) || !contains(c.to)) continue;
+        if (originals && !originals.has(id)) continue;
+        if (pointOriginals && !pointOriginals.has(id)) continue;
+        const c = originals?.get(id) ?? connectors[id];
+        if (carried.has(id) || !contains(c.from) || !contains(c.to)) continue;
         carried.add(id);
-        patches.push({
-          op: 'set',
-          path: ['content', 'connectors', id, 'controlPoints'],
-          value: c.controlPoints.map(map)
-        });
+        const sourcePoints = pointOriginals ? pointOriginals.get(id) : c.controlPoints;
+        if (sourcePoints) {
+          const points = sourcePoints.map((point) => {
+            const next = map(point);
+            return { x: Math.round(next.x), y: Math.round(next.y) };
+          });
+          if (!areStructuredValuesEqual(connectors[id].controlPoints, points))
+            patches.push({
+              op: 'set',
+              path: ['content', 'connectors', id, 'controlPoints'],
+              value: points
+            });
+        }
+        if (contentScale !== undefined && c.textBlocks) {
+          const blocks = scaleConnectorTextBlocks(c.textBlocks, contentScale);
+          if (!areStructuredValuesEqual(connectors[id].textBlocks, blocks))
+            patches.push({
+              op: 'set',
+              path: ['content', 'connectors', id, 'textBlocks'],
+              value: blocks
+            });
+        }
       }
     }
   }
 
-  /**
-   * 把节点设为指定宽高 (尺寸面板，支持多选)：节点左上角在世界中不动，旋转节点同样成立
-   * 只给一边且比例锁定时另一边按比例联动；节点类型的 applyResize 一并写入 (如自由文本切换为固定宽度)，
-   * 与拖控制柄走同一套缩放语义，否则排版派生会把直接写入的宽高改回去
-   */
+  /** 手柄、尺寸面板与命令共用约束；组合约束只访问非组合叶子。 */
+  getNodeResizePolicy(
+    id: string,
+    source: 'pointer' | 'size' = 'pointer',
+    handle: ResizeHandle = 'se'
+  ): NodeResizePolicy {
+    const node = this.document.content.nodes[id];
+    if (!node) return { behavior: 'resize-bounds', axes: 'none', lockAspect: false };
+    const definition = this.nodeTypes.get(node.nodeType);
+    const behavior =
+      node.nodeType === GROUP_NODE_TYPE
+        ? 'scale-contents'
+        : source === 'pointer'
+          ? (definition?.getResizeBehavior?.(node, handle) ?? 'resize-bounds')
+          : 'resize-bounds';
+    let axes =
+      behavior === 'scale-contents'
+        ? ('both' as const)
+        : (definition?.getResizeAxes?.(node) ?? definition?.resize ?? 'both');
+    let lockAspect =
+      (!!definition?.supportsContentScale && behavior === 'scale-contents') || isAspectLocked(node, definition);
+    if (node.nodeType === GROUP_NODE_TYPE) {
+      const leaves: string[] = [];
+      this.collectGroupLeaves(id, new Set(), leaves);
+      if (leaves.length === 0) return { behavior, axes: 'none', lockAspect: false };
+      const rootRotation = computeWorldFrame(node, this.entities.getWorldTransform(id)!).rotation;
+      let width = true,
+        height = true;
+      for (const childId of leaves) {
+        const child = this.document.content.nodes[childId];
+        const type = this.nodeTypes.get(child.nodeType);
+        const childAxes = type?.supportsContentScale
+          ? 'both'
+          : (type?.getResizeAxes?.(child) ?? type?.resize ?? 'both');
+        const rotation = computeWorldFrame(child, this.entities.getWorldTransform(childId)!).rotation - rootRotation;
+        lockAspect ||= Math.abs(rotation % 360) > 1e-4 || isAspectLocked(child, type) || !!type?.supportsContentScale;
+        if (childAxes !== 'both' && Math.abs(rotation % 180) > 1e-4) {
+          width = false;
+          height = false;
+        }
+        width &&= childAxes === 'width' || childAxes === 'both';
+        height &&= childAxes === 'height' || childAxes === 'both';
+      }
+      axes =
+        lockAspect && (!width || !height) ? 'none' : width ? (height ? 'both' : 'width') : height ? 'height' : 'none';
+    }
+    return { behavior, axes, lockAspect };
+  }
+
+  /** 尺寸面板以世界左上角为锚调整外框；组合按共用策略将变换传播到成员。 */
   resizeNodes(
     nodeIds: Iterable<string>,
     size: { width?: number; height?: number },
-    options?: CommandOptions
+    options?: CommandOptions,
+    snapshots?: ReadonlyMap<string, NodeScaleSnapshot>
   ): CanvasOperationRecord | null {
     const { nodes } = this.document.content;
     const handle: ResizeHandle = size.height === undefined ? 'e' : size.width === undefined ? 's' : 'se';
     const transforms: NodeTransform[] = [];
     for (const id of nodeIds) {
       if (!Object.hasOwn(nodes, id)) continue;
-      const node = nodes[id];
+      const snapshot = snapshots?.get(id);
+      const node = snapshot?.nodes.get(id)?.node ?? nodes[id];
       const definition = this.nodeTypes.get(node.nodeType);
       let width = size.width ?? node.width;
       let height = size.height ?? node.height;
+      const policy = this.getNodeResizePolicy(id, 'size', handle);
+      const axes = policy.axes;
+      if (axes === 'none') continue;
+      if (axes === 'height') width = node.width;
+      if (axes === 'width') height = node.height;
+      const scalesContainerGroup = node.nodeType === GROUP_NODE_TYPE && policy.lockAspect;
       let scale = 1;
-      if (isAspectLocked(node, definition)) {
+      if (axes === 'both' && policy.lockAspect) {
         if (handle === 'e' && node.width > 0) {
           scale = width / node.width;
           width = node.width * scale;
@@ -889,10 +1386,18 @@ export class DocumentStore {
                 : height / node.height;
         }
       }
+      if (scalesContainerGroup) {
+        width = node.width * scale;
+        height = node.height * scale;
+      }
       // 旧节点局部坐标中左上角仍在原点，新中心 (w/2, h/2) 经旧世界矩阵换算即可
-      const frame = computeWorldFrame({ width, height }, this.entities.getWorldTransform(id)!);
+      const sourceFrame = snapshot?.nodes.get(id)?.frame;
+      const frame = computeWorldFrame(
+        { width, height },
+        sourceFrame ? computeFrameMatrix(sourceFrame) : this.entities.getWorldTransform(id)!
+      );
       const fields = definition?.applyResize?.(node, { handle, width, height, scale });
-      transforms.push({ id, frame, fields });
+      transforms.push({ id, frame, fields, scaleSnapshot: snapshot });
     }
     return this.transformNodes(transforms, { ...options, label: options?.label ?? '调整尺寸' });
   }
@@ -902,6 +1407,7 @@ export class DocumentStore {
    * 只变换最顶层选中节点，后代随容器旋转
    */
   rotateNodes(nodeIds: Iterable<string>, degrees: number, options?: CommandOptions): CanvasOperationRecord | null {
+    degrees = Math.round(degrees);
     const targets = this.collectTopmost(nodeIds).map((id) => {
       const node = this.document.content.nodes[id];
       return { id, node, matrix: this.entities.getWorldTransform(id)! };
@@ -914,12 +1420,31 @@ export class DocumentStore {
     const rad = (degrees * Math.PI) / 180;
     const cos = Math.cos(rad);
     const sin = Math.sin(rad);
+    const sourceFrame: WorldFrame = {
+      cx: pivot.x,
+      cy: pivot.y,
+      width: bounds.right - bounds.left,
+      height: bounds.bottom - bounds.top,
+      rotation: 0
+    };
+    const connectorSnapshot = this.captureConnectorTransformSnapshot(
+      targets.map(({ id }) => id),
+      sourceFrame
+    );
+    const connectorTransform = {
+      snapshot: connectorSnapshot,
+      matrix: multiplyMatrix(
+        computeFrameMatrix({ ...sourceFrame, rotation: degrees }),
+        invertMatrix(computeFrameMatrix(sourceFrame))
+      )
+    };
     const transforms = targets.map(({ id, node, matrix }): NodeTransform => {
       const frame = computeWorldFrame(node, matrix);
       const dx = frame.cx - pivot.x;
       const dy = frame.cy - pivot.y;
       return {
         id,
+        connectorTransform,
         frame: {
           ...frame,
           cx: pivot.x + dx * cos - dy * sin,
@@ -946,10 +1471,15 @@ export class DocumentStore {
     return this.commit({ ...options, label: options?.label ?? (locked ? '锁定比例' : '解锁比例'), patches });
   }
 
-  /** 让节点外框适应内容 (支持多选)：写入的字段由节点类型决定，已适应内容或不支持的节点跳过 */
+  /** 让节点外框适应内容 (支持多选)：写入的字段由节点类型或容器子内容决定，已适应内容或不支持的节点跳过 */
   fitContent(nodeIds: Iterable<string>, options?: CommandOptions): CanvasOperationRecord | null {
     const patches: CanvasPatch[] = [];
     for (const id of nodeIds) {
+      const containerPatches = this.resolveContainerFitPatches(id);
+      if (containerPatches) {
+        patches.push(...containerPatches);
+        continue;
+      }
       const fields = this.resolveFitContent(id);
       if (!fields) continue;
       for (const [key, value] of Object.entries(fields)) {
@@ -960,9 +1490,9 @@ export class DocumentStore {
     return this.commit({ ...options, label: options?.label ?? '适应内容', patches });
   }
 
-  /** 节点能否适应内容 (节点类型支持且尚未适应)：界面据此决定是否显示入口 */
+  /** 节点能否适应内容 (节点类型支持或容器内有子内容，且尚未适应)：界面据此决定是否显示入口 */
   canFitContent(nodeId: string): boolean {
-    return this.resolveFitContent(nodeId) !== null;
+    return this.resolveContainerFitPatches(nodeId) !== null || this.resolveFitContent(nodeId) !== null;
   }
 
   /**
@@ -1009,6 +1539,208 @@ export class DocumentStore {
       );
     }
     return this.commit({ ...options, label: options?.label ?? '移入容器', patches });
+  }
+
+  /**
+   * 判断指定节点集合是否满足创建组合的条件：
+   * 至少 2 个未锁定的最顶层节点，且不能是受排版控制的布局成员 (layoutItem !== undefined && !layout)
+   */
+  canGroupNodes(nodeIds: Iterable<string>): boolean {
+    const { nodes } = this.document.content;
+    const targets = this.collectTopmost(nodeIds).filter((id) => {
+      const node = nodes[id];
+      return Boolean(node && !node.locked && !(node.layoutItem !== undefined && !node.layout));
+    });
+    return targets.length >= 2;
+  }
+
+  /**
+   * 判断指定节点集合是否包含可以解散的组合或含子节点的容器外壳
+   */
+  canUngroupNodes(nodeIds: Iterable<string>): boolean {
+    const { nodes } = this.document.content;
+    return this.collectTopmost(nodeIds).some((id) => {
+      const node = nodes[id];
+      if (!node || node.locked) return false;
+      const isGroup = node.nodeType === GROUP_NODE_TYPE;
+      const isContainer = Boolean(this.nodeTypes.get(node.nodeType)?.acceptsChildren);
+      return isGroup || (isContainer && this.entities.getChildIds(id).size > 0);
+    });
+  }
+
+  /**
+   * 创建组合 (Ctrl+G，支持多选与嵌套组合)：至少 2 个未锁定的最顶层非布局成员节点；
+   * 同容器节点在原容器内成组，跨容器节点提升至最近公共祖先；组合置于选中最高节点的层级处，一步撤销
+   * @returns 新组合节点的 id；不满足条件或提交被拒绝时返回 null
+   */
+  groupNodes(nodeIds: Iterable<string>, options?: CommandOptions): string | null {
+    const { nodes } = this.document.content;
+    const getNode = (id: string): Readonly<NodeEntity> | undefined =>
+      Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+    const chainCache = new Map<string, Readonly<NodeEntity>[]>();
+    const targets = this.collectTopmost(nodeIds)
+      .filter((id) => {
+        const node = nodes[id];
+        return !node.locked && !(node.layoutItem !== undefined && !node.layout);
+      })
+      .map((id) => nodes[id])
+      .sort((a, b) => compareHierarchicalNodes(a, b, getNode, chainCache));
+    if (targets.length < 2) return null;
+
+    // 确定目标父容器：全部同父时留在原父容器，否则取最近公共祖先 (或根层级 undefined)
+    let parentId = targets[0].parentId;
+    if (!targets.every((t) => t.parentId === parentId)) {
+      const firstAncestors = this.entities.getAncestorIds(targets[0].id);
+      parentId = firstAncestors.find((ancestorId) =>
+        targets.every((t) => t.parentId === ancestorId || this.entities.getAncestorIds(t.id).includes(ancestorId))
+      );
+    }
+
+    // 组合层级紧贴最高选中节点所在的同层兄弟位置，不越过原本盖在选区上方的无关节点
+    const lastTarget = targets[targets.length - 1];
+    const branchInParentId =
+      lastTarget.parentId === parentId
+        ? lastTarget.id
+        : this.entities.getAncestorIds(lastTarget.id).find((aId) => nodes[aId]?.parentId === parentId);
+    const siblings = this.siblingsInLayerOrder(parentId);
+    const branchIdx = branchInParentId === undefined ? -1 : siblings.findIndex((s) => s.id === branchInParentId);
+    const nextZIndex = branchIdx >= 0 ? (siblings[branchIdx + 1]?.zIndex ?? null) : null;
+    const renumber = branchIdx >= 0 && nextZIndex !== null && siblings[branchIdx].zIndex >= nextZIndex;
+    const groupZIndex = renumber
+      ? siblings[branchIdx].zIndex
+      : branchIdx >= 0
+        ? generateKeyBetween(siblings[branchIdx].zIndex, nextZIndex)
+        : this.createTopZIndex(parentId);
+
+    const parentMatrix = parentId === undefined ? undefined : this.entities.getWorldTransform(parentId);
+    const toParentLocal = parentMatrix && invertMatrix(parentMatrix);
+    const inParentMatrices = targets.map((node) => {
+      const world = this.entities.getWorldTransform(node.id)!;
+      return toParentLocal ? multiplyMatrix(toParentLocal, world) : world;
+    });
+
+    const groupBounds = targets
+      .map((node, i) => computeNodeWorldBounds(node, inParentMatrices[i]))
+      .reduce((union, b) => unionBounds(union, b));
+
+    const gx = roundPersisted(groupBounds.left);
+    const gy = roundPersisted(groupBounds.top);
+    const gw = roundPersisted(Math.max(1, groupBounds.right - groupBounds.left));
+    const gh = roundPersisted(Math.max(1, groupBounds.bottom - groupBounds.top));
+    const groupId = generateId('group');
+
+    const groupNode: NodeEntity = {
+      id: groupId,
+      type: 'node',
+      nodeType: GROUP_NODE_TYPE,
+      ...(parentId !== undefined && { parentId }),
+      x: gx,
+      y: gy,
+      width: gw,
+      height: gh,
+      rotation: 0,
+      zIndex: groupZIndex,
+      locked: false,
+      data: {}
+    };
+
+    const childKeys = generateNKeysBetween(null, null, targets.length);
+    const patches: CanvasPatch[] = [{ op: 'set', path: ['content', 'nodes', groupId], value: groupNode }];
+    if (renumber) {
+      // 并发或导入允许合法键相同；沿用层级操作的事务内重编号，避免生成相等边界之间的键。
+      const order = siblings.map((node) => node.id);
+      order.splice(branchIdx + 1, 0, groupId);
+      patches.push(...renumberLayerOrder(siblings, order));
+    }
+
+    for (let i = 0; i < targets.length; i++) {
+      const node = targets[i];
+      const pose = decomposeNodeMatrix(inParentMatrices[i], node.width, node.height);
+      const base = ['content', 'nodes', node.id];
+      patches.push(
+        { op: 'set', path: [...base, 'parentId'], value: groupId },
+        { op: 'set', path: [...base, 'x'], value: roundPersisted(pose.x - gx) },
+        { op: 'set', path: [...base, 'y'], value: roundPersisted(pose.y - gy) },
+        { op: 'set', path: [...base, 'rotation'], value: pose.rotation },
+        { op: 'set', path: [...base, 'zIndex'], value: childKeys[i] }
+      );
+    }
+
+    const record = this.commit({ ...options, label: options?.label ?? '创建组合', patches });
+    return record ? groupId : null;
+  }
+
+  /**
+   * 取消组合 / 解散容器外壳 (Ctrl+Shift+G，支持多选)：
+   * 将组合 (group) 或含有子节点的画框 (frame) 的直接子节点换算回父容器局部坐标、保持世界位姿与原有层叠顺序，并删除容器外壳，一步撤销
+   * @returns 释放出的直接子节点 id 列表；无有效目标或提交被拒绝时为空数组
+   */
+  ungroupNodes(nodeIds: Iterable<string>, options?: CommandOptions): string[] {
+    const { nodes } = this.document.content;
+    const getNode = (id: string): Readonly<NodeEntity> | undefined =>
+      Object.hasOwn(nodes, id) ? nodes[id] : undefined;
+    const chainCache = new Map<string, Readonly<NodeEntity>[]>();
+    const containers = this.collectTopmost(nodeIds)
+      .filter((id) => {
+        const node = nodes[id];
+        if (!node || node.locked) return false;
+        const isGroup = node.nodeType === GROUP_NODE_TYPE;
+        const isContainer = !!this.nodeTypes.get(node.nodeType)?.acceptsChildren;
+        if (!isGroup && !isContainer) return false;
+        return isGroup || this.entities.getChildIds(id).size > 0;
+      })
+      .map((id) => nodes[id])
+      .sort((a, b) => compareHierarchicalNodes(a, b, getNode, chainCache));
+    if (containers.length === 0) return [];
+
+    const patches: CanvasPatch[] = [];
+    const releasedIds: string[] = [];
+    const connectorIds = new Set<string>();
+
+    for (const container of containers) {
+      const children = this.siblingsInLayerOrder(container.id);
+      const parentId = container.parentId;
+      const parentMatrix = parentId === undefined ? undefined : this.entities.getWorldTransform(parentId);
+      const toParentLocal = parentMatrix && invertMatrix(parentMatrix);
+      const siblings = this.siblingsInLayerOrder(parentId);
+      const idx = siblings.findIndex((s) => s.id === container.id);
+      const nextZ = idx >= 0 ? (siblings[idx + 1]?.zIndex ?? null) : null;
+      const keys = generateNKeysBetween(container.zIndex, nextZ, children.length);
+
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const world = this.entities.getWorldTransform(child.id)!;
+        const pose = decomposeNodeMatrix(
+          toParentLocal ? multiplyMatrix(toParentLocal, world) : world,
+          child.width,
+          child.height
+        );
+        const base = ['content', 'nodes', child.id];
+        patches.push(
+          parentId === undefined
+            ? { op: 'unset', path: [...base, 'parentId'] }
+            : { op: 'set', path: [...base, 'parentId'], value: parentId },
+          { op: 'set', path: [...base, 'x'], value: pose.x },
+          { op: 'set', path: [...base, 'y'], value: pose.y },
+          { op: 'set', path: [...base, 'rotation'], value: pose.rotation },
+          { op: 'set', path: [...base, 'zIndex'], value: keys[i] }
+        );
+        if (container.layout && child.layoutItem !== undefined && !child.layout) {
+          patches.push({ op: 'unset', path: [...base, 'layoutItem'] });
+        }
+        releasedIds.push(child.id);
+      }
+
+      patches.push({ op: 'unset', path: ['content', 'nodes', container.id] });
+      for (const cId of this.documentConnectorIdsOfNode(container.id)) connectorIds.add(cId);
+    }
+
+    for (const cId of connectorIds) {
+      patches.push({ op: 'unset', path: ['content', 'connectors', cId] });
+    }
+
+    const record = this.commit({ ...options, label: options?.label ?? '取消组合', patches });
+    return record ? releasedIds : [];
   }
 
   /** 指定容器 (undefined 为根层级) 中位于最上层的新层级索引 */
@@ -1060,6 +1792,93 @@ export class DocumentStore {
   }
 
   // ================= 内部 =================
+
+  /** 新建容器节点时，将同层中完全落入容器外框内的非容器兄弟节点自动收纳进该容器 */
+  private appendAutoWrapPatches(container: NodeEntity, patches: CanvasPatch[]): void {
+    const invContainer = invertMatrix(computeNodeLocalMatrix(container));
+    const siblings = this.siblingsInLayerOrder(container.parentId);
+    const wrapped: Readonly<NodeEntity>[] = [];
+    for (const sibling of siblings) {
+      if (sibling.id === container.id || sibling.locked) continue;
+      if (sibling.layoutItem !== undefined && !sibling.layout) continue;
+      if (this.nodeTypes.get(sibling.nodeType)?.acceptsChildren) continue;
+      const toLocal = multiplyMatrix(invContainer, computeNodeLocalMatrix(sibling));
+      const b = computeNodeWorldBounds(sibling, toLocal);
+      if (
+        b.left >= -1e-4 &&
+        b.top >= -1e-4 &&
+        b.right <= container.width + 1e-4 &&
+        b.bottom <= container.height + 1e-4
+      ) {
+        wrapped.push(sibling);
+      }
+    }
+    if (wrapped.length === 0) return;
+    const keys = generateNKeysBetween(null, null, wrapped.length);
+    for (let i = 0; i < wrapped.length; i++) {
+      const sibling = wrapped[i];
+      const toLocal = multiplyMatrix(invContainer, computeNodeLocalMatrix(sibling));
+      const pose = decomposeNodeMatrix(toLocal, sibling.width, sibling.height);
+      const base = ['content', 'nodes', sibling.id];
+      patches.push(
+        { op: 'set', path: [...base, 'parentId'], value: container.id },
+        { op: 'set', path: [...base, 'x'], value: pose.x },
+        { op: 'set', path: [...base, 'y'], value: pose.y },
+        { op: 'set', path: [...base, 'rotation'], value: pose.rotation },
+        { op: 'set', path: [...base, 'zIndex'], value: keys[i] }
+      );
+    }
+  }
+
+  /** 容器 (如 Frame) 适应内部直接子节点的补丁：包裹全部直接子节点并留 24px 内边距，同时补偿子节点局部坐标以保持世界位姿不变 */
+  private resolveContainerFitPatches(id: string): CanvasPatch[] | null {
+    const node = this.getNode(id);
+    const definition = node && this.nodeTypes.get(node.nodeType);
+    if (!node || node.locked || node.layout || !definition?.acceptsChildren) return null;
+    const childIds = [...this.entities.getChildIds(id)];
+    if (childIds.length === 0) return null;
+    const { nodes } = this.document.content;
+    let bounds: { left: number; top: number; right: number; bottom: number } | null = null;
+    for (const childId of childIds) {
+      const child = nodes[childId];
+      if (!child) continue;
+      const box = computeNodeWorldBounds(child, computeNodeLocalMatrix(child));
+      bounds = bounds ? unionBounds(bounds, box) : box;
+    }
+    if (!bounds) return null;
+    const padding = 24;
+    const dx = roundPersisted(bounds.left - padding);
+    const dy = roundPersisted(bounds.top - padding);
+    const newWidth = roundPersisted(Math.max(1, bounds.right - bounds.left + padding * 2));
+    const newHeight = roundPersisted(Math.max(1, bounds.bottom - bounds.top + padding * 2));
+    const offsetChanged = Math.abs(dx) > 1e-3 || Math.abs(dy) > 1e-3;
+    const sizeChanged = Math.abs(newWidth - node.width) > 1e-3 || Math.abs(newHeight - node.height) > 1e-3;
+    if (!offsetChanged && !sizeChanged) return null;
+
+    const patches: CanvasPatch[] = [];
+    if (offsetChanged) {
+      for (const childId of childIds) {
+        const child = nodes[childId];
+        if (!child) continue;
+        const nextChildX = roundPersisted(child.x - dx);
+        const nextChildY = roundPersisted(child.y - dy);
+        if (nextChildX !== child.x)
+          patches.push({ op: 'set', path: ['content', 'nodes', childId, 'x'], value: nextChildX });
+        if (nextChildY !== child.y)
+          patches.push({ op: 'set', path: ['content', 'nodes', childId, 'y'], value: nextChildY });
+      }
+    }
+    const localMatrix = computeNodeLocalMatrix(node);
+    const newCenter = applyMatrix(localMatrix, dx + newWidth / 2, dy + newHeight / 2);
+    const newX = roundPersisted(newCenter.x - newWidth / 2);
+    const newY = roundPersisted(newCenter.y - newHeight / 2);
+    if (newX !== node.x) patches.push({ op: 'set', path: ['content', 'nodes', id, 'x'], value: newX });
+    if (newY !== node.y) patches.push({ op: 'set', path: ['content', 'nodes', id, 'y'], value: newY });
+    if (newWidth !== node.width) patches.push({ op: 'set', path: ['content', 'nodes', id, 'width'], value: newWidth });
+    if (newHeight !== node.height)
+      patches.push({ op: 'set', path: ['content', 'nodes', id, 'height'], value: newHeight });
+    return patches.length > 0 ? patches : null;
+  }
 
   private resolveFitContent(id: string): Partial<NodeEntity> | null {
     const node = this.getNode(id);
@@ -1503,7 +2322,15 @@ export class DocumentStore {
     const invalidateSubtree = (id: string): void => {
       if (worldGeometry.has(id) || !store.hasNode(id)) return;
       worldGeometry.add(id);
-      for (const descendantId of store.collectDescendantIds(id)) worldGeometry.add(descendantId);
+      // 派生补丁可由深到浅到达；共享已失效集合，不能为每个祖先重复枚举完整子树。
+      const pending = [id];
+      for (let index = 0; index < pending.length; index++) {
+        for (const childId of store.getChildIds(pending[index])) {
+          if (worldGeometry.has(childId)) continue;
+          worldGeometry.add(childId);
+          pending.push(childId);
+        }
+      }
     };
     for (const id of nodeChanges.geometry) invalidateSubtree(id);
     const reparented = new Set<string>();

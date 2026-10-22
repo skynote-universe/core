@@ -145,6 +145,22 @@ function ascentOf(style: ResolvedRunStyle): number {
   return (style.lineHeight + style.font.size * ASCENT_RATIO) / 2;
 }
 
+/** 单行容器的高度由行内基线共同决定，无需测量字宽；与分行布局共享样式及基线规则。 */
+export function measureSingleLineHeight(runs: readonly RichTextRun[], block: Readonly<NodeTextStyle>): number {
+  let ascent = 0;
+  let descent = 0;
+  let hasText = false;
+  for (const run of runs) {
+    if (run.text.length === 0) continue;
+    hasText = true;
+    const style = resolveRunStyle(block, run);
+    const a = ascentOf(style);
+    ascent = Math.max(ascent, a);
+    descent = Math.max(descent, style.lineHeight - a);
+  }
+  return hasText ? ascent + descent : resolveRunStyle(block, runs[0] ?? {}).lineHeight;
+}
+
 function isSpace(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '　';
 }

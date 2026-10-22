@@ -10,6 +10,11 @@ import { describe, it, expect } from 'vitest';
 import { SkyNoteEngine } from '../src/engine';
 import type { CanvasPatch } from '../src/types/operation';
 import type { NodeEntity } from '../src/types/node';
+import { clonePlainData } from '../src/utils/clone';
+import { computeWorldFrame } from '../src/utils/geometry';
+import { deriveContainerPatches } from '../src/layout/container-derivation';
+import { LayoutRegistry } from '../src/registry/layout-registry';
+import { createEmptyCanvasDocument } from '../src/state/document-store';
 
 const NODE_COUNT = 50_000;
 const ITERATIONS = 200;
@@ -49,6 +54,130 @@ function measure(label: string, run: (i: number) => void): number {
 }
 
 describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
+  it('800 层组合的依赖调度不再重复扫描完整祖先链', () => {
+    const doc = createEmptyCanvasDocument();
+    const nodes = doc.content.nodes;
+    const children = new Map<string, Set<string>>();
+    for (let i = 0; i <= 800; i++) {
+      const id = `n${i}`;
+      const parentId = i ? `n${i - 1}` : undefined;
+      nodes[id] = {
+        id,
+        type: 'node',
+        nodeType: i === 800 ? 'rect' : 'group',
+        x: 0,
+        y: 0,
+        width: i === 800 ? 21 : 20,
+        height: 20,
+        rotation: 0,
+        zIndex: 'a0',
+        locked: false,
+        ...(parentId ? { parentId } : {})
+      };
+      if (parentId) children.set(parentId, new Set([id]));
+    }
+    const context = {
+      layouts: new LayoutRegistry(),
+      previousParentId: (id: string) => nodes[id]?.parentId,
+      previousChildIds: (id: string) => children.get(id) ?? new Set<string>()
+    };
+    const patches: CanvasPatch[] = [{ op: 'set', path: ['content', 'nodes', 'n800', 'width'], value: 21 }];
+    for (let i = 0; i < 5; i++) deriveContainerPatches(doc, patches, context);
+    const times: number[] = [];
+    for (let i = 0; i < 15; i++) {
+      const start = performance.now();
+      expect(deriveContainerPatches(doc, patches, context)).toHaveLength(800);
+      times.push(performance.now() - start);
+    }
+    const median = times.sort((a, b) => a - b)[7];
+    console.info(`[bench] 800 层组合纯派生: 中位 ${median.toFixed(2)}ms / 次`);
+    expect(median).toBeLessThan(15);
+  });
+
+  it('500 个画框组合整体缩放共享快照索引，重复目标零事务', () => {
+    const engine = new SkyNoteEngine();
+    engine.nodeTypes.register({
+      type: 'scale-frame',
+      label: '缩放基准容器',
+      defaultData: {},
+      supportsContentScale: true,
+      compose: () => []
+    });
+    const store = engine.documentStore;
+    const patches: CanvasPatch[] = [];
+    const frameIds: string[] = [];
+    for (let i = 0; i < 500; i++) {
+      const id = `frame${i}`;
+      frameIds.push(id);
+      const frame: NodeEntity = {
+        id,
+        type: 'node',
+        nodeType: 'scale-frame',
+        x: i * 120,
+        y: 0,
+        width: 100,
+        height: 100,
+        rotation: 0,
+        zIndex: 'a0',
+        locked: false
+      };
+      patches.push({ op: 'set', path: ['content', 'nodes', id], value: frame });
+      patches.push({
+        op: 'set',
+        path: ['content', 'nodes', `child${i}`],
+        value: { ...frame, id: `child${i}`, nodeType: 'rect', parentId: id, x: 10, y: 10, width: 20, height: 20 }
+      });
+    }
+    store.commit({ patches, undoable: false });
+    const group = store.groupNodes(frameIds)!;
+    const ids = [group, ...engine.entityStore.collectDescendantIds(group)];
+    const snapshot = {
+      nodes: new Map(
+        ids.map((id) => [
+          id,
+          {
+            node: clonePlainData(store.getNode(id)!),
+            frame: computeWorldFrame(store.getNode(id)!, engine.entityStore.getWorldTransform(id)!)
+          }
+        ])
+      ),
+      connectors: new Map()
+    };
+    const original = snapshot.nodes.get(group)!.frame;
+    // 索引协议不允许逐帧重新枚举整张 Map；嵌套画框只能按 id 查询共享快照。
+    const iterator = snapshot.nodes[Symbol.iterator].bind(snapshot.nodes);
+    let traversals = 0;
+    snapshot.nodes[Symbol.iterator] = () => {
+      traversals++;
+      return iterator();
+    };
+    const frames: number[] = [];
+    let count = 0;
+    for (let i = 0; i < 20; i++) {
+      const scale = 1.1 + i * 0.01;
+      const frame = {
+        ...original,
+        cx: original.cx * scale,
+        cy: original.cy * scale,
+        width: original.width * scale,
+        height: original.height * scale
+      };
+      const start = performance.now();
+      const record = store.transformNodes([{ id: group, frame, scaleSnapshot: snapshot }], { groupId: 'scale-bench' });
+      frames.push(performance.now() - start);
+      count = record!.patches.length;
+      expect(
+        store.transformNodes([{ id: group, frame, scaleSnapshot: snapshot }], { groupId: 'scale-bench' })
+      ).toBeNull();
+    }
+    const median = frames.sort((a, b) => a - b)[10];
+    console.info(
+      `[bench] 500 画框组合缩放: 中位 ${median.toFixed(1)}ms/帧，${count} 条补丁，快照全表枚举 ${traversals} 次`
+    );
+    expect(traversals).toBe(0);
+    expect(median).toBeLessThan(40);
+    engine.destroy();
+  });
   const engine = createLargeEngine();
   const store = engine.documentStore;
 
@@ -75,6 +204,17 @@ describe(`单次提交开销 (${NODE_COUNT} 节点)`, () => {
     expect(measure('修改单节点样式', (i) => store.updateNode('n100', { style: { fill: String(i) } }))).toBeLessThan(
       BUDGET_MS_PER_COMMIT
     );
+  });
+
+  it('大画布中调整小组合内部节点，不随无关节点数全量扫描', () => {
+    store.updateNode('n40001', { zIndex: store.createTopZIndex() });
+    const groupId = store.groupNodes(['n40000', 'n40001'])!;
+    expect(groupId).not.toBeNull();
+    expect(
+      measure('5 万节点画布内调整双节点组合', (i) =>
+        store.updateNode('n40001', { width: 20 + (i % 2) }, { groupId: 'group-edit' })
+      )
+    ).toBeLessThan(BUDGET_MS_PER_COMMIT);
   });
 
   it('多选拖拽 2000 个节点 (同组折叠 60 帧)', () => {

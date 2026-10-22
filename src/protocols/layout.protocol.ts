@@ -37,9 +37,11 @@ export interface LayoutTree {
   get(nodeId: string): LayoutMember | undefined;
 }
 
-/** 成员在根局部坐标中的目标位姿：位置为未旋转外框的左上角；rotation 缺省为 0 (不旋转) */
+/** 成员在根局部坐标中的目标位姿：位置为未旋转外框的左上角；rotation 缺省为 0 (不旋转)；根或成员可选给出派生宽高 (如自适应画框，ADR-145) */
 export interface LayoutPlacement extends Point {
   readonly rotation?: number;
+  readonly width?: number;
+  readonly height?: number;
 }
 
 /** 树边 (成员通向父成员的线) 的默认规格：供绘制这类线的插件 (如分支线来源) 读取 */

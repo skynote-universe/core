@@ -206,7 +206,7 @@ describe('变换节点 (transformNodes)', () => {
 });
 
 describe('尺寸面板与增量旋转 (resizeNodes / rotateNodes)', () => {
-  it('resizeNodes 保持世界左上角不动 (含旋转节点)；比例锁定时只给一边另一边联动；一步撤销', () => {
+  it('resizeNodes 以世界左上角为锚并将局部像素取整；比例锁定时另一边联动；一步撤销', () => {
     const engine = new SkyNoteEngine();
     const store = engine.documentStore;
     store.addNode(makeNode('a', { x: 100, y: 100, width: 100, height: 50, rotation: 30 }));
@@ -216,8 +216,10 @@ describe('尺寸面板与增量旋转 (resizeNodes / rotateNodes)', () => {
     store.resizeNodes(['a', 'b'], { width: 200 });
     expect(store.getNode('a')).toMatchObject({ width: 200, height: 50, rotation: 30 });
     const after = worldPoint(engine, 'a', 0, 0);
-    expect(after.x).toBeCloseTo(before.x);
-    expect(after.y).toBeCloseTo(before.y);
+    // 旋转节点取整局部坐标后，世界锚点误差不超过一个像素。
+    expect(Math.hypot(after.x - before.x, after.y - before.y)).toBeLessThan(1);
+    expect(Number.isInteger(store.getNode('a')!.x)).toBe(true);
+    expect(Number.isInteger(store.getNode('a')!.y)).toBe(true);
     expect(store.getNode('b')).toMatchObject({ x: 0, y: 0, width: 200, height: 100 });
 
     store.undo();

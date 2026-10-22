@@ -55,9 +55,12 @@ function findInlineMediaSegments(value: unknown): (string | number)[] | null {
  * @param doc 补丁应用前的文档 (成环判定需要现有的父子关系)
  */
 export function findCommitViolation(doc: CanvasDocument, patches: readonly CanvasPatch[]): string | null {
+  // JSON 会丢弃 set undefined 的 value，导致合法文档对应的历史无法恢复；删除必须使用 unset。
+  if (patches.some((patch) => patch.op === 'set' && patch.value === undefined))
+    return 'set 补丁的 value 不能为 undefined，删除字段请使用 unset';
   const inlineMedia = findInlineMediaInPatches(patches);
   if (inlineMedia) return `${inlineMedia} 内联了 data:/blob: 媒体地址，媒体必须通过 assetId 引用`;
-  return findParentCycle(doc, patches) ?? findInvalidZIndex(patches) ?? findReservedConnectorId(patches);
+  return findParentCycle(doc, patches) ?? findInvalidZIndex(doc, patches) ?? findReservedConnectorId(patches);
 }
 
 /** 派生连线的 id 前缀保留给内核 (ADR-130)：文档中的连线用了它会与派生连线撞 id */
@@ -108,10 +111,20 @@ export function findInlineMediaInPatches(patches: readonly CanvasPatch[]): strin
   return null;
 }
 
-/** 从补丁中提取节点 parentId 的拟变更：返回 nodeId -> 新 parentId (undefined 表示移出容器) */
-function collectParentChanges(patches: readonly CanvasPatch[]): Map<string, string | undefined> {
+/** 只投影父关系；集合替换清除旧视图，避免已经删除的中间状态参与最终判环。 */
+function collectParentChanges(
+  doc: CanvasDocument,
+  patches: readonly CanvasPatch[]
+): { changes: Map<string, string | undefined>; parentOf: (id: string) => string | undefined; error?: string } {
   const changes = new Map<string, string | undefined>();
-  const takeFromNodes = (nodes: unknown): void => {
+  let base: CanvasDocument['content']['nodes'] | undefined = doc.content.nodes;
+  const parentOf = (id: string): string | undefined =>
+    changes.has(id) ? changes.get(id) : base && Object.hasOwn(base, id) ? base[id]?.parentId : undefined;
+  const takeFromNodes = (nodes: unknown, merge = false): void => {
+    if (!merge) {
+      base = undefined;
+      changes.clear();
+    }
     if (nodes === null || typeof nodes !== 'object') return;
     for (const [id, node] of Object.entries(nodes as Record<string, { parentId?: string }>)) {
       changes.set(id, node?.parentId);
@@ -123,97 +136,121 @@ function collectParentChanges(patches: readonly CanvasPatch[]): Map<string, stri
     const segments = normalizePatchPath(patch.path);
     if (segments[0] !== 'content') continue;
 
-    if (segments.length === 1 && patch.op === 'set') {
-      takeFromNodes((patch.value as { nodes?: unknown } | undefined)?.nodes);
-    } else if (segments.length === 2 && segments[1] === 'nodes' && patch.op === 'set') {
-      takeFromNodes(patch.value);
+    if (segments.length === 1) {
+      if (patch.op === 'unset') takeFromNodes(undefined);
+      else if (patch.op === 'set') {
+        const value = patch.value as { nodes?: unknown } | undefined;
+        // content 的 merge 是浅合并：只要显式提供 nodes，就替换整个集合。
+        if (!patch.merge || (value && Object.hasOwn(value, 'nodes'))) takeFromNodes(value?.nodes);
+      }
+    } else if (segments.length === 2 && segments[1] === 'nodes') {
+      if (patch.op === 'unset') takeFromNodes(undefined);
+      else if (patch.op === 'set') takeFromNodes(patch.value, patch.merge);
     } else if (segments[1] === 'nodes' && segments.length >= 3) {
       const id = String(segments[2]);
-      if (segments.length === 3 && patch.op === 'set') {
+      if (segments.length === 3 && patch.op === 'unset') changes.set(id, undefined);
+      else if (segments.length === 3 && patch.op === 'set') {
         const value = patch.value as { parentId?: string } | undefined;
         if (!patch.merge || (value && 'parentId' in value)) changes.set(id, value?.parentId);
       } else if (segments.length === 4 && segments[3] === 'parentId') {
+        // 结构字段不是可编辑文字；不把执行器能处理的 text/splice 误投影成删除父关系。
+        if (patch.op !== 'set' && patch.op !== 'unset')
+          return { changes, parentOf, error: `节点 ${id} 的 parentId 仅支持 set/unset 补丁` };
         changes.set(id, patch.op === 'set' ? (patch.value as string | undefined) : undefined);
       }
     }
   }
-  return changes;
+  return { changes, parentOf };
 }
 
 /**
  * 检查本次事务是否会让容器层级成环，返回首个成环节点的描述；无环返回 null
  */
 export function findParentCycle(doc: CanvasDocument, patches: readonly CanvasPatch[]): string | null {
-  const changes = collectParentChanges(patches);
+  const { changes, parentOf, error } = collectParentChanges(doc, patches);
+  if (error) return error;
   if (changes.size === 0) return null;
 
-  const parentOf = (id: string): string | undefined =>
-    changes.has(id)
-      ? changes.get(id)
-      : Object.hasOwn(doc.content.nodes, id)
-        ? doc.content.nodes[id].parentId
-        : undefined;
-
-  for (const [id, parentId] of changes) {
-    const visited = new Set<string>([id]);
-    let current = parentId;
-    while (current !== undefined) {
+  // 所有补丁先合并为最终父关系；同一事务中已验证的共享祖先链只访问一次。
+  const complete = new Set<string>();
+  for (const id of changes.keys()) {
+    const visited = new Set<string>();
+    let current: string | undefined = id;
+    while (current !== undefined && !complete.has(current)) {
       if (visited.has(current)) {
         return `节点 ${id} 的容器链 ${[...visited, current].join(' → ')} 形成环`;
       }
       visited.add(current);
       current = parentOf(current);
     }
+    for (const nodeId of visited) complete.add(nodeId);
   }
   return null;
 }
 
 /**
- * 检查补丁写入的节点/连线 zIndex 是否均为合法分数索引，返回首个非法值的描述；全部合法返回 null
+ * 按最终覆盖视图检查存活节点/连线的层级键；只投影相关字段，删除后重建和集合覆盖不保留中间错误。
  */
-export function findInvalidZIndex(patches: readonly CanvasPatch[]): string | null {
-  const checkEntity = (kind: string, id: string, entity: unknown, requirePresent: boolean): string | null => {
-    if (entity === null || typeof entity !== 'object') return null;
-    const record = entity as { zIndex?: unknown };
-    if (!requirePresent && !('zIndex' in record)) return null;
-    return isValidFractionalIndex(record.zIndex)
-      ? null
-      : `${kind} ${id} 的 zIndex ${JSON.stringify(record.zIndex)} 不是合法的分数索引`;
+export function findInvalidZIndex(doc: CanvasDocument, patches: readonly CanvasPatch[]): string | null {
+  type Collection = Record<string, { zIndex?: unknown }>;
+  type Projection = { base?: Collection; changes?: Map<string, unknown> };
+  const projections: Record<'nodes' | 'connectors', Projection> = {
+    nodes: { base: doc.content.nodes },
+    connectors: { base: doc.content.connectors }
   };
-  const checkCollection = (kind: string, collection: unknown): string | null => {
-    if (collection === null || typeof collection !== 'object') return null;
-    for (const [id, entity] of Object.entries(collection as Record<string, unknown>)) {
-      const found = checkEntity(kind, id, entity, true);
-      if (found) return found;
+  const removed = Symbol();
+  const takeCollection = (state: Projection, value: unknown, merge = false): void => {
+    if (!merge) {
+      state.base = undefined;
+      state.changes?.clear();
     }
-    return null;
+    if (!value || typeof value !== 'object') return;
+    for (const [id, entity] of Object.entries(value as Collection))
+      (state.changes ??= new Map()).set(id, merge && entity === undefined ? removed : entity?.zIndex);
   };
 
-  for (let i = 0; i < patches.length; i++) {
-    const patch = patches[i];
-    if (patch.op !== 'set') continue;
+  // 仅投影被改写的层级键；几何高频补丁不创建覆盖表，也不扫描原有集合。
+  for (const patch of patches) {
     const segments = normalizePatchPath(patch.path);
     if (segments[0] !== 'content') continue;
-
-    let found: string | null = null;
     if (segments.length === 1) {
-      const content = patch.value as { nodes?: unknown; connectors?: unknown } | undefined;
-      found = checkCollection('节点', content?.nodes) ?? checkCollection('连线', content?.connectors);
-    } else if (segments[1] !== 'nodes' && segments[1] !== 'connectors') {
-      continue;
-    } else {
-      const kind = segments[1] === 'nodes' ? '节点' : '连线';
-      if (segments.length === 2) {
-        found = checkCollection(kind, patch.value);
-      } else if (segments.length === 3) {
-        found = checkEntity(kind, String(segments[2]), patch.value, !patch.merge);
-      } else if (segments.length === 4 && segments[3] === 'zIndex') {
-        found = isValidFractionalIndex(patch.value)
-          ? null
-          : `${kind} ${String(segments[2])} 的 zIndex ${JSON.stringify(patch.value)} 不是合法的分数索引`;
+      if (patch.op === 'unset') {
+        takeCollection(projections.nodes, undefined);
+        takeCollection(projections.connectors, undefined);
+      } else if (patch.op === 'set') {
+        const content = patch.value as { nodes?: unknown; connectors?: unknown } | undefined;
+        for (const kind of ['nodes', 'connectors'] as const)
+          if (!patch.merge || (content && Object.hasOwn(content, kind)))
+            takeCollection(projections[kind], content?.[kind]);
       }
+      continue;
     }
-    if (found) return found;
+    if (segments[1] !== 'nodes' && segments[1] !== 'connectors') continue;
+    const state = projections[segments[1]];
+    if (segments.length === 2) {
+      if (patch.op === 'unset') takeCollection(state, undefined);
+      else if (patch.op === 'set') takeCollection(state, patch.value, patch.merge);
+    } else if (segments.length === 3) {
+      const id = String(segments[2]);
+      if (patch.op === 'unset') (state.changes ??= new Map()).set(id, removed);
+      else if (patch.op === 'set') {
+        const value = patch.value as { zIndex?: unknown } | undefined;
+        const existed = state.changes?.has(id)
+          ? state.changes.get(id) !== removed
+          : state.base !== undefined && Object.hasOwn(state.base, id);
+        if (!patch.merge || (value && Object.hasOwn(value, 'zIndex')) || !existed)
+          (state.changes ??= new Map()).set(id, value?.zIndex);
+      }
+    } else if (segments.length === 4 && segments[3] === 'zIndex') {
+      if (patch.op !== 'set' && patch.op !== 'unset')
+        return `实体 ${String(segments[2])} 的 zIndex 仅支持 set/unset 补丁`;
+      (state.changes ??= new Map()).set(String(segments[2]), patch.op === 'set' ? patch.value : undefined);
+    }
+  }
+  for (const kind of ['nodes', 'connectors'] as const) {
+    for (const [id, key] of projections[kind].changes ?? [])
+      if (key !== removed && !isValidFractionalIndex(key))
+        return `${kind === 'nodes' ? '节点' : '连线'} ${id} 的 zIndex ${JSON.stringify(key)} 不是合法的分数索引`;
   }
   return null;
 }

@@ -23,6 +23,11 @@ export interface PointerHooks {
   onPointerCancel?(e: CanvasPointerEvent): void;
   /** 指针离开画布 (移到工具栏等界面上或窗口外)：此后不再有移动事件，依赖指针位置的状态应失效 */
   onPointerLeave?(e: CanvasPointerEvent): void;
+  /**
+   * 宿主将要弹出画布右键菜单：插件调用 stopPropagation 表示已消费 (如右键取消正在绘制的草稿)，宿主不再弹出。
+   * 右键在左键拖动中按下属于和弦按键，不会产生新的 pointerdown，取消类操作应放在这里而不是 onPointerDown
+   */
+  onContextMenu?(e: CanvasPointerEvent): void;
   onWheel?(e: CanvasWheelEvent): void;
 }
 
@@ -91,6 +96,11 @@ export class PointerDispatcher {
     this.dispatch(e, (hooks) => hooks.onWheel);
   }
 
+  /** @returns 是否有插件消费了这次右键 (宿主据此决定是否弹出菜单) */
+  dispatchContextMenu(e: CanvasPointerEvent): boolean {
+    return this.dispatch(e, (hooks) => hooks.onContextMenu);
+  }
+
   /**
    * 清空全部监听项
    */
@@ -107,11 +117,12 @@ export class PointerDispatcher {
    * 按优先级从高到低分发，任一监听者调用 stopPropagation 即截断后续分发
    * 以原事件为原型包装而非对象展开：展开会把 isClaimed 访问器求值成固定快照，
    * 导致高优先级插件 claimPointer 后，低优先级的框选/拖拽读到的仍是 false
+   * @returns 是否被某个监听者截断
    */
   private dispatch<TEvent extends { stopPropagation?(): void }>(
     event: TEvent,
     pickHandler: (hooks: PointerHooks) => ((e: TEvent) => void) | undefined
-  ): void {
+  ): boolean {
     let stopped = false;
     const wrapped: TEvent = Object.create(event, {
       stopPropagation: {
@@ -127,6 +138,7 @@ export class PointerDispatcher {
       const { hooks } = entries[i];
       pickHandler(hooks)?.call(hooks, wrapped);
     }
+    return stopped;
   }
 
   private rebuildSortedEntries(): void {

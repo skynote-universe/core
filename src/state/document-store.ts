@@ -1725,7 +1725,12 @@ export class DocumentStore {
           { op: 'set', path: [...base, 'rotation'], value: pose.rotation },
           { op: 'set', path: [...base, 'zIndex'], value: keys[i] }
         );
-        if (container.layout && child.layoutItem !== undefined && !child.layout) {
+        // 自带布局的子节点 (如导图中心主题) 的 layoutItem 兼作它自己布局的根设置，只在为空 (仅是外层成员标记) 时移除
+        if (
+          container.layout &&
+          child.layoutItem !== undefined &&
+          (!child.layout || Object.keys(child.layoutItem).length === 0)
+        ) {
           patches.push({ op: 'unset', path: [...base, 'layoutItem'] });
         }
         releasedIds.push(child.id);

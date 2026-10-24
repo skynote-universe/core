@@ -28,6 +28,11 @@ export interface SessionChange {
   readonly textEditingChanged: boolean;
   /** 当前工具切换 */
   readonly toolChanged: boolean;
+  /**
+   * 工具切换前的工具 (仅 toolChanged 时给出)：各工具插件据此只在自己被切走时复位光标等状态，
+   * 不覆盖新工具刚设好的状态 (插件监听顺序不定)
+   */
+  readonly previousTool?: string;
   /** 引擎维护冻结状态变化 (进入或退出 beginMaintenance) */
   readonly maintenanceChanged: boolean;
   /** 只读模式变化 (进入或退出只读浏览) */
@@ -300,8 +305,9 @@ export class SessionStore implements SessionController {
   setTool(tool: string): void {
     if (this.readOnlyState && tool !== SELECT_TOOL) return;
     if (tool === this.currentTool) return;
+    const previousTool = this.currentTool;
     this.currentTool = tool;
-    this.notify(TOOL_CHANGE);
+    this.notify({ ...TOOL_CHANGE, previousTool });
   }
 
   /** 由引擎在进入或退出 beginMaintenance 时同步更新 */

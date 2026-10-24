@@ -113,6 +113,21 @@ describe('SessionStore', () => {
   });
 });
 
+describe('工具切换', () => {
+  it('变更集给出切换前的工具，切到同一工具不通知', () => {
+    const session = new SessionStore();
+    const changes: SessionChange[] = [];
+    session.subscribe((c) => changes.push(c));
+    session.setTool('connector');
+    session.setTool('connector');
+    session.setTool('brush');
+    expect(changes.map((c) => [c.toolChanged, c.previousTool])).toEqual([
+      [true, 'select'],
+      [true, 'connector']
+    ]);
+  });
+});
+
 describe('插件上下文的会话与变更订阅', () => {
   it('插件可读写会话、订阅变更集，卸载后订阅自动解绑', () => {
     const engine = new SkyNoteEngine();

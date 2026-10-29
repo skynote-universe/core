@@ -11,6 +11,26 @@
 
 import type { FontMeasurer } from './font-measurer.protocol';
 import type { SkyNoteEngine } from '../engine';
+import type { RectBounds } from '../types/geometry';
+
+/** 独立绘制指定世界坐标范围，不包含交互覆盖层；二进制保持平台中立。 */
+export interface CanvasExportRequest {
+  /** 格式标识由渲染器声明，例如png、jpeg、webp；协议不限定具体编码器。 */
+  readonly format: string;
+  readonly bounds: RectBounds;
+  readonly scale: number;
+  readonly background: 'transparent' | 'canvas';
+  readonly signal: AbortSignal;
+  /** 有损编码质量，是否支持由具体渲染器决定。 */
+  readonly quality?: number;
+}
+
+export interface CanvasExportResult {
+  readonly data: Uint8Array;
+  readonly mimeType: string;
+  readonly width: number;
+  readonly height: number;
+}
 
 export type ImageLoadFailure = 'missing-asset' | 'unavailable' | 'load-failed' | 'decode-failed';
 
@@ -29,6 +49,9 @@ export interface ImageLoadingController {
 /** 已挂载的渲染器实例 */
 export interface CanvasRenderer {
   readonly images?: ImageLoadingController;
+  /** 提供export能力时声明支持的格式，宿主据此展示入口。 */
+  readonly exportFormats?: readonly string[];
+  export?(request: CanvasExportRequest): Promise<CanvasExportResult>;
   /** 解除与容器和引擎的全部关联并释放图元 */
   destroy(): void;
 }

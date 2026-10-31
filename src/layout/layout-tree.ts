@@ -9,6 +9,7 @@
  */
 
 import type { NodeEntity } from '../types/node';
+import type { RectBounds } from '../types/geometry';
 import type { LayoutDefinition, LayoutMember, LayoutTree } from '../protocols/layout.protocol';
 
 const EMPTY_ITEM: Readonly<Record<string, unknown>> = Object.freeze({});
@@ -58,7 +59,8 @@ interface MutableMember extends LayoutMember {
 export function buildLayoutTree(
   root: Readonly<NodeEntity>,
   childrenOf: (parentId: string) => readonly Readonly<NodeEntity>[],
-  definition: LayoutDefinition | undefined
+  definition: LayoutDefinition | undefined,
+  footprintOf?: (node: Readonly<NodeEntity>) => Readonly<RectBounds> | undefined
 ): LayoutTree {
   const members = new Map<string, LayoutMember>();
   const build = (node: Readonly<NodeEntity>, parent: LayoutMember | undefined, depth: number): LayoutMember => {
@@ -81,6 +83,12 @@ export function buildLayoutTree(
   const rawOptions = root.layout?.options;
   return {
     root: rootMember,
+    ...(footprintOf && {
+      getFootprint: (nodeId: string) => {
+        const member = members.get(nodeId);
+        return member ? footprintOf(member.node) : undefined;
+      }
+    }),
     options: definition?.parseOptions ? definition.parseOptions(rawOptions) : (rawOptions ?? {}),
     get: (nodeId) => members.get(nodeId)
   };

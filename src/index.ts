@@ -27,6 +27,8 @@ export * from './layout/rich-text-constants';
 export * from './layout/rich-text-layout';
 export * from './layout/rich-text-edit';
 export * from './layout/layer-order';
+export * from './layout/selection-arrangement';
+export type { SelectionGeometryReader } from './layout/selection-geometry';
 export * from './layout/connector-label';
 export * from './layout/connector-layer';
 export * from './layout/group-bounds-derivation';

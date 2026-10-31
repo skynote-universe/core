@@ -10,6 +10,8 @@ import type { LayoutRegistry } from '../registry/layout-registry';
 import { normalizePatchPath } from '../operation/patch-path';
 import { deriveGroupBoundsPatches, GROUP_NODE_TYPE } from './group-bounds-derivation';
 import { deriveLayoutPatches } from './layout-derivation';
+import { computeSubtreeFootprint } from './subtree-footprint';
+import { computeNodeLocalMatrix } from '../utils/geometry';
 
 export interface ContainerDerivationContext {
   readonly layouts: LayoutRegistry;
@@ -27,6 +29,8 @@ interface ContainerAncestry {
   parentGroupId?: string;
   layoutRootId?: string;
   memberRootId?: string;
+  footprintRootId?: string;
+  parentFootprintRootId?: string;
 }
 
 export function deriveContainerPatches(
@@ -62,7 +66,12 @@ export function deriveContainerPatches(
         groupId: node.nodeType === GROUP_NODE_TYPE ? node.id : parent?.groupId,
         parentGroupId: parent?.groupId,
         layoutRootId: node.layout ? node.id : node.layoutItem ? parent?.layoutRootId : undefined,
-        memberRootId: node.layoutItem ? parent?.layoutRootId : undefined
+        memberRootId: node.layoutItem ? parent?.layoutRootId : undefined,
+        footprintRootId:
+          node.layout && context.layouts.get(node.layout.type)?.footprint === 'subtree'
+            ? node.id
+            : parent?.footprintRootId,
+        parentFootprintRootId: parent?.footprintRootId
       };
       ancestry.set(node.id, next);
       parent = next;
@@ -78,6 +87,11 @@ export function deriveContainerPatches(
     if (info?.layoutRootId !== undefined) affected.add(info.layoutRootId);
     if (info?.memberRootId !== undefined) affected.add(info.memberRootId);
   };
+  const collectFootprintRoots = (id: string, includeSelf: boolean): void => {
+    const info = ancestryOf(id);
+    const rootId = info?.footprintRootId === id && !includeSelf ? info.parentFootprintRootId : info?.footprintRootId;
+    if (rootId !== undefined) affected.add(rootId);
+  };
   for (const patch of patches) {
     const path = normalizePatchPath(patch.path);
     if (path[0] !== 'content' || (path.length > 1 && path[1] !== 'nodes')) continue;
@@ -90,6 +104,14 @@ export function deriveContainerPatches(
     const fields =
       path.length > 3 ? [path[3]] : patch.op === 'set' && patch.merge ? Object.keys(patch.value as object) : null;
     const node = getNode(id);
+    if (!fields || fields.some((field) => GEOMETRY_FIELDS.has(field) || field === 'layout' || field === 'layoutItem')) {
+      collectFootprintRoots(
+        id,
+        !fields || fields.some((field) => field === 'width' || field === 'height' || field === 'layout')
+      );
+      const previousParentId = context.previousParentId(id);
+      if (previousParentId !== undefined) collectFootprintRoots(previousParentId, true);
+    }
     if (!fields || fields.some((field) => GEOMETRY_FIELDS.has(field))) {
       collectGroups(node?.parentId);
       collectGroups(context.previousParentId(id));
@@ -142,7 +164,7 @@ export function deriveContainerPatches(
     const info = ancestryOf(queue[i]);
     if (!info) continue;
     // 最近的组和外层布局已覆盖直接依赖；队列继续展开传递依赖，不再逐容器扫描所有祖先。
-    for (const id of [info.memberRootId, info.parentGroupId]) {
+    for (const id of [info.memberRootId, info.parentGroupId, info.parentFootprintRootId]) {
       if (id !== undefined && !affected.has(id)) {
         affected.add(id);
         queue.push(id);
@@ -157,7 +179,11 @@ export function deriveContainerPatches(
     if (!node) continue;
     const next =
       node.nodeType === GROUP_NODE_TYPE
-        ? deriveGroupBoundsPatches(node, childrenOf(id))
+        ? deriveGroupBoundsPatches(node, childrenOf(id), (child) =>
+            child.layout && context.layouts.get(child.layout.type)?.footprint === 'subtree'
+              ? computeSubtreeFootprint(child, childrenOf, computeNodeLocalMatrix(child))
+              : undefined
+          )
         : node.layout
           ? deriveLayoutPatches(node, { layouts: context.layouts, childrenOf, isHeld: context.isHeld })
           : [];

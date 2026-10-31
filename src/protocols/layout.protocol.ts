@@ -12,7 +12,7 @@
  *    由插件经派生连线来源绘制 (见 connector-source.protocol)；内核只定义类型、不调用。
  */
 
-import type { Point } from '../types/geometry';
+import type { Point, RectBounds } from '../types/geometry';
 import type { NodeEntity } from '../types/node';
 import type { ConnectorStyle } from '../types/connector';
 
@@ -31,6 +31,8 @@ export interface LayoutMember {
 
 /** 一棵布局树 (只读视图) */
 export interface LayoutTree {
+  /** 成员实际占位范围，相对成员自身未旋转的左上角；未提供时使用节点宽高。仅查询时计算。 */
+  getFootprint?(nodeId: string): Readonly<RectBounds> | undefined;
   readonly root: LayoutMember;
   /** 根节点 layout.options 经布局 parseOptions 解析后的结果 (未提供解析时为原值或空对象) */
   readonly options: Readonly<Record<string, unknown>>;
@@ -57,6 +59,12 @@ export interface LayoutEdgeSpec {
 
 /** 布局定义契约 */
 export interface LayoutDefinition {
+  /** 外部自动排列和容器布局如何为本布局根分配空间，不改变根节点实体尺寸。 */
+  readonly footprint?: 'node' | 'subtree';
+  /** 外层整体缩放能否传播到本布局子树；显式false用于尚未实现整图缩放的布局，缺省保持原行为。 */
+  readonly supportsContentScale?: boolean;
+  /** 允许将布局根及后代作为独立的整体选中，默认仍只选具体节点。 */
+  readonly selectableSubtree?: boolean;
   /** 全局唯一标识，即根节点的 layout.type，如 'mindmap' */
   readonly id: string;
   readonly label: string;

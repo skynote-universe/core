@@ -4,12 +4,13 @@
  */
 
 import type { NodeEntity } from '../types/node';
-import type { Point } from '../types/geometry';
+import type { Point, RectBounds } from '../types/geometry';
 import type { CanvasPatch } from '../types/operation';
 import type { LayoutMember } from '../protocols/layout.protocol';
 import type { LayoutRegistry } from '../registry/layout-registry';
 import { sortSiblingsByLayer } from './layer-order';
 import { buildLayoutTree } from './layout-tree';
+import { computeSubtreeFootprint } from './subtree-footprint';
 
 export interface LayoutDerivationContext {
   readonly layouts: LayoutRegistry;
@@ -22,7 +23,20 @@ const POSITION_EPSILON = 1e-6;
 export function deriveLayoutPatches(root: Readonly<NodeEntity>, context: LayoutDerivationContext): CanvasPatch[] {
   const definition = context.layouts.get(root.layout!.type);
   if (!definition) return [];
-  const tree = buildLayoutTree(root, (id) => sortSiblingsByLayer(context.childrenOf(id)), definition);
+  let footprints: Map<string, Readonly<RectBounds>> | undefined;
+  const tree = buildLayoutTree(
+    root,
+    (id) => sortSiblingsByLayer(context.childrenOf(id)),
+    definition,
+    (node) => {
+      if (!node.layout || context.layouts.get(node.layout.type)?.footprint !== 'subtree') return undefined;
+      const cached = footprints?.get(node.id);
+      if (cached) return cached;
+      const bounds = computeSubtreeFootprint(node, context.childrenOf);
+      (footprints ??= new Map()).set(node.id, bounds);
+      return bounds;
+    }
+  );
   const targets = definition.arrange(tree);
   const patches: CanvasPatch[] = [];
   const appendSize = (node: Readonly<NodeEntity>): void => {

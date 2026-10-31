@@ -255,6 +255,7 @@ export class SkyNoteEngine {
       }
       this.syncDerivedState(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
+      this.pruneSubtreeSelection();
     });
     // 节点类型晚于文档注册 (或被卸载) 时，重算对应类型节点的空间占据范围与依附连线路由
     this.unsubscribeNodeTypes = this.nodeTypes.onChange((type) => {
@@ -282,7 +283,10 @@ export class SkyNoteEngine {
       }
     });
     // 布局晚于文档注册 (或被卸载) 时重新排版
-    this.unsubscribeLayouts = this.layouts.onChange(() => this.documentStore.refreshLayouts());
+    this.unsubscribeLayouts = this.layouts.onChange(() => {
+      this.documentStore.refreshLayouts();
+      this.pruneSubtreeSelection();
+    });
     // 路由器晚于文档注册时，重算对应类型的连线
     this.unsubscribeRouters = this.routers.onChange((routerId) => {
       this.updateConnectorRoutes(
@@ -295,6 +299,12 @@ export class SkyNoteEngine {
   }
 
   /** 实体运行时索引 (只读) */
+  private pruneSubtreeSelection(): void {
+    const selected = this.session.selectedSubtreeNodeIds;
+    const kept = [...selected].filter((id) => this.documentStore.selectionGeometry.canSelectSubtree(id));
+    if (kept.length !== selected.size) this.session.setSelection({ subtreeNodeIds: kept });
+  }
+
   get entityStore(): EntityReader {
     return this.documentStore.entityStore;
   }

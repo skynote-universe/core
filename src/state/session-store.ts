@@ -21,6 +21,8 @@ import { clamp, computeFitViewport, screenToWorld } from '../utils/geometry';
 
 /** 单次会话状态变更 */
 export interface SessionChange {
+  /** 节点ID未变也可从主题切换为整体范围，不伪造节点选中态翻转。 */
+  readonly selectionScopeChanged?: boolean;
   /** 视口平移、缩放或像素尺寸变化 */
   readonly viewportChanged: boolean;
   readonly themeChanged: boolean;
@@ -72,6 +74,8 @@ export const SELECT_TOOL = 'select';
 /** 选区更新参数：未提供的类别保持不变 */
 export interface SelectionUpdate {
   nodeIds?: Iterable<string>;
+  /** nodeIds中按整个子树选中的根；显式更新nodeIds时缺省恢复节点级选中。 */
+  subtreeNodeIds?: Iterable<string>;
   connectorIds?: Iterable<string>;
 }
 
@@ -104,6 +108,7 @@ export interface SessionController {
   readonly zoomRange: Readonly<ZoomRange>;
   readonly theme: CanvasTheme;
   readonly selectedNodeIds: ReadonlySet<string>;
+  readonly selectedSubtreeNodeIds: ReadonlySet<string>;
   readonly selectedConnectorIds: ReadonlySet<string>;
   readonly textEditing: TextEditingTarget | null;
   /** 当前工具 (缺省 SELECT_TOOL) */
@@ -231,6 +236,7 @@ export class SessionStore implements SessionController {
   private sizeState: ViewportSize = { width: 0, height: 0 };
   private themeState: CanvasTheme;
   private nodeSelection: ReadonlySet<string> = EMPTY_ID_SET;
+  private subtreeSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private connectorSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private editingTarget: TextEditingTarget | null = null;
   private currentTool = SELECT_TOOL;
@@ -269,6 +275,10 @@ export class SessionStore implements SessionController {
 
   get selectedNodeIds(): ReadonlySet<string> {
     return this.nodeSelection;
+  }
+
+  get selectedSubtreeNodeIds(): ReadonlySet<string> {
+    return this.subtreeSelection;
   }
 
   get selectedConnectorIds(): ReadonlySet<string> {
@@ -342,6 +352,9 @@ export class SessionStore implements SessionController {
       return;
     }
     // 整体替换：渲染器按引用判断编辑视图是否变化
+    if (target?.kind === 'node' && this.subtreeSelection.has(target.id)) {
+      this.setSelection({ subtreeNodeIds: [...this.subtreeSelection].filter((id) => id !== target.id) });
+    }
     this.editingTarget = target && Object.freeze({ ...target });
     this.notify(TEXT_EDITING_CHANGE);
   }
@@ -395,6 +408,7 @@ export class SessionStore implements SessionController {
       const toggledNodeIds = new Set(this.nodeSelection);
       const toggledConnectorIds = new Set(this.connectorSelection);
       this.nodeSelection = EMPTY_ID_SET;
+      this.subtreeSelection = EMPTY_ID_SET;
       this.connectorSelection = EMPTY_ID_SET;
       this.notify({
         viewportChanged: false,
@@ -411,6 +425,7 @@ export class SessionStore implements SessionController {
 
     let toggledNodeIds: ReadonlySet<string> = EMPTY_ID_SET;
     let toggledConnectorIds: ReadonlySet<string> = EMPTY_ID_SET;
+    let selectionScopeChanged = false;
 
     if (selection.nodeIds !== undefined) {
       const next = new Set(selection.nodeIds);
@@ -429,8 +444,18 @@ export class SessionStore implements SessionController {
       }
     }
 
-    if (toggledNodeIds.size === 0 && toggledConnectorIds.size === 0) return;
+    if (selection.nodeIds !== undefined || selection.subtreeNodeIds !== undefined) {
+      const next = new Set([...(selection.subtreeNodeIds ?? [])].filter((id) => this.nodeSelection.has(id)));
+      const changed = diffIdSets(this.subtreeSelection, next);
+      if (changed) {
+        this.subtreeSelection = next;
+        selectionScopeChanged = true;
+      }
+    }
+
+    if (toggledNodeIds.size === 0 && toggledConnectorIds.size === 0 && !selectionScopeChanged) return;
     this.notify({
+      selectionScopeChanged,
       viewportChanged: false,
       themeChanged: false,
       textEditingChanged: false,
@@ -450,7 +475,7 @@ export class SessionStore implements SessionController {
     // 按选区规模遍历：选区通常远小于一次批量删除的规模
     const keptNodeIds = [...this.nodeSelection].filter((id) => !removedNodeIds.has(id));
     const keptConnectorIds = [...this.connectorSelection].filter((id) => !removedConnectorIds.has(id));
-    this.setSelection({ nodeIds: keptNodeIds, connectorIds: keptConnectorIds });
+    this.setSelection({ nodeIds: keptNodeIds, connectorIds: keptConnectorIds, subtreeNodeIds: this.subtreeSelection });
     const editing = this.editingTarget;
     const removed = editing?.kind === 'node' ? removedNodeIds : removedConnectorIds;
     if (editing && removed.has(editing.id)) this.setTextEditing(null);

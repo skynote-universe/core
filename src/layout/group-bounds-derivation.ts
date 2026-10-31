@@ -19,12 +19,13 @@ const GEOMETRY_EPSILON = 1e-6;
 
 export function deriveGroupBoundsPatches(
   group: Readonly<NodeEntity>,
-  children: readonly Readonly<NodeEntity>[]
+  children: readonly Readonly<NodeEntity>[],
+  footprintOf?: (child: Readonly<NodeEntity>) => Readonly<RectBounds> | undefined
 ): CanvasPatch[] {
   if (children.length === 0) return [{ op: 'unset', path: ['content', 'nodes', group.id] }];
   let bounds: RectBounds | null = null;
   for (const child of children) {
-    const childBounds = computeNodeWorldBounds(child, computeNodeLocalMatrix(child));
+    const childBounds = footprintOf?.(child) ?? computeNodeWorldBounds(child, computeNodeLocalMatrix(child));
     bounds = bounds ? unionBounds(bounds, childBounds) : childBounds;
   }
   // 外框向外取整，旋转成员也不能使尺寸面板重新出现小数或裁掉边缘。

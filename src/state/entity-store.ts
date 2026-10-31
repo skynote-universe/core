@@ -19,6 +19,8 @@ import { computeNodeLocalMatrix, multiplyMatrix } from '../utils/geometry';
 
 /** 实体运行时索引的只读视图 (对内核之外暴露的唯一形态) */
 export interface EntityReader {
+  readonly geometryRevision: number;
+  getLayoutRootIds(): ReadonlySet<string>;
   readonly nodeCount: number;
   readonly connectorCount: number;
   /** O(N) 分配，仅用于低频全量场景 */
@@ -56,6 +58,13 @@ export type EntitySyncResult = 'added' | 'replaced' | 'removed' | 'unchanged';
 const EMPTY_ID_SET: ReadonlySet<string> = new Set();
 
 export class EntityStore implements EntityReader {
+  private readonly layoutRootIds = new Set<string>();
+  get geometryRevision(): number {
+    return this.transformRevision;
+  }
+  getLayoutRootIds(): ReadonlySet<string> {
+    return this.layoutRootIds;
+  }
   private readonly nodes = new Map<string, RuntimeNode>();
   private readonly connectors = new Map<string, RuntimeConnector>();
   /** nodeId -> 依附其上的连线 id 集合 */
@@ -284,6 +293,8 @@ export class EntityStore implements EntityReader {
   bumpNodeVersion(id: string, kind: 'geom' | 'data'): boolean {
     const node = this.nodes.get(id);
     if (!node) return false;
+    if (node.entity.layout) this.layoutRootIds.add(id);
+    else this.layoutRootIds.delete(id);
     if (kind === 'geom') {
       node.runtime.geomVersion = ++this.versionClock;
       this.transformRevision++;
@@ -311,6 +322,8 @@ export class EntityStore implements EntityReader {
    * 清空全部实体与运行时缓存
    */
   clear(): void {
+    this.layoutRootIds.clear();
+    this.transformRevision++;
     this.nodes.clear();
     this.connectors.clear();
     this.nodeConnectors.clear();
@@ -322,6 +335,8 @@ export class EntityStore implements EntityReader {
   }
 
   private indexNodeParent(id: string, entity: NodeEntity | undefined): void {
+    if (entity?.layout) this.layoutRootIds.add(id);
+    else this.layoutRootIds.delete(id);
     const registered = this.nodeParents.has(id);
     const previous = this.nodeParents.get(id);
     const next = entity?.parentId;

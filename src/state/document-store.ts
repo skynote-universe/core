@@ -61,6 +61,20 @@ import { deriveContainerPatches } from '../layout/container-derivation';
 import { scaleConnectorTextBlocks } from '../layout/connector-label';
 import { GROUP_NODE_TYPE } from '../layout/group-bounds-derivation';
 import { findMemberRootId } from '../layout/layout-tree';
+import { SelectionGeometry, type SelectionGeometryReader } from '../layout/selection-geometry';
+import { computeSubtreeFootprint } from '../layout/subtree-footprint';
+import {
+  NODE_ALIGNMENT_LABELS,
+  planNodeAlignment,
+  planNodeAutoArrangement,
+  planNodeDistribution,
+  resolveArrangementTargets,
+  type NodeAlignment,
+  type NodeDistributionAxis,
+  type NodeArrangementInfo,
+  type NodeArrangementMove,
+  type NodeAutoArrangeOptions
+} from '../layout/selection-arrangement';
 import { ConnectorSourceRegistry } from '../registry/connector-source-registry';
 import {
   derivedConnectorId,
@@ -191,6 +205,10 @@ export interface CommandOptions {
  * 插件可用的文档能力：只读查询与语义命令，全部经事务提交
  * 订阅、清空历史、替换字体测量器等宿主级能力不对插件开放
  */
+export interface NodeArrangementCommandOptions extends CommandOptions {
+  readonly subtreeNodeIds?: ReadonlySet<string>;
+}
+
 export type DocumentApi = Pick<
   DocumentStore,
   | 'getView'
@@ -206,6 +224,11 @@ export type DocumentApi = Pick<
   | 'updateConnectors'
   | 'createConnector'
   | 'moveEntities'
+  | 'getNodeArrangementInfo'
+  | 'selectionGeometry'
+  | 'alignNodes'
+  | 'distributeNodes'
+  | 'autoArrangeNodes'
   | 'transformNodes'
   | 'captureConnectorTransformSnapshot'
   | 'resizeNodes'
@@ -294,6 +317,7 @@ export class DocumentStore {
   private readonly document: CanvasDocument;
   private readonly assetIds = new Set<string>();
   private readonly entities = new EntityStore();
+  readonly selectionGeometry: SelectionGeometryReader;
   private readonly coordinator: OperationCoordinator<CanvasDocument>;
   private readonly subscribers = new Set<DocumentSubscriber>();
   private fontMeasurer: FontMeasurer | null = null;
@@ -321,6 +345,7 @@ export class DocumentStore {
 
     this.nodeTypes = options?.nodeTypes ?? new NodeTypeRegistry();
     this.layouts = options?.layouts ?? new LayoutRegistry();
+    this.selectionGeometry = new SelectionGeometry(this.entities, this.layouts);
     this.connectorSources = options?.connectorSources ?? new ConnectorSourceRegistry();
     this.connectorEnds = options?.connectorEnds ?? (() => undefined);
     this.coordinator = new OperationCoordinator(this.document);
@@ -892,6 +917,94 @@ export class DocumentStore {
     return this.commit({ ...options, label: options?.label ?? '移动', patches });
   }
 
+  /** 顶层有效目标数量及不可手动排版原因；不计算外框或扫描全图。 */
+  getNodeArrangementInfo(nodeIds: Iterable<string>): NodeArrangementInfo {
+    return resolveArrangementTargets(nodeIds, (id) => this.document.content.nodes[id]).info;
+  }
+
+  alignNodes(
+    nodeIds: Iterable<string>,
+    alignment: NodeAlignment,
+    options?: NodeArrangementCommandOptions
+  ): CanvasOperationRecord | null {
+    return this.arrangeNodes(nodeIds, { alignment }, options);
+  }
+
+  distributeNodes(
+    nodeIds: Iterable<string>,
+    axis: NodeDistributionAxis,
+    options?: NodeArrangementCommandOptions
+  ): CanvasOperationRecord | null {
+    return this.arrangeNodes(nodeIds, { axis }, options);
+  }
+
+  /** 单次整理成网格，不创建容器或持续布局关系。 */
+  autoArrangeNodes(
+    nodeIds: Iterable<string>,
+    settings?: NodeAutoArrangeOptions,
+    options?: NodeArrangementCommandOptions
+  ): CanvasOperationRecord | null {
+    return this.arrangeNodes(nodeIds, { auto: settings ?? {} }, options);
+  }
+
+  private arrangeNodes(
+    nodeIds: Iterable<string>,
+    mode: { alignment: NodeAlignment } | { axis: NodeDistributionAxis } | { auto: NodeAutoArrangeOptions },
+    options?: NodeArrangementCommandOptions
+  ): CanvasOperationRecord | null {
+    const targets = resolveArrangementTargets(nodeIds, (id) => this.document.content.nodes[id]);
+    if (targets.info.blockedBy || targets.nodes.length < ('axis' in mode ? 3 : 2)) return null;
+    const items = targets.nodes.map((node) => ({
+      id: node.id,
+      bounds:
+        options?.subtreeNodeIds?.has(node.id) ||
+        ('auto' in mode && node.layout && this.layouts.get(node.layout.type)?.footprint === 'subtree')
+          ? this.selectionGeometry.getSubtreeBounds(node.id)!
+          : computeNodeWorldBounds(node, this.entities.getWorldTransform(node.id)!)
+    }));
+    const moves =
+      'alignment' in mode
+        ? planNodeAlignment(items, mode.alignment)
+        : 'axis' in mode
+          ? planNodeDistribution(items, mode.axis)
+          : planNodeAutoArrangement(items, mode.auto);
+    const patches: CanvasPatch[] = [];
+    const carried = new Set<string>();
+    for (const move of moves) this.appendArrangementMove(move, patches, carried);
+    if (!patches.length) return null;
+    const label =
+      'alignment' in mode
+        ? NODE_ALIGNMENT_LABELS[mode.alignment]
+        : 'auto' in mode
+          ? '自动排列'
+          : mode.axis === 'horizontal'
+            ? '水平等距分布'
+            : '垂直等距分布';
+    const { subtreeNodeIds: _scope, ...commandOptions } = options ?? {};
+    return this.commit({ ...commandOptions, label: options?.label ?? label, patches });
+  }
+
+  private appendArrangementMove(move: NodeArrangementMove, patches: CanvasPatch[], carried: Set<string>): void {
+    const { id, delta } = move;
+    if (Math.abs(delta.x) < 1e-6 && Math.abs(delta.y) < 1e-6) return;
+    const node = this.document.content.nodes[id];
+    const parent = node.parentId === undefined ? undefined : this.entities.getWorldTransform(node.parentId);
+    const local = parent ? applyMatrixToVector(invertMatrix(parent), delta.x, delta.y) : delta;
+    const x = Math.abs(local.x) < 1e-6 ? node.x : Math.round(node.x + local.x);
+    const y = Math.abs(local.y) < 1e-6 ? node.y : Math.round(node.y + local.y);
+    if (x === node.x && y === node.y) return;
+    if (x !== node.x) patches.push({ op: 'set', path: ['content', 'nodes', id, 'x'], value: x });
+    if (y !== node.y) patches.push({ op: 'set', path: ['content', 'nodes', id, 'y'], value: y });
+    // 连线拐点跟随实际取整后的世界位移，复用容器变换的内部连线认领规则。
+    const actual = parent ? applyMatrixToVector(parent, x - node.x, y - node.y) : { x: x - node.x, y: y - node.y };
+    this.carryConnectors(
+      this.collectContentScaleIds(id, new Set()),
+      { a: 1, b: 0, c: 0, d: 1, e: actual.x, f: actual.y },
+      carried,
+      patches
+    );
+  }
+
   /**
    * 变换节点 (缩放、旋转)：frame 为世界坐标中的新外框，换算为父容器局部坐标后一次提交，只写有变化的字段
    * 后代坐标相对容器，随容器移动与旋转，不产生补丁 (ADR-114)；组合 (group) 发生尺寸缩放时将缩放比例传播至后代 (ADR-145)；
@@ -1317,6 +1430,11 @@ export class DocumentStore {
     let lockAspect =
       (!!definition?.supportsContentScale && behavior === 'scale-contents') || isAspectLocked(node, definition);
     if (node.nodeType === GROUP_NODE_TYPE) {
+      for (const memberId of this.entities.collectDescendantIds(id)) {
+        const member = this.document.content.nodes[memberId];
+        if (member.layout && this.layouts.get(member.layout.type)?.supportsContentScale === false)
+          return { behavior, axes: 'none', lockAspect: false };
+      }
       const leaves: string[] = [];
       this.collectGroupLeaves(id, new Set(), leaves);
       if (leaves.length === 0) return { behavior, axes: 'none', lockAspect: false };
@@ -1835,7 +1953,7 @@ export class DocumentStore {
     }
   }
 
-  /** 容器 (如 Frame) 适应内部直接子节点的补丁：包裹全部直接子节点并留 24px 内边距，同时补偿子节点局部坐标以保持世界位姿不变 */
+  /** 容器适应直接子节点占位，复合布局使用完整子树；保留24px边距，补偿局部坐标保持世界位姿。 */
   private resolveContainerFitPatches(id: string): CanvasPatch[] | null {
     const node = this.getNode(id);
     const definition = node && this.nodeTypes.get(node.nodeType);
@@ -1847,7 +1965,15 @@ export class DocumentStore {
     for (const childId of childIds) {
       const child = nodes[childId];
       if (!child) continue;
-      const box = computeNodeWorldBounds(child, computeNodeLocalMatrix(child));
+      const matrix = computeNodeLocalMatrix(child);
+      const box =
+        child.layout && this.layouts.get(child.layout.type)?.footprint === 'subtree'
+          ? computeSubtreeFootprint(
+              child,
+              (parentId) => [...this.entities.getChildIds(parentId)].map((childId) => nodes[childId]),
+              matrix
+            )
+          : computeNodeWorldBounds(child, matrix);
       bounds = bounds ? unionBounds(bounds, box) : box;
     }
     if (!bounds) return null;

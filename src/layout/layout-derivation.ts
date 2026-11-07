@@ -15,6 +15,7 @@ import { computeSubtreeFootprint } from './subtree-footprint';
 export interface LayoutDerivationContext {
   readonly layouts: LayoutRegistry;
   childrenOf(parentId: string): readonly Readonly<NodeEntity>[];
+  footprintChildrenOf?(parentId: string): readonly Readonly<NodeEntity>[];
   /** 托管成员仍占槽位，但交互期间不回写其位置和旋转 */
   isHeld?(nodeId: string): boolean;
 }
@@ -32,10 +33,11 @@ export function deriveLayoutPatches(root: Readonly<NodeEntity>, context: LayoutD
       if (!node.layout || context.layouts.get(node.layout.type)?.footprint !== 'subtree') return undefined;
       const cached = footprints?.get(node.id);
       if (cached) return cached;
-      const bounds = computeSubtreeFootprint(node, context.childrenOf);
+      const bounds = computeSubtreeFootprint(node, context.footprintChildrenOf ?? context.childrenOf);
       (footprints ??= new Map()).set(node.id, bounds);
       return bounds;
-    }
+    },
+    { visibleOnly: true }
   );
   const targets = definition.arrange(tree);
   const patches: CanvasPatch[] = [];

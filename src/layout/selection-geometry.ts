@@ -1,3 +1,4 @@
+import type { LayoutVisibilityReader } from './layout-visibility';
 import type { EntityReader } from '../state/entity-store';
 import type { LayoutReader } from '../protocols/layout.protocol';
 import type { Point, RectBounds } from '../types/geometry';
@@ -14,15 +15,21 @@ export interface SelectionGeometryReader {
 /** 几何范围与会话选中语义分离，布局插件只声明是否开放整体选中。 */
 export class SelectionGeometry implements SelectionGeometryReader {
   private revision = -1;
+  private visibilityRevision = -1;
   private readonly bounds = new Map<string, Readonly<RectBounds>>();
   private readonly localBounds = new Map<string, Readonly<RectBounds>>();
   constructor(
     private readonly entities: EntityReader,
-    private readonly layouts: LayoutReader
+    private readonly layouts: LayoutReader,
+    private readonly visibility?: LayoutVisibilityReader
   ) {}
 
   private syncRevision(): void {
-    if (this.revision !== this.entities.geometryRevision) {
+    if (
+      this.revision !== this.entities.geometryRevision ||
+      this.visibilityRevision !== (this.visibility?.revision ?? 0)
+    ) {
+      this.visibilityRevision = this.visibility?.revision ?? 0;
       this.bounds.clear();
       this.localBounds.clear();
       this.revision = this.entities.geometryRevision;
@@ -34,9 +41,11 @@ export class SelectionGeometry implements SelectionGeometryReader {
     const cached = this.localBounds.get(rootId);
     if (cached) return cached;
     const root = this.entities.getNode(rootId)?.entity;
-    if (!root) return undefined;
+    if (!root || this.visibility?.isNodeVisible(rootId) === false) return undefined;
     const bounds = computeSubtreeFootprint(root, (id) =>
-      [...this.entities.getChildIds(id)].map((childId) => this.entities.getNode(childId)!.entity)
+      [...this.entities.getChildIds(id)]
+        .filter((childId) => this.visibility?.isNodeVisible(childId) !== false)
+        .map((childId) => this.entities.getNode(childId)!.entity)
     );
     this.localBounds.set(rootId, bounds);
     return bounds;
@@ -51,7 +60,7 @@ export class SelectionGeometry implements SelectionGeometryReader {
     for (let index = 0; index < pending.length; index++) {
       const id = pending[index];
       const node = this.entities.getNode(id)?.entity;
-      if (!node) continue;
+      if (!node || this.visibility?.isNodeVisible(id) === false) continue;
       const own = computeNodeWorldBounds(node, this.entities.getWorldTransform(id)!);
       bounds = bounds ? unionBounds(bounds, own) : own;
       for (const childId of this.entities.getChildIds(id)) pending.push(childId);
@@ -62,7 +71,11 @@ export class SelectionGeometry implements SelectionGeometryReader {
 
   canSelectSubtree(id: string): boolean {
     const node = this.entities.getNode(id)?.entity;
-    return !!node?.layout && !!this.layouts.get(node.layout.type)?.selectableSubtree;
+    return (
+      this.visibility?.isNodeVisible(id) !== false &&
+      !!node?.layout &&
+      !!this.layouts.get(node.layout.type)?.selectableSubtree
+    );
   }
 
   /** 只检索布局根；重叠整体优先最内层，真实节点/连线命中由调用者先处理。 */

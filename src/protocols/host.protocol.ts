@@ -14,7 +14,7 @@
 import type { CanvasPrimitive } from './primitives.protocol';
 
 /** 内置光标 (见 CursorRegistry)：全部自绘，可被覆盖 */
-export type BuiltinCursorId = 'default' | 'move' | 'crosshair' | 'text' | 'grab' | 'grabbing';
+export type BuiltinCursorId = 'default' | 'pointer' | 'move' | 'crosshair' | 'text' | 'grab' | 'grabbing';
 
 /**
  * 带角度的光标：缩放光标 (resize，0° 为水平双向箭头) 与旋转光标 (rotate，0° 时弧线在左侧)，

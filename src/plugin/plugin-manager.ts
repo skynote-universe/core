@@ -168,6 +168,10 @@ class PluginContext implements CanvasPluginContext {
     return this.engine.hitTest(point);
   }
 
+  onHostChange(listener: (available: boolean) => void): () => void {
+    return this.track(this.engine.onHostChange(listener));
+  }
+
   onDocumentChange(listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void): () => void {
     return this.track(this.engine.documentStore.subscribe((_view, record, changes) => listener(changes, record)));
   }

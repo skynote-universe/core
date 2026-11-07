@@ -61,6 +61,7 @@ import {
 import { deriveContainerPatches } from '../layout/container-derivation';
 import { scaleConnectorTextBlocks } from '../layout/connector-label';
 import { GROUP_NODE_TYPE } from '../layout/group-bounds-derivation';
+import { hidesLayoutChildren, LayoutVisibility, type LayoutVisibilityReader } from '../layout/layout-visibility';
 import { findMemberRootId } from '../layout/layout-tree';
 import { SelectionGeometry, type SelectionGeometryReader } from '../layout/selection-geometry';
 import { computeSubtreeFootprint } from '../layout/subtree-footprint';
@@ -228,6 +229,7 @@ export type DocumentApi = Pick<
   | 'moveEntities'
   | 'getNodeArrangementInfo'
   | 'selectionGeometry'
+  | 'visibility'
   | 'alignNodes'
   | 'distributeNodes'
   | 'autoArrangeNodes'
@@ -320,6 +322,10 @@ export class DocumentStore {
   private readonly assetIds = new Set<string>();
   private readonly entities = new EntityStore();
   readonly selectionGeometry: SelectionGeometryReader;
+  private readonly layoutVisibility: LayoutVisibility;
+  get visibility(): LayoutVisibilityReader {
+    return this.layoutVisibility;
+  }
   private readonly coordinator: OperationCoordinator<CanvasDocument>;
   private readonly subscribers = new Set<DocumentSubscriber>();
   private fontMeasurer: FontMeasurer | null = null;
@@ -347,13 +353,15 @@ export class DocumentStore {
 
     this.nodeTypes = options?.nodeTypes ?? new NodeTypeRegistry();
     this.layouts = options?.layouts ?? new LayoutRegistry();
-    this.selectionGeometry = new SelectionGeometry(this.entities, this.layouts);
+    this.layoutVisibility = new LayoutVisibility(this.entities, this.layouts);
+    this.selectionGeometry = new SelectionGeometry(this.entities, this.layouts, this.visibility);
     this.connectorSources = options?.connectorSources ?? new ConnectorSourceRegistry();
     this.connectorEnds = options?.connectorEnds ?? (() => undefined);
     this.coordinator = new OperationCoordinator(this.document);
     const { nodes, connectors } = this.document.content;
     for (const id in nodes) this.entities.syncNode(id, nodes[id]);
     for (const id in connectors) this.entities.syncConnector(id, connectors[id]);
+    this.layoutVisibility.refresh();
     this.connectorSources.onRefresh((sourceId) => this.refreshConnectorSource(sourceId));
     this.coordinator.onOperation((record, doc) => this.handleOperationCommitted(record, doc));
     this.setFontMeasurer(options?.fonts ?? null);
@@ -507,6 +515,7 @@ export class DocumentStore {
 
   /** 布局注册表变化后 (插件晚于文档注册或被卸载)：全部布局树重新排版，系统事务，不进撤销栈 */
   refreshLayouts(): void {
+    this.layoutVisibility.refresh();
     const patches = deriveContainerPatches(this.document, [{ op: 'set', path: ['content', 'nodes'], value: null }], {
       layouts: this.layouts,
       previousParentId: () => undefined,
@@ -1974,15 +1983,32 @@ export class DocumentStore {
     if (childIds.length === 0) return null;
     const { nodes } = this.document.content;
     let bounds: { left: number; top: number; right: number; bottom: number } | null = null;
+    const childrenHidden = hidesLayoutChildren(
+      node,
+      (key) => (Object.hasOwn(nodes, key) ? nodes[key] : undefined),
+      this.layouts
+    );
     for (const childId of childIds) {
       const child = nodes[childId];
-      if (!child) continue;
+      if (!child || (childrenHidden && child.layoutItem)) continue;
       const matrix = computeNodeLocalMatrix(child);
       const box =
         child.layout && this.layouts.get(child.layout.type)?.footprint === 'subtree'
           ? computeSubtreeFootprint(
               child,
-              (parentId) => [...this.entities.getChildIds(parentId)].map((childId) => nodes[childId]),
+              (parentId) => {
+                const parent = nodes[parentId];
+                const folded =
+                  parent &&
+                  hidesLayoutChildren(
+                    parent,
+                    (key) => (Object.hasOwn(nodes, key) ? nodes[key] : undefined),
+                    this.layouts
+                  );
+                return [...this.entities.getChildIds(parentId)]
+                  .map((childId) => nodes[childId])
+                  .filter((child) => !folded || !child.layoutItem);
+              },
               matrix
             )
           : computeNodeWorldBounds(child, matrix);
@@ -2401,7 +2427,7 @@ export class DocumentStore {
           if (
             isNode &&
             Object.hasOwn(doc.content.nodes, id) &&
-            this.nodeTypes.get(doc.content.nodes[id].nodeType)?.extent
+            (this.nodeTypes.get(doc.content.nodes[id].nodeType)?.extent || field === 'layoutState')
           ) {
             nodeGeomIds.add(id);
           }
@@ -2439,6 +2465,18 @@ export class DocumentStore {
 
     for (const id of reparentedNodeIds) {
       store.reindexNodeParent(id);
+    }
+
+    if (fullSync) this.layoutVisibility.refresh();
+    else {
+      const ids = [...derivedNodeChanges]
+        .filter(
+          ([, fields]) =>
+            fields === 'entity' ||
+            ['layoutState', 'layout', 'layoutItem', 'parentId'].some((field) => fields.has(field))
+        )
+        .map(([id]) => id);
+      if (ids.length) this.layoutVisibility.refresh(ids);
     }
 
     if (fullSync || derivedNodeChanges.size > 0) {

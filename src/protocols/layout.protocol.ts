@@ -59,6 +59,8 @@ export interface LayoutEdgeSpec {
 
 /** 布局定义契约 */
 export interface LayoutDefinition {
+  /** 支持按成员折叠下级布局分支；不隐藏成员自身的普通内容。 */
+  readonly collapsible?: boolean;
   /** 外部自动排列和容器布局如何为本布局根分配空间，不改变根节点实体尺寸。 */
   readonly footprint?: 'node' | 'subtree';
   /** 外层整体缩放能否传播到本布局子树；显式false用于尚未实现整图缩放的布局，缺省保持原行为。 */

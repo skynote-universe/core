@@ -19,6 +19,7 @@
  * 8. 登记的是节点占据的范围 (节点类型的 extent，缺省为外框)：框外装饰 (画框标题) 同样可被检出与拾取。
  */
 
+import type { LayoutVisibilityReader } from '../layout/layout-visibility';
 import type { Point, RectBounds } from '../types/geometry';
 import type { NodeChanges } from '../types/change-set';
 import type { NodeEntity } from '../types/node';
@@ -94,7 +95,8 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
   constructor(
     private readonly entities: EntityReader,
     private readonly createIndex: () => SpatialIndex,
-    private readonly resolveExtent: NodeExtentResolver = () => undefined
+    private readonly resolveExtent: NodeExtentResolver = () => undefined,
+    private readonly visibility?: LayoutVisibilityReader
   ) {}
 
   get size(): number {
@@ -212,6 +214,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
   }
 
   getBounds(nodeId: string): RectBounds | undefined {
+    if (this.visibility?.isNodeVisible(nodeId) === false) return undefined;
     const placement = this.placements.get(nodeId);
     if (!placement) return undefined;
     if (placement.container === undefined) return placement.own;
@@ -225,6 +228,17 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
     const root = this.containers.get(undefined);
     if (!root) return null;
     let bounds: RectBounds | null = null;
+    if (this.visibility?.hasCollapsed) {
+      const pending = [...root.members];
+      for (let index = 0; index < pending.length; index++) {
+        const id = pending[index];
+        const own = this.getBounds(id);
+        if (!own) continue;
+        bounds = bounds ? unionBounds(bounds, own) : own;
+        pending.push(...this.entities.getChildIds(id));
+      }
+      return bounds;
+    }
     for (const id of root.members) {
       const entry = this.placements.get(id)!.entry;
       bounds = bounds ? unionBounds(bounds, entry) : entry;
@@ -250,6 +264,7 @@ export class SceneSpatialIndex implements NodeSpatialQuery {
         continue;
       }
       const id = current.ids[current.offset++];
+      if (this.visibility?.isNodeVisible(id) === false) continue;
       const placement = this.placements.get(id)!;
       // 根层级局部坐标即世界坐标；嵌套节点先在容器局部坐标中快速排除，再按世界外接矩形精判
       if (current.key === undefined) {

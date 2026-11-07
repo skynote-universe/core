@@ -46,6 +46,7 @@ import {
 } from './utils/geometry';
 import { compareHierarchicalNodes } from './layout/layer-order';
 import { resolveConnectorLayerPlacement } from './layout/connector-layer';
+import type { LayoutVisibilityReader } from './layout/layout-visibility';
 import { compareFractionalIndex } from './utils/fractional-index';
 import { resolveNodeStyle, type NodeTypeDefinition } from './protocols/node-type.protocol';
 import { isNodeHiddenByOpacity } from './utils/node-opacity';
@@ -149,6 +150,8 @@ export class SkyNoteEngine {
 
   private readonly nodeSpatialIndex: SceneSpatialIndex;
   private currentHost: CanvasHost = DETACHED_CANVAS_HOST;
+  private hostAttachment: symbol | undefined;
+  private readonly hostListeners = new Set<(available: boolean) => void>();
   private readonly unsubscribeDocument: () => void;
   private readonly unsubscribeNodeTypes: () => void;
   private readonly unsubscribeRouters: () => void;
@@ -210,6 +213,9 @@ export class SkyNoteEngine {
     }
   }
 
+  private visibilityRevision = 0;
+  private hadCollapsed = false;
+
   constructor(options?: SkyNoteEngineOptions) {
     this.assets = options?.assets;
     this.documentStore = new DocumentStore(options?.initialDoc, {
@@ -233,8 +239,11 @@ export class SkyNoteEngine {
       (node) => {
         const runtimeNode = this.entityStore.getNode(node.id);
         return this.nodeTypes.getValid(node, runtimeNode?.runtime.dataVersion)?.extent?.(node as NodeEntity);
-      }
+      },
+      this.documentStore.visibility
     );
+    this.visibilityRevision = this.visibility.revision;
+    this.hadCollapsed = this.visibility.hasCollapsed;
     this.plugins = new PluginManager(this);
 
     this.nodeSpatialIndex.rebuild();
@@ -255,6 +264,7 @@ export class SkyNoteEngine {
       }
       this.syncDerivedState(changes);
       this.session.pruneSelection(changes.nodes.removed, changes.connectors.removed);
+      this.pruneInvisibleSelection();
       this.pruneSubtreeSelection();
     });
     // 节点类型晚于文档注册 (或被卸载) 时，重算对应类型节点的空间占据范围与依附连线路由
@@ -285,6 +295,10 @@ export class SkyNoteEngine {
     // 布局晚于文档注册 (或被卸载) 时重新排版
     this.unsubscribeLayouts = this.layouts.onChange(() => {
       this.documentStore.refreshLayouts();
+      this.updateConnectorRoutes(this.entityStore.getAllConnectors().map((node) => node.entity.id));
+      this.visibilityRevision = this.visibility.revision;
+      this.hadCollapsed = this.visibility.hasCollapsed;
+      this.pruneInvisibleSelection();
       this.pruneSubtreeSelection();
     });
     // 路由器晚于文档注册时，重算对应类型的连线
@@ -299,6 +313,37 @@ export class SkyNoteEngine {
   }
 
   /** 实体运行时索引 (只读) */
+  private pruneInvisibleSelection(): void {
+    const nodes = new Set([...this.session.selectedNodeIds].filter((id) => !this.visibility.isNodeVisible(id)));
+    const connectors = new Set(
+      [...this.session.selectedConnectorIds].filter((id) => {
+        const connector = this.entityStore.getConnector(id)?.entity;
+        return connector && !this.visibility.isConnectorVisible(connector);
+      })
+    );
+    const editing = this.session.textEditing;
+    if (editing?.kind === 'node' && !this.visibility.isNodeVisible(editing.id)) this.session.setTextEditing(null);
+    if (editing?.kind === 'connector') {
+      const connector = this.entityStore.getConnector(editing.id)?.entity;
+      if (connector && !this.visibility.isConnectorVisible(connector)) this.session.setTextEditing(null);
+    }
+    const ancestors = new Set<string>();
+    for (const id of nodes) {
+      for (const ancestor of this.entityStore.getAncestorIds(id)) {
+        if (this.visibility.isNodeVisible(ancestor)) {
+          ancestors.add(ancestor);
+          break;
+        }
+      }
+    }
+    this.session.pruneSelection(nodes, connectors);
+    if (ancestors.size)
+      this.session.setSelection({
+        nodeIds: [...this.session.selectedNodeIds, ...ancestors],
+        subtreeNodeIds: this.session.selectedSubtreeNodeIds
+      });
+  }
+
   private pruneSubtreeSelection(): void {
     const selected = this.session.selectedSubtreeNodeIds;
     const kept = [...selected].filter((id) => this.documentStore.selectionGeometry.canSelectSubtree(id));
@@ -310,6 +355,10 @@ export class SkyNoteEngine {
   }
 
   /** 节点空间检索 (世界坐标，分层索引由引擎按变更集维护) */
+  get visibility(): LayoutVisibilityReader {
+    return this.documentStore.visibility;
+  }
+
   get spatialIndex(): NodeSpatialQuery {
     return this.nodeSpatialIndex;
   }
@@ -574,13 +623,37 @@ export class SkyNoteEngine {
   }
 
   /**
-   * 挂载宿主 (由渲染器在 mount 时调用)，返回卸载函数
-   * 插件经上下文调用宿主能力时读取当前宿主，因此插件可以早于渲染器安装
+   * 宿主释放前与就绪后的通知；监听者通过当前宿主回收旧资源或重绘，异常互不影响。
    */
-  attachHost(host: CanvasHost): () => void {
-    this.currentHost = host;
+  onHostChange(listener: (available: boolean) => void): () => void {
+    this.hostListeners.add(listener);
     return () => {
-      if (this.currentHost === host) this.currentHost = DETACHED_CANVAS_HOST;
+      this.hostListeners.delete(listener);
+    };
+  }
+
+  private notifyHostChange(available: boolean): void {
+    for (const listener of [...this.hostListeners]) {
+      try {
+        listener(available);
+      } catch (error) {
+        console.error('[SkyNote:Host] 宿主切换订阅异常:', error);
+      }
+    }
+  }
+
+  /** 挂载宿主并返回幂等卸载函数；旧句柄不影响之后挂载的新宿主。 */
+  attachHost(host: CanvasHost): () => void {
+    this.notifyHostChange(false);
+    const attachment = Symbol('host-attachment');
+    this.hostAttachment = attachment;
+    this.currentHost = host;
+    this.notifyHostChange(true);
+    return () => {
+      if (this.hostAttachment !== attachment) return;
+      this.hostAttachment = undefined;
+      this.notifyHostChange(false);
+      this.currentHost = DETACHED_CANVAS_HOST;
     };
   }
 
@@ -795,12 +868,18 @@ export class SkyNoteEngine {
   destroy(): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
+    this.hostAttachment = undefined;
+    if (this.currentHost !== DETACHED_CANVAS_HOST) {
+      this.notifyHostChange(false);
+    }
     this.cancelPendingAssetTasks();
     this.unsubscribeDocument();
     this.unsubscribeNodeTypes();
     this.unsubscribeRouters();
     this.unsubscribeLayouts();
     this.plugins.destroy();
+    this.currentHost = DETACHED_CANVAS_HOST;
+    this.hostListeners.clear();
     this.routes.clear();
     this.pointer.clear();
     this.nodeSpatialIndex.clear();
@@ -832,6 +911,13 @@ export class SkyNoteEngine {
     for (const id of nodes.data) {
       for (const connectorId of this.entityStore.getConnectorIdsOfNode(id)) affected.add(connectorId);
     }
+    if (this.visibilityRevision !== this.visibility.revision) {
+      this.visibilityRevision = this.visibility.revision;
+      // 布局能力或成员资格变化可能只改变可见性，不伪装成几何变化打断正在进行的手势。
+      if (this.hadCollapsed || this.visibility.hasCollapsed)
+        for (const connector of this.entityStore.getAllConnectors()) affected.add(connector.entity.id);
+      this.hadCollapsed = this.visibility.hasCollapsed;
+    }
     this.updateConnectorRoutes(affected);
   }
 
@@ -857,6 +943,7 @@ export class SkyNoteEngine {
       const runtimeConnector = this.entityStore.getConnector(id);
       const route =
         runtimeConnector &&
+        this.visibility.isConnectorVisible(runtimeConnector.entity) &&
         computeConnectorRoute(
           runtimeConnector.entity,
           this.resolveEndpointNode,

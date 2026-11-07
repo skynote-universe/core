@@ -50,6 +50,15 @@ const BUILT_IN_CURSORS: readonly CursorDefinition[] = [
     fallback: 'default'
   },
   {
+    // 可点击控件的指示手型：沿用整套光标的深色图形、浅色描边和统一投影。
+    id: 'pointer',
+    svg: filled(
+      '<path d="M12 17V7a2 2 0 0 1 4 0v6a2 2 0 0 1 4 0v1a2 2 0 0 1 4 0v7c0 3.3-2.7 6-6 6h-2c-2.3 0-4-1.1-5.2-3l-3.6-5.2a1.8 1.8 0 0 1 2.7-2.3L12 19Z"/>'
+    ),
+    hotspot: { x: 14, y: 5 },
+    fallback: 'pointer'
+  },
+  {
     id: 'move',
     svg: filled(
       '<path d="M16 5L20 9L17 9L17 15L23 15L23 12L27 16L23 20L23 17L17 17L17 23L20 23L16 27L12 23L15 23L15 17L9 17L9 20L5 16L9 12L9 15L15 15L15 9L12 9Z"/>'

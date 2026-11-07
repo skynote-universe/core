@@ -186,6 +186,7 @@ const KNOWN_NODE_KEYS = new Set([
   'textStyle',
   'data',
   'layout',
+  'layoutState',
   'layoutItem'
 ]);
 
@@ -223,6 +224,10 @@ export function sanitizeNodeEntity(value: unknown, path: Path): NodeEntity {
     ...optional(n, 'layout', path, nodeLayout),
     // 成员属性的各键归使用它的插件，读取时由插件校验 (ADR-130)
     ...optional(n, 'layoutItem', path, plainObject),
+    ...optional(n, 'layoutState', path, (value, at) => {
+      const state = plainObject<Record<string, unknown>>(value, at);
+      return { ...optional(state, 'collapsed', at, bool) };
+    }),
     ...customFields
   };
 }

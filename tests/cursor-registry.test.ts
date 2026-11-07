@@ -17,7 +17,7 @@ const dot = (id: string, color = '{ink}'): CursorDefinition => ({
 describe('CursorRegistry', () => {
   it('内置光标全部自绘：完整的 32×32 SVG，颜色按配色替换，带热点与退路', () => {
     const registry = new CursorRegistry();
-    for (const id of ['default', 'move', 'crosshair', 'text', 'grab', 'grabbing', 'resize', 'rotate']) {
+    for (const id of ['default', 'pointer', 'move', 'crosshair', 'text', 'grab', 'grabbing', 'resize', 'rotate']) {
       const rendered = registry.render(id)!;
       expect(rendered.svg).toMatch(/^<svg [^>]*width="32" height="32"/);
       expect(rendered.svg).not.toContain('{ink}');
@@ -37,7 +37,7 @@ describe('CursorRegistry', () => {
     expect(registry.render({ kind: 'resize', angle: -90 })!.svg).toContain('rotate(270 16 16)');
     expect(registry.render({ kind: 'resize', angle: 360 })!.svg).not.toContain('rotate(');
     expect(registry.render({ kind: 'move', angle: 45 })!.svg).not.toContain('rotate(');
-    expect(registry.render('pointer')).toBeUndefined();
+    expect(registry.render('wait')).toBeUndefined();
   });
 
   it('覆盖内置光标：多次覆盖按任意顺序恢复，生效的始终是仍在的最后一次注册，全部恢复后回到内置', () => {
@@ -66,10 +66,12 @@ describe('CursorRegistry', () => {
     expect(listener).toHaveBeenCalledTimes(1);
     expect(registry.render('move')!.svg).toContain('fill="navy" stroke="ivory"');
     expect(registry.render('eraser')!.svg).toContain('fill="navy"');
+    expect(registry.render('pointer')!.svg).toContain('fill="navy" stroke="ivory"');
     expect(registry.render('move')!.key).not.toBe(before);
 
     registry.clear();
     expect(registry.style).toEqual({ ink: 'black', halo: 'white', shadow: true });
     expect(registry.render('eraser')).toBeUndefined();
+    expect(registry.render('pointer')).toMatchObject({ hotspot: { x: 14, y: 5 }, fallback: 'pointer' });
   });
 });

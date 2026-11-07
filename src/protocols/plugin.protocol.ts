@@ -66,6 +66,9 @@ export interface CanvasPluginContext {
   /** 点中的最上层实体 (节点或连线，按画面层叠)：点选、双击编辑与悬停据此判断 */
   hitTest(point: Point): CanvasHit | null;
 
+  /** 同步宿主切换：false在旧宿主释放前通知以回收资源，true在新宿主可用后通知以重绘；订阅随插件卸载。 */
+  onHostChange(listener: (available: boolean) => void): () => void;
+
   /** 订阅文档增量变更集；只做单向通知，监听中严禁同步提交新事务引发级联 */
   onDocumentChange(listener: (changes: DocumentChangeSet, record: CanvasOperationRecord) => void): () => void;
   /** 订阅视口、选区与主题变化 */

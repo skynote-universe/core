@@ -56,6 +56,11 @@ export interface NodeLayout {
   options?: Record<string, unknown>;
 }
 
+/** 布局成员的持久化展示状态，由声明对应能力的布局解释。 */
+export interface NodeLayoutState {
+  collapsed?: boolean;
+}
+
 /**
  * 节点顶层自定义字段登记表：插件通过模块扩展声明有明确结构的特性字段，避免将其埋入通用 data
  */
@@ -107,4 +112,6 @@ export interface NodeEntity<
    * 各键归使用它的插件 (如导图的左右侧、分支线来源的 branch)，内核不解释
    */
   layoutItem?: Record<string, unknown>;
+  /** 布局成员的展示状态；仅声明 collapsible 的布局解释折叠。 */
+  layoutState?: NodeLayoutState;
 }

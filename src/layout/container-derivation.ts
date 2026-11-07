@@ -4,6 +4,7 @@
  */
 
 import type { CanvasDocument } from '../types/canvas';
+import { hidesLayoutChildren } from './layout-visibility';
 import type { NodeEntity } from '../types/node';
 import type { CanvasPatch } from '../types/operation';
 import type { LayoutRegistry } from '../registry/layout-registry';
@@ -21,7 +22,15 @@ export interface ContainerDerivationContext {
 }
 
 const GEOMETRY_FIELDS = new Set<string | number>(['x', 'y', 'width', 'height', 'rotation', 'parentId']);
-const LAYOUT_FIELDS = new Set<string | number>(['width', 'height', 'parentId', 'zIndex', 'layout', 'layoutItem']);
+const LAYOUT_FIELDS = new Set<string | number>([
+  'width',
+  'height',
+  'parentId',
+  'zIndex',
+  'layout',
+  'layoutItem',
+  'layoutState'
+]);
 
 interface ContainerAncestry {
   depth: number;
@@ -104,7 +113,12 @@ export function deriveContainerPatches(
     const fields =
       path.length > 3 ? [path[3]] : patch.op === 'set' && patch.merge ? Object.keys(patch.value as object) : null;
     const node = getNode(id);
-    if (!fields || fields.some((field) => GEOMETRY_FIELDS.has(field) || field === 'layout' || field === 'layoutItem')) {
+    if (
+      !fields ||
+      fields.some(
+        (field) => GEOMETRY_FIELDS.has(field) || field === 'layout' || field === 'layoutItem' || field === 'layoutState'
+      )
+    ) {
       collectFootprintRoots(
         id,
         !fields || fields.some((field) => field === 'width' || field === 'height' || field === 'layout')
@@ -158,6 +172,14 @@ export function deriveContainerPatches(
     return children;
   };
 
+  const visibleChildrenOf = (id: string): Readonly<NodeEntity>[] => {
+    const node = getNode(id);
+    const children = childrenOf(id);
+    return node && hidesLayoutChildren(node, getNode, context.layouts)
+      ? children.filter((child) => !child.layoutItem)
+      : children;
+  };
+
   // Group 尺寸可影响其外层布局，布局尺寸也可影响外层 Group；先收集完整依赖，再各处理一次。
   const queue = [...affected];
   for (let i = 0; i < queue.length; i++) {
@@ -181,11 +203,16 @@ export function deriveContainerPatches(
       node.nodeType === GROUP_NODE_TYPE
         ? deriveGroupBoundsPatches(node, childrenOf(id), (child) =>
             child.layout && context.layouts.get(child.layout.type)?.footprint === 'subtree'
-              ? computeSubtreeFootprint(child, childrenOf, computeNodeLocalMatrix(child))
+              ? computeSubtreeFootprint(child, visibleChildrenOf, computeNodeLocalMatrix(child))
               : undefined
           )
         : node.layout
-          ? deriveLayoutPatches(node, { layouts: context.layouts, childrenOf, isHeld: context.isHeld })
+          ? deriveLayoutPatches(node, {
+              layouts: context.layouts,
+              childrenOf,
+              footprintChildrenOf: visibleChildrenOf,
+              isHeld: context.isHeld
+            })
           : [];
     for (const patch of next) {
       const path = normalizePatchPath(patch.path);

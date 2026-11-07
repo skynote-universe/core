@@ -60,7 +60,8 @@ export function buildLayoutTree(
   root: Readonly<NodeEntity>,
   childrenOf: (parentId: string) => readonly Readonly<NodeEntity>[],
   definition: LayoutDefinition | undefined,
-  footprintOf?: (node: Readonly<NodeEntity>) => Readonly<RectBounds> | undefined
+  footprintOf?: (node: Readonly<NodeEntity>) => Readonly<RectBounds> | undefined,
+  options?: { readonly visibleOnly?: boolean }
 ): LayoutTree {
   const members = new Map<string, LayoutMember>();
   const build = (node: Readonly<NodeEntity>, parent: LayoutMember | undefined, depth: number): LayoutMember => {
@@ -72,7 +73,10 @@ export function buildLayoutTree(
       item: node.layoutItem ?? EMPTY_ITEM
     };
     members.set(node.id, member);
-    if (depth === 0 || !node.layout) {
+    if (
+      (depth === 0 || !node.layout) &&
+      !(options?.visibleOnly && definition?.collapsible && node.layoutState?.collapsed)
+    ) {
       for (const child of childrenOf(node.id)) {
         if (child.layoutItem) member.children.push(build(child, member, depth + 1));
       }

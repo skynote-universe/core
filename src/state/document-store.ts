@@ -47,6 +47,7 @@ import { normalizePatchPath } from '../operation/patch-path';
 import { NodeTypeRegistry } from '../registry/node-type-registry';
 import { LayoutRegistry } from '../registry/layout-registry';
 import { clonePlainData } from '../utils/clone';
+import { collectNodeDataPaths } from '../operation/node-change-paths';
 import { generateId } from '../utils/id';
 import { findCommitViolation, findInlineMediaUrl } from './commit-guards';
 import { NODE_CLIPBOARD_KIND, type NodeClipboardPayload } from '../serialization/document-schema';
@@ -212,6 +213,7 @@ export interface NodeArrangementCommandOptions extends CommandOptions {
 export type DocumentApi = Pick<
   DocumentStore,
   | 'getView'
+  | 'readScope'
   | 'fonts'
   | 'getNode'
   | 'getConnector'
@@ -364,6 +366,11 @@ export class DocumentStore {
 
   getView(): CanvasDocumentView {
     return this.document as CanvasDocumentView;
+  }
+
+  /** 运行时读取身份，事务内派生和事务外缓存必须分别校验；不进入文档或历史。 */
+  get readScope(): object | null {
+    return this.coordinator.readScope;
   }
 
   getNode(id: string): Readonly<NodeEntity> | undefined {
@@ -2492,7 +2499,12 @@ export class DocumentStore {
     this.broadcast(record, {
       contentReplaced,
       assets: assetChanges,
-      nodes: { ...nodeChanges, worldGeometry, reparented },
+      nodes: {
+        ...nodeChanges,
+        worldGeometry,
+        reparented,
+        dataPaths: collectNodeDataPaths(record.patches) ?? undefined
+      },
       connectors: connectorChanges,
       orderChanged
     });

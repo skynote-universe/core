@@ -391,3 +391,35 @@ describe('同组改动的净效果', () => {
     expect(doc.x).toBe(5);
   });
 });
+
+it('读取身份覆盖事务派生和历史回放，嵌套调用及异常退出均恢复外层身份', () => {
+  const doc = { count: 0 };
+  const coordinator = new OperationCoordinator(doc);
+  const scopes: object[] = [];
+  coordinator.setPatchDerivations([
+    () => {
+      const outer = coordinator.readScope;
+      expect(outer).not.toBeNull();
+      scopes.push(outer!);
+      coordinator.commitOperation({ patches: [] });
+      expect(coordinator.readScope).toBe(outer);
+      return [];
+    }
+  ]);
+  coordinator.onOperation(() => expect(coordinator.readScope).not.toBeNull());
+  coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 1 }] });
+  expect(coordinator.readScope).toBeNull();
+  coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 2 }] });
+  expect(scopes[0]).not.toBe(scopes[1]);
+  coordinator.undo();
+  coordinator.redo();
+  expect(coordinator.readScope).toBeNull();
+  coordinator.setPatchDerivations([
+    () => {
+      throw new Error('abort');
+    }
+  ]);
+  expect(() => coordinator.commitOperation({ patches: [{ op: 'set', path: 'count', value: 3 }] })).toThrow('abort');
+  expect(doc.count).toBe(2);
+  expect(coordinator.readScope).toBeNull();
+});

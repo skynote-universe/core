@@ -74,6 +74,12 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   } | null = null;
   private writeSuspensions = 0;
   private committing = false;
+  private currentReadScope: object | null = null;
+
+  /** 当前事务调用的读取身份；退出调用时恢复，缓存不能将中间结果当作事务外稳定结果。 */
+  get readScope(): object | null {
+    return this.currentReadScope;
+  }
 
   /** 宿主维护期间冻结文档与历史；不能从事务或批处理中途进入。恢复函数幂等且支持嵌套。 */
   suspendWrites(): () => void {
@@ -162,11 +168,14 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   commitOperation(options: CommitOperationOptions): CanvasOperationRecord | null {
     if (this.writeSuspensions > 0) return null;
     const wasCommitting = this.committing;
+    const previousReadScope = this.currentReadScope;
+    this.currentReadScope = {};
     this.committing = true;
     try {
       return this.executeCommit(options);
     } finally {
       this.committing = wasCommitting;
+      this.currentReadScope = previousReadScope;
     }
   }
 
@@ -174,11 +183,14 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
   commitWithHistory(options: CommitOperationOptions, history: CanvasHistorySnapshot): CanvasOperationRecord | null {
     if (this.writeSuspensions > 0 || this.committing || this.activeBatch || this.isApplyingHistory) return null;
     const copy = clonePlainData(history);
+    const previousReadScope = this.currentReadScope;
+    this.currentReadScope = {};
     this.committing = true;
     try {
       return this.executeCommit({ ...options, undoable: false }, copy);
     } finally {
       this.committing = false;
+      this.currentReadScope = previousReadScope;
     }
   }
 
@@ -342,6 +354,8 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
     const patches = direction === 'undo' ? [...entry.inversePatches].reverse() : entry.patches;
 
     this.isApplyingHistory = true;
+    const previousReadScope = this.currentReadScope;
+    this.currentReadScope = {};
     try {
       const result = applyPatches(this.targetDoc, patches);
       if (!result.success) {
@@ -367,6 +381,7 @@ export class OperationCoordinator<TDoc extends object = Record<string, unknown>>
       return true;
     } finally {
       this.isApplyingHistory = false;
+      this.currentReadScope = previousReadScope;
     }
   }
 

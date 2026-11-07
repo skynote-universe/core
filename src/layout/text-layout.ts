@@ -16,6 +16,7 @@ import type { NodeTextStyle, TextBlock, TextSizingMode } from '../types/text';
 import type { TextPrimitive } from '../protocols/primitives.protocol';
 import type { TextPadding } from '../types/style';
 import type { CanvasPatch } from '../types/operation';
+import { collectNodeDataPaths } from '../operation/node-change-paths';
 import type {
   NodeFitContext,
   NodeTextSlotDefinition,
@@ -214,6 +215,21 @@ export function collectTextLayoutTargets(
       }
     } else if (isTriggerField(id, segments[3])) {
       targets.add(id);
+    }
+  }
+  if (doc && nodeTypes) {
+    const paths = collectNodeDataPaths(patches);
+    for (const id of targets) {
+      const node = doc.content.nodes[id];
+      const changed = paths?.get(id);
+      const definition = node && nodeTypes.get(node.nodeType);
+      if (changed && definition?.affectsTextLayout) {
+        try {
+          if (!definition.affectsTextLayout(node, changed)) targets.delete(id);
+        } catch (error) {
+          console.error(`[SkyNote:TextLayout] 节点 ${id} 的排版失效判断失败，继续完整测量:`, error);
+        }
+      }
     }
   }
   return targets;

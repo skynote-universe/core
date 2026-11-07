@@ -10,6 +10,7 @@
 
 import type {
   CanvasPatch,
+  NodeDataPath,
   CustomNodeFields,
   NodeEntity,
   NodeStyle,
@@ -18,7 +19,7 @@ import type {
   NodeTextStyle
 } from '../types';
 import type { Point, RectBounds } from '../types/geometry';
-import type { CanvasPrimitive } from './primitives.protocol';
+import type { CanvasPrimitive, TextPrimitive } from './primitives.protocol';
 import type { CanvasTheme } from '../types/theme';
 
 /** compose() 的渲染上下文 */
@@ -28,6 +29,12 @@ export interface NodeComposeContext {
    * 也可直接输出 `$名称` 引用调色板，由渲染管线统一解析
    */
   readonly theme: CanvasTheme;
+}
+
+/** 稳定分片按数组顺序叠放；空图元仍保留槽位，局部更新不能改变分片顺序。 */
+export interface NodeCompositionPart {
+  readonly id: string;
+  readonly primitives: readonly CanvasPrimitive[];
 }
 
 /** 节点外框尺寸驱动策略 */
@@ -247,6 +254,22 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 主题切换后会以新主题重新调用，严禁在图元中写死色值。
    */
   compose?: (node: NodeEntity<TData, TStyle>, context: NodeComposeContext) => CanvasPrimitive[];
+  /** 多文字块节点按标识直接提供编辑图元，避免一次输入重新生成全部内容。 */
+  composeTextBlock?: (
+    node: NodeEntity<TData, TStyle>,
+    context: NodeComposeContext,
+    blockId: string
+  ) => TextPrimitive | undefined;
+  /** 可选的分片绘制协议；compose 继续用于导出及不支持分片的消费者。 */
+  composeParts?: (node: NodeEntity<TData, TStyle>, context: NodeComposeContext) => readonly NodeCompositionPart[];
+  /** 返回本次受影响的既有分片；null 表示结构变化，需要重新 composeParts。 */
+  composeChangedParts?: (
+    node: NodeEntity<TData, TStyle>,
+    context: NodeComposeContext,
+    paths: readonly NodeDataPath[]
+  ) => readonly NodeCompositionPart[] | null;
+  /** 节点自行声明本次字段变化是否影响文字驱动尺寸；缺省继续完整测量。 */
+  affectsTextLayout?: (node: Readonly<NodeEntity<TData, TStyle>>, paths: readonly NodeDataPath[]) => boolean;
 
   /**
    * 新建节点默认锁定比例 (如便签、图片、固定比例的容器)；用户可随时解锁，节点上的 aspectLocked 优先

@@ -8,7 +8,15 @@
  * 3. 严格类型约束：通过泛型严密绑定节点的私有 data 与 style，杜绝运行时属性未定义访问。
  */
 
-import type { CustomNodeFields, NodeEntity, NodeStyle, TextBlock, TextSizingMode, NodeTextStyle } from '../types';
+import type {
+  CanvasPatch,
+  CustomNodeFields,
+  NodeEntity,
+  NodeStyle,
+  TextBlock,
+  TextSizingMode,
+  NodeTextStyle
+} from '../types';
 import type { Point, RectBounds } from '../types/geometry';
 import type { CanvasPrimitive } from './primitives.protocol';
 import type { CanvasTheme } from '../types/theme';
@@ -206,6 +214,8 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 排版时插槽的 sizing 与 defaultStyle 作为该插槽文本块的默认值。
    */
   readonly slots?: NodeTextSlotDefinition[];
+  /** 多文字块节点可在 Tab 时结束当前编辑，将后续导航交给节点的输入作用域。 */
+  readonly tabNavigatesTextBlocks?: boolean;
 
   /**
    * 动态几何尺寸与多插槽排版求解器 (选填)
@@ -217,7 +227,18 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
   computeBounds?: (
     node: NodeEntity<TData, TStyle>,
     textMetrics: Map<string, TextBlockMetrics>
-  ) => { width: number; height: number };
+  ) => { width: number; height: number; patches?: readonly CanvasPatch[] };
+
+  /**
+   * 为指定文本块计算折行测量宽度 (不含 padding)；缺省按节点宽度与文本块 explicitWidth 决定。
+   * 多列网格节点 (如表格) 可按文本块所属列/合并格返回单元格可用内宽。
+   */
+  measureBlockWidth?: (node: Readonly<NodeEntity<TData, TStyle>>, block: Readonly<TextBlock>) => number | undefined;
+
+  /**
+   * 除默认触发字段 (textBlocks/textStyle/width/height/nodeType) 外，修改这些节点顶层扩展字段时也触发重新排版。
+   */
+  readonly layoutTriggerFields?: readonly string[];
 
   /**
    * 【模式 A：声明式跨引擎中间图元】(选填：极力推荐)
@@ -236,6 +257,11 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    * 文字删空后退出编辑即删除节点 (如自由文本：没有文字的文本节点既看不见也无法再选中)
    */
   readonly removeWhenEmpty?: boolean;
+  /**
+   * 选中时四边是否显示快捷添加/快速连线「+」按钮 (缺省为 true)
+   * 表格、音视频等结构化图元可显式设为 false
+   */
+  readonly quickConnect?: boolean;
   /**
    * 连线吸附点 (局部坐标，会投影到轮廓上)，缺省为轮廓包围盒四边中点的投影 (矩形四边中点、椭圆与菱形四个端点)。
    * 包围盒中点落不到合适位置的形状在此声明，如星形的五个尖角、三角形的顶点与各边中点；返回 undefined 时用缺省

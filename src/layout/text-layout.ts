@@ -136,7 +136,7 @@ export function computeTextLayout(
   node: Readonly<NodeEntity>,
   definition: NodeTypeDefinition | undefined,
   fonts: FontMeasurer
-): { width: number; height: number } | null {
+): { width: number; height: number; patches?: readonly CanvasPatch[] } | null {
   const policy = definition?.sizingPolicy ?? 'fixed';
   if (policy === 'fixed' && !definition?.computeBounds) return null;
 
@@ -152,10 +152,13 @@ export function computeTextLayout(
     const style = resolveTextBlockStyle(node, block, definition);
     const sizing = block.sizing ?? slot?.sizing ?? defaultSizing;
     const padding = resolveTextPadding(style.padding);
+    const customMaxWidth = definition?.measureBlockWidth?.(node as NodeEntity, block);
     const maxWidth =
-      sizing === 'auto-width'
-        ? slot?.maxWidth
-        : Math.max(0, (block.explicitWidth ?? node.width) - padding.left - padding.right);
+      customMaxWidth !== undefined
+        ? customMaxWidth
+        : sizing === 'auto-width'
+          ? slot?.maxWidth
+          : Math.max(0, (block.explicitWidth ?? node.width) - padding.left - padding.right);
 
     const measured = measureTextBlock(block, style, maxWidth, fonts);
     metrics.set(block.slot ?? block.id, measured);
@@ -185,8 +188,19 @@ export function computeTextLayout(
  * 从一次提交的补丁中找出需要重新排版的节点
  * 整体替换 content / nodes (导入、全量同步) 不在此列：持久化文档中的尺寸即排版结果
  */
-export function collectTextLayoutTargets(patches: readonly CanvasPatch[]): Set<string> {
+export function collectTextLayoutTargets(
+  patches: readonly CanvasPatch[],
+  doc?: Readonly<CanvasDocument>,
+  nodeTypes?: NodeTypeRegistry
+): Set<string> {
   const targets = new Set<string>();
+  const isTriggerField = (id: string, field: string | number): boolean => {
+    if (LAYOUT_TRIGGER_FIELDS.has(field)) return true;
+    const node = doc?.content.nodes[id];
+    const extra = node && nodeTypes?.get(node.nodeType)?.layoutTriggerFields;
+    return Boolean(extra?.includes(String(field)));
+  };
+
   for (let i = 0; i < patches.length; i++) {
     const patch = patches[i];
     const segments = normalizePatchPath(patch.path);
@@ -195,10 +209,10 @@ export function collectTextLayoutTargets(patches: readonly CanvasPatch[]): Set<s
 
     if (segments.length === 3) {
       if (patch.op !== 'set') continue;
-      if (!patch.merge || Object.keys(patch.value as object).some((key) => LAYOUT_TRIGGER_FIELDS.has(key))) {
+      if (!patch.merge || Object.keys(patch.value as object).some((key) => isTriggerField(id, key))) {
         targets.add(id);
       }
-    } else if (LAYOUT_TRIGGER_FIELDS.has(segments[3])) {
+    } else if (isTriggerField(id, segments[3])) {
       targets.add(id);
     }
   }
@@ -220,17 +234,20 @@ export function deriveTextLayoutPatches(
     if (!Object.hasOwn(doc.content.nodes, id)) continue;
     const node = doc.content.nodes[id];
 
-    let size: { width: number; height: number } | null;
+    let size: { width: number; height: number; patches?: readonly CanvasPatch[] } | null;
     try {
-      size = computeTextLayout(node, nodeTypes.get(node.nodeType), fonts);
+      size = computeTextLayout(node, nodeTypes.getValid(node), fonts);
     } catch (err) {
       console.error(`[SkyNote:TextLayout] 节点 ${id} (${node.nodeType}) 排版失败，保持原尺寸:`, err);
       continue;
     }
     if (!size) continue;
     // 测量保留浮点精度，持久化外框按整像素向上取整，避免裁切文字及缩放时反复抖动。
-    size = { width: Math.ceil(size.width), height: Math.ceil(size.height) };
+    size = { width: Math.ceil(size.width), height: Math.ceil(size.height), patches: size.patches };
 
+    if (size.patches?.length) {
+      patches.push(...size.patches);
+    }
     if (Math.abs(size.width - node.width) > SIZE_EPSILON) {
       patches.push({ op: 'set', path: ['content', 'nodes', id, 'width'], value: size.width });
     }

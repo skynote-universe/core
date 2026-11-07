@@ -128,6 +128,8 @@ export function resolveThemeColor(
     if (key === 'accent') return theme.accent;
     if (key === 'background') return theme.background;
     if (key === 'foreground') return theme.foreground;
+    if (key === 'nodeFill') return theme.nodeFill;
+    if (key === 'nodeStroke') return theme.nodeStroke;
     return theme.palette[key] ?? fallback;
   }
   return value;

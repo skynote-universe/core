@@ -486,7 +486,12 @@ export class DocumentStore {
       ...(measurer
         ? [
             (doc: CanvasDocument, patches: readonly CanvasPatch[]) =>
-              deriveTextLayoutPatches(doc, collectTextLayoutTargets(patches), measurer, this.nodeTypes)
+              deriveTextLayoutPatches(
+                doc,
+                collectTextLayoutTargets(patches, doc, this.nodeTypes),
+                measurer,
+                this.nodeTypes
+              )
           ]
         : []),
       (doc, patches) => deriveContainerPatches(doc, patches, layoutContext)

@@ -109,6 +109,7 @@ export interface SessionController {
   readonly theme: CanvasTheme;
   readonly selectedNodeIds: ReadonlySet<string>;
   readonly selectedSubtreeNodeIds: ReadonlySet<string>;
+  readonly selectedTextBlocks?: { readonly nodeId: string; readonly blockIds: ReadonlySet<string> } | null;
   readonly selectedConnectorIds: ReadonlySet<string>;
   readonly textEditing: TextEditingTarget | null;
   /** 当前工具 (缺省 SELECT_TOOL) */
@@ -123,13 +124,14 @@ export interface SessionController {
   /** 缩放并平移使 bounds 居中容纳；null (空画布) 回到原点 */
   fitBounds(bounds: RectBounds | null, options?: FitOptions): void;
   setSelection(selection: SelectionUpdate): void;
+  setSelectedTextBlocks?(selection: { nodeId: string; blockIds: Iterable<string> } | null): void;
   setTextEditing(target: TextEditingTarget | null): void;
   /**
    * 请求进入某节点的文字编辑 (如新建主题、插入便签后立即输入)
    * 单向的意图通知：由文字编辑插件决定是否响应，未安装时无效果
    */
-  requestTextEditing(nodeId: string): void;
-  onTextEditRequest(listener: (nodeId: string) => void): () => void;
+  requestTextEditing(nodeId: string, blockId?: string): void;
+  onTextEditRequest(listener: (nodeId: string, blockId?: string) => void): () => void;
   setTool(tool: string): void;
   /**
    * 切换只读浏览模式
@@ -237,13 +239,14 @@ export class SessionStore implements SessionController {
   private themeState: CanvasTheme;
   private nodeSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private subtreeSelection: ReadonlySet<string> = EMPTY_ID_SET;
+  private textBlockSelection: SessionController['selectedTextBlocks'] = null;
   private connectorSelection: ReadonlySet<string> = EMPTY_ID_SET;
   private editingTarget: TextEditingTarget | null = null;
   private currentTool = SELECT_TOOL;
   private maintenanceState = false;
   private readOnlyState = false;
   private readonly listeners = new Set<SessionListener>();
-  private readonly textEditRequestListeners = new Set<(nodeId: string) => void>();
+  private readonly textEditRequestListeners = new Set<(nodeId: string, blockId?: string) => void>();
 
   constructor(options?: SessionStoreOptions) {
     const range = options?.zoomRange ?? DEFAULT_ZOOM_RANGE;
@@ -279,6 +282,31 @@ export class SessionStore implements SessionController {
 
   get selectedSubtreeNodeIds(): ReadonlySet<string> {
     return this.subtreeSelection;
+  }
+
+  get selectedTextBlocks(): SessionController['selectedTextBlocks'] {
+    return this.textBlockSelection;
+  }
+
+  setSelectedTextBlocks(selection: { nodeId: string; blockIds: Iterable<string> } | null): void {
+    const next = selection ? { nodeId: selection.nodeId, blockIds: new Set(selection.blockIds) } : null;
+    if (
+      this.textBlockSelection?.nodeId === next?.nodeId &&
+      !diffIdSets(this.textBlockSelection?.blockIds ?? EMPTY_ID_SET, next?.blockIds ?? EMPTY_ID_SET)
+    )
+      return;
+    this.textBlockSelection = next;
+    this.notify({
+      selectionScopeChanged: true,
+      viewportChanged: false,
+      themeChanged: false,
+      textEditingChanged: false,
+      toolChanged: false,
+      maintenanceChanged: false,
+      readOnlyChanged: false,
+      toggledNodeIds: EMPTY_ID_SET,
+      toggledConnectorIds: EMPTY_ID_SET
+    });
   }
 
   get selectedConnectorIds(): ReadonlySet<string> {
@@ -327,12 +355,12 @@ export class SessionStore implements SessionController {
     this.notify(MAINTENANCE_CHANGE);
   }
 
-  requestTextEditing(nodeId: string): void {
+  requestTextEditing(nodeId: string, blockId?: string): void {
     if (this.readOnlyState) return;
-    for (const listener of this.textEditRequestListeners) listener(nodeId);
+    for (const listener of this.textEditRequestListeners) listener(nodeId, blockId);
   }
 
-  onTextEditRequest(listener: (nodeId: string) => void): () => void {
+  onTextEditRequest(listener: (nodeId: string, blockId?: string) => void): () => void {
     this.textEditRequestListeners.add(listener);
     return () => {
       this.textEditRequestListeners.delete(listener);

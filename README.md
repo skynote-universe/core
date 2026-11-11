@@ -4,7 +4,9 @@
 
 SkyNote 无限画布白板引擎的平台中立内核。不依赖 DOM 与任何渲染库，可运行在浏览器、Worker 与 Node 中。
 
-大多数应用直接使用 [@skynote/editor](https://github.com/skynote-universe/editor) 即可；自研编辑器外壳、编写插件或在服务端处理文档时才需要直接依赖内核。
+大多数应用直接使用 [@skynote/editor](https://docs.skynote.top/api/editor) 即可；自研编辑器外壳、编写插件或在服务端处理文档时才需要直接依赖内核。
+
+[快速开始](https://docs.skynote.top/guide/getting-started) · [API 参考](https://docs.skynote.top/api/core) · [演练场](https://playground.skynote.top/)
 
 ## 特性
 
@@ -20,11 +22,19 @@ SkyNote 无限画布白板引擎的平台中立内核。不依赖 DOM 与任何�
 
 ## 安装
 
+首个公开版本为 `0.1.0-beta.1`。通过 npm 的 `beta` 标签安装。
+
 ```bash
-npm i @skynote/core
+npm install @skynote/core@beta
 ```
 
 ## 快速上手
+
+要运行以下示例，请同时安装基础插件，用于注册形状节点。
+
+```bash
+npm install @skynote/core@beta @skynote/plugins-basic@beta
+```
 
 ```ts
 import { SkyNoteEngine, parseCanvasDocument } from '@skynote/core';
@@ -40,7 +50,8 @@ const id = store.createNode({ nodeType: 'shape', x: 0, y: 0, options: { geometry
 store.updateNodes([id], { style: { fill: '$blue' } }, { label: '改色', merge: true });
 store.undo();
 
-// 外部数据 (文件、剪贴板、网络) 一律先校验再使用
+const text = JSON.stringify(store.getView());
+// 读回 JSON 时，先校验文档结构再使用
 const parsed = parseCanvasDocument(JSON.parse(text));
 if (!parsed.ok) console.error(parsed.error);
 ```
@@ -117,10 +128,10 @@ export const badgePlugin: SkyNotePlugin = {
 | 包 | 说明 |
 | --- | --- |
 | **@skynote/core** | 平台中立内核 (本包) |
-| [@skynote/renderer-leafer](https://github.com/skynote-universe/renderer-leafer) | 基于 LeaferJS 的渲染器 |
-| [@skynote/plugins-basic](https://github.com/skynote-universe/plugins-basic) | 基础节点与交互插件 |
-| [@skynote/editor](https://github.com/skynote-universe/editor) | 开箱即用的编辑器 |
-| [web](https://github.com/skynote-universe/web) | 官方示例应用 (Vue 3) |
+| [@skynote/renderer-leafer](https://docs.skynote.top/api/renderer-leafer) | 基于 LeaferJS 的渲染器 |
+| [@skynote/plugins-basic](https://docs.skynote.top/api/plugins-basic) | 基础节点与交互插件 |
+| [@skynote/editor](https://docs.skynote.top/api/editor) | 开箱即用的编辑器 |
+| [SkyNote Web](https://canvas.skynote.top/) | 官方示例应用 (Vue 3) |
 
 ## 许可证
 

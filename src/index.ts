@@ -33,4 +33,5 @@ export type { LayoutVisibilityReader } from './layout/layout-visibility';
 export * from './layout/connector-label';
 export * from './layout/connector-layer';
 export * from './layout/group-bounds-derivation';
+export * from './layout/container-drop';
 export * from './engine';

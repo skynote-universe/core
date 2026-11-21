@@ -281,8 +281,8 @@ export interface NodeTypeDefinition<TData = Record<string, unknown>, TStyle exte
    */
   readonly removeWhenEmpty?: boolean;
   /**
-   * 选中时四边是否显示快捷添加/快速连线「+」按钮 (缺省为 true)
-   * 表格、音视频等结构化图元可显式设为 false
+   * 选中时四边是否默认启用快捷添加/快速连线「+」按钮 (缺省为 false，采用白名单机制)
+   * 仅显式声明 `quickConnect: true` 的节点类型（或由开发者在 `ConnectorToolPlugin` 白名单中指定）会显示「+」
    */
   readonly quickConnect?: boolean;
   /**

@@ -9,6 +9,20 @@ afterEach(() => {
 });
 const uploaded: AssetUploadResult = { src: 'memory:image', mimeType: 'image/png', width: 100, height: 80 };
 
+function insertTestAsset(engine: SkyNoteEngine, file: unknown, point: { x: number; y: number }, signal?: AbortSignal) {
+  return engine.createNodeWithAssetTask({
+    label: '插入测试媒体',
+    signal,
+    prepare: async (upload) => {
+      const meta = await upload({ file, mimePrefix: 'image/' });
+      return {
+        request: { nodeType: 'media', x: point.x, y: point.y, origin: 'center' },
+        assets: [meta]
+      };
+    }
+  });
+}
+
 function setup() {
   let complete!: (result: AssetUploadResult) => void;
   const upload = vi.fn(
@@ -19,8 +33,8 @@ function setup() {
   );
   const engine = new SkyNoteEngine({ assets: { upload, resolve: (src) => src } });
   engine.nodeTypes.register({
-    type: 'image',
-    label: '测试图片',
+    type: 'media',
+    label: '测试媒体',
     defaultData: {},
     createContent: () => ({ width: 100, height: 80 })
   });
@@ -33,7 +47,7 @@ function setup() {
 describe('平台中立资产任务', () => {
   it('维护取消任务后仍等待忽略取消的真实执行，冻结提交并拒绝新上传', async () => {
     const { engine, upload, complete } = setup();
-    const task = engine.insertImage('file', { x: 0, y: 0 });
+    const task = insertTestAsset(engine, 'file', { x: 0, y: 0 });
     const maintenance = engine.beginMaintenance();
     let drained = false;
     void maintenance.drained.then(() => {
@@ -42,7 +56,10 @@ describe('平台中立资产任务', () => {
     expect(await task).toEqual({ status: 'cancelled', reason: 'maintenance' });
     expect(drained).toBe(false);
     expect(engine.documentStore.commit({ patches: [{ op: 'set', path: 'name', value: 'changed' }] })).toBeNull();
-    expect(await engine.insertImage('next', { x: 0, y: 0 })).toEqual({ status: 'cancelled', reason: 'maintenance' });
+    expect(await insertTestAsset(engine, 'next', { x: 0, y: 0 })).toEqual({
+      status: 'cancelled',
+      reason: 'maintenance'
+    });
     expect(upload).toHaveBeenCalledOnce();
     complete();
     await maintenance.drained;
@@ -56,7 +73,7 @@ describe('平台中立资产任务', () => {
   it('维护排空包含此前已经向调用方返回取消的上传', async () => {
     const { engine, complete } = setup();
     const controller = new AbortController();
-    const task = engine.insertImage('file', { x: 0, y: 0 }, 'cover', controller.signal);
+    const task = insertTestAsset(engine, 'file', { x: 0, y: 0 }, controller.signal);
     controller.abort();
     await task;
     const maintenance = engine.beginMaintenance();
@@ -78,7 +95,10 @@ describe('平台中立资产任务', () => {
     const second = engine.beginMaintenance();
     await Promise.all([first.drained, second.drained]);
     first.resume();
-    expect(await engine.insertImage('file', { x: 0, y: 0 })).toEqual({ status: 'cancelled', reason: 'maintenance' });
+    expect(await insertTestAsset(engine, 'file', { x: 0, y: 0 })).toEqual({
+      status: 'cancelled',
+      reason: 'maintenance'
+    });
     second.resume();
     expect(engine.documentStore.commit({ patches: [{ op: 'set', path: 'name', value: 'ok' }] })).not.toBeNull();
     engine.destroy();
@@ -97,14 +117,14 @@ describe('平台中立资产任务', () => {
     );
     const engine = new SkyNoteEngine({ assets: { upload, resolve: (src) => src, protect } });
     engine.nodeTypes.register({
-      type: 'image',
-      label: '图片',
+      type: 'media',
+      label: '测试媒体',
       defaultData: {},
       createContent: () => ({ width: 2, height: 1 })
     });
     engines.push(engine);
     const controller = new AbortController();
-    const task = engine.insertImage('file', { x: 0, y: 0 }, 'cover', controller.signal);
+    const task = insertTestAsset(engine, 'file', { x: 0, y: 0 }, controller.signal);
     await vi.waitFor(() => expect(upload).toHaveBeenCalledOnce());
     controller.abort();
     expect((await task).status).toBe('cancelled');
@@ -112,7 +132,7 @@ describe('平台中立资产任务', () => {
     complete(uploaded);
     await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
     expect(Object.keys(engine.documentStore.getView().content.nodes)).toHaveLength(0);
-    expect(protect).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'insert-image' }));
+    expect(protect).toHaveBeenCalledWith(expect.objectContaining({ purpose: 'create-node' }));
   });
 
   it('保护准备失败不上传，释放异常不能把已提交插入误报为失败', async () => {
@@ -127,13 +147,13 @@ describe('平台中立资产任务', () => {
       }
     });
     engine.nodeTypes.register({
-      type: 'image',
-      label: '图片',
+      type: 'media',
+      label: '测试媒体',
       defaultData: {},
       createContent: () => ({ width: 2, height: 1 })
     });
     engines.push(engine);
-    expect((await engine.insertImage('file', { x: 0, y: 0 })).status).toBe('failed');
+    expect((await insertTestAsset(engine, 'file', { x: 0, y: 0 })).status).toBe('failed');
     expect(upload).not.toHaveBeenCalled();
     const good = new SkyNoteEngine({
       assets: {
@@ -148,14 +168,14 @@ describe('平台中立资产任务', () => {
       }
     });
     good.nodeTypes.register({
-      type: 'image',
-      label: '图片',
+      type: 'media',
+      label: '测试媒体',
       defaultData: {},
       createContent: () => ({ width: 2, height: 1 })
     });
     engines.push(good);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect((await good.insertImage('file', { x: 0, y: 0 })).status).toBe('succeeded');
+    expect((await insertTestAsset(good, 'file', { x: 0, y: 0 })).status).toBe('succeeded');
     expect(Object.keys(good.documentStore.getView().content.nodes)).toHaveLength(1);
   });
 
@@ -166,7 +186,7 @@ describe('平台中立资产任务', () => {
       const store = engine.documentStore;
       if (action !== 'import') store.replaceContent({ nodes: {}, connectors: {} });
       if (action === 'redo') store.undo();
-      const pending = engine.insertImage('file', { x: 100, y: 100 });
+      const pending = insertTestAsset(engine, 'file', { x: 100, y: 100 });
       if (action === 'import') store.replaceContent({ nodes: {}, connectors: {} });
       else if (action === 'undo') store.undo();
       else store.redo();
@@ -180,9 +200,9 @@ describe('平台中立资产任务', () => {
 
   it('普通编辑不使任务失效；成功任务只登记一次事务', async () => {
     const { engine, complete } = setup();
-    engine.documentStore.createNode({ nodeType: 'image', id: 'existing', x: 0, y: 0 });
+    engine.documentStore.createNode({ nodeType: 'media', id: 'existing', x: 0, y: 0 });
     const epoch = engine.documentEpoch;
-    const pending = engine.insertImage('file', { x: 100, y: 100 });
+    const pending = insertTestAsset(engine, 'file', { x: 100, y: 100 });
     engine.documentStore.updateNode('existing', { x: 30 });
     complete();
     expect((await pending).status).toBe('succeeded');
@@ -194,7 +214,7 @@ describe('平台中立资产任务', () => {
   it('预取消不调用宿主；缺少适配器为明确失败，订阅异常不改变结果', async () => {
     const { engine, upload } = setup();
     const signal = AbortSignal.abort();
-    expect(await engine.insertImage('file', { x: 0, y: 0 }, 'cover', signal)).toEqual({
+    expect(await insertTestAsset(engine, 'file', { x: 0, y: 0 }, signal)).toEqual({
       status: 'cancelled',
       reason: 'caller-aborted'
     });
@@ -205,7 +225,7 @@ describe('平台中立资产任务', () => {
     bare.onAssetTaskEvent(() => {
       throw new Error('订阅异常');
     });
-    expect(await bare.insertImage('file', { x: 0, y: 0 })).toMatchObject({
+    expect(await insertTestAsset(bare, 'file', { x: 0, y: 0 })).toMatchObject({
       status: 'failed',
       failure: { code: 'unsupported-source' }
     });

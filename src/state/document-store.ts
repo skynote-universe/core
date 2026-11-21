@@ -618,38 +618,59 @@ export class DocumentStore {
 
   /** 在同一个原子事务中登记资产元数据并创建引用它的节点 */
   createNodeWithAsset<T extends string>(request: CreateNodeRequest<T>, asset: CanvasAssetMeta): string | null {
+    return this.createNodeWithAssets(request, [asset]);
+  }
+
+  createNodeWithAssets<T extends string>(
+    request: CreateNodeRequest<T>,
+    assets: readonly CanvasAssetMeta[]
+  ): string | null {
     const node = this.createNodeEntity(request);
-    if (Object.hasOwn(this.document.assets!, asset.id) || Object.hasOwn(this.document.content.nodes, node.id))
-      return null;
+    if (Object.hasOwn(this.document.content.nodes, node.id)) return null;
+    const patches: CanvasPatch[] = [];
+    const ids = new Set<string>();
+    for (const asset of assets) {
+      if (ids.has(asset.id) || Object.hasOwn(this.document.assets ?? {}, asset.id)) return null;
+      ids.add(asset.id);
+      patches.push({ op: 'set', path: ['assets', asset.id], value: asset });
+    }
+    patches.push({ op: 'set', path: ['content', 'nodes', node.id], value: node });
     const record = this.commit({
-      label: request.label ?? '插入图片',
-      patches: [
-        { op: 'set', path: ['assets', asset.id], value: asset },
-        { op: 'set', path: ['content', 'nodes', node.id], value: node }
-      ]
+      label: request.label ?? '插入媒体',
+      patches
     });
     return record ? node.id : null;
   }
 
-  /** 将新资产登记并替换所选图片节点的引用；同一补丁保证撤销时图片与资产元数据同步恢复 */
-  replaceImagesWithAsset(nodeIds: Iterable<string>, asset: CanvasAssetMeta): CanvasOperationRecord | null {
-    if (Object.hasOwn(this.document.assets ?? {}, asset.id)) return null;
-    const patches: CanvasPatch[] = [{ op: 'set', path: ['assets', asset.id], value: asset }];
-    let replacedCount = 0;
+  /** 在同一个原子事务中登记资产元数据并更新目标节点；同一批次保证撤销时资产与节点同步恢复 */
+  updateNodesWithAssets(
+    nodeIds: Iterable<string>,
+    assets: readonly CanvasAssetMeta[],
+    updater: (node: Readonly<NodeEntity>) => Partial<NodeEntity>,
+    options?: { readonly label?: string }
+  ): CanvasOperationRecord | null {
+    const patches: CanvasPatch[] = [];
+    const assetIds = new Set<string>();
+    for (const asset of assets) {
+      if (assetIds.has(asset.id) || Object.hasOwn(this.document.assets ?? {}, asset.id)) return null;
+      assetIds.add(asset.id);
+      patches.push({ op: 'set', path: ['assets', asset.id], value: asset });
+    }
+    let updatedCount = 0;
     for (const id of new Set(nodeIds)) {
       const node = this.document.content.nodes[id];
-      const image = (node as (NodeEntity & { image?: { assetId?: unknown; [key: string]: unknown } }) | undefined)
-        ?.image;
-      if (!image || typeof image.assetId !== 'string') continue;
-      patches.push({
-        op: 'set',
-        path: ['content', 'nodes', id, 'image'],
-        value: { ...image, assetId: asset.id }
-      });
-      replacedCount++;
+      if (!node || node.locked) continue;
+      const delta = updater(node);
+      let hasField = false;
+      for (const [key, value] of Object.entries(delta)) {
+        if (value === undefined) continue;
+        patches.push({ op: 'set', path: ['content', 'nodes', id, key], value });
+        hasField = true;
+      }
+      if (hasField) updatedCount++;
     }
-    if (replacedCount === 0) return null;
-    return this.commit({ label: '替换图片', patches });
+    if (updatedCount === 0) return null;
+    return this.commit({ label: options?.label ?? '更新媒体资产', patches });
   }
 
   private createNodeEntity<T extends string>(request: CreateNodeRequest<T>): NodeEntity {

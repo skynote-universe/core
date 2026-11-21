@@ -17,6 +17,7 @@ export * from './serialization';
 export * from './registry';
 export * from './spatial';
 export * from './input';
+export * from './events/event-hub';
 export * from './plugin';
 export * from './routing/connector-route';
 export * from './routing/outline';

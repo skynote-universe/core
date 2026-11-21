@@ -133,14 +133,28 @@ class PluginContext implements CanvasPluginContext {
     this.session = engine.session;
     const assetController = new AbortController();
     this.cleanups.push(() => assetController.abort('owner-disposed'));
-    this.insertImage = (file, point) => engine.insertImage(file, point, 'cover', assetController.signal);
+    const combineSignal = (signal?: AbortSignal): AbortSignal =>
+      signal ? AbortSignal.any([assetController.signal, signal]) : assetController.signal;
+    this.createNodeWithAssetTask = (options) =>
+      engine.createNodeWithAssetTask({ ...options, signal: combineSignal(options.signal) });
+    this.updateNodesWithAssetTask = (options) =>
+      engine.updateNodesWithAssetTask({ ...options, signal: combineSignal(options.signal) });
     this.pasteNodesWithAssets = (payload, offset) =>
       engine.pasteNodesWithAssets(payload, offset, assetController.signal);
     this.host = new PluginHost(engine);
     this.cleanups.push(() => this.host.dispose());
+    this.events = {
+      on: (event, listener) => this.track(engine.events.on(event, listener)),
+      emit: (event, payload) => engine.events.emit(event, payload),
+      define: (event, meta) => this.track(engine.events.define(event, meta)),
+      list: () => engine.events.list()
+    };
   }
 
-  readonly insertImage: CanvasPluginContext['insertImage'];
+  readonly events: CanvasPluginContext['events'];
+
+  readonly createNodeWithAssetTask: CanvasPluginContext['createNodeWithAssetTask'];
+  readonly updateNodesWithAssetTask: CanvasPluginContext['updateNodesWithAssetTask'];
   readonly pasteNodesWithAssets: CanvasPluginContext['pasteNodesWithAssets'];
   get assetReferenceScope(): string | undefined {
     return this.engine.assets?.referenceScope;

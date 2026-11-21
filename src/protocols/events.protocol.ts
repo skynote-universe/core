@@ -36,6 +36,8 @@ export interface CanvasPointerSample {
  * 归一化虚拟指针事件 (CanvasPointerEvent)
  */
 export interface CanvasPointerEvent {
+  /** 宿主预览的输入区已经提供了命中的节点。 */
+  readonly overlayTarget?: boolean;
   /** 纯逻辑世界坐标 (已自动剥离平移与缩放矩阵，真实画布物理位置) */
   readonly point: Point;
 

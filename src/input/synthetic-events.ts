@@ -42,6 +42,8 @@ export interface SyntheticPointerEventInit {
   clickCount?: number;
   /** 已知的命中节点；与 resolveTarget 二选一 */
   target?: Readonly<NodeEntity>;
+  /** 命中悬浮内容的宿主输入区时，该节点优先于画布内的遮挡对象。 */
+  readonly overlayTarget?: boolean;
   /** 延迟拾取：首次读取 target 时调用 */
   resolveTarget?: () => Readonly<NodeEntity> | undefined;
   /** 转发到宿主原生事件的 stopPropagation */
@@ -58,6 +60,7 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
   readonly pressure: number;
   readonly samples: readonly CanvasPointerSample[];
   readonly clickCount: number;
+  readonly overlayTarget?: boolean;
   private readonly state: PointerEventState;
   private readonly resolveTarget: (() => NodeEntity | undefined) | undefined;
   private readonly onStopPropagation: (() => void) | undefined;
@@ -80,6 +83,7 @@ export class SyntheticPointerEvent implements CanvasPointerEvent {
         ? init.samples
         : [{ point: this.point, clientPoint: this.clientPoint, pressure: this.pressure }];
     this.clickCount = init.clickCount ?? 1;
+    this.overlayTarget = init.overlayTarget;
     this.resolveTarget = init.resolveTarget;
     this.onStopPropagation = init.onStopPropagation;
     this.state = { claimedBy: null, target: init.target, targetResolved: init.resolveTarget === undefined };

@@ -23,11 +23,14 @@ import {
   AssetAdapterError,
   type AssetAdapter,
   type AssetUploadResult,
+  type AssetUploadSpec,
   type AssetTaskResult,
   type AssetTaskEvent,
   type AssetTaskInfo,
   type AssetTaskCancelReason,
-  type AssetFailure
+  type AssetFailure,
+  type CreateNodeAssetTaskOptions,
+  type UpdateNodesAssetTaskOptions
 } from './protocols/asset.protocol';
 import type { NodeClipboardPayload } from './serialization/document-schema';
 import type { EntityIds } from './types/canvas';
@@ -78,6 +81,7 @@ import { InputScopeManager } from './input/input-scope-manager';
 import { PointerDispatcher } from './input/pointer-dispatcher';
 import { ClipboardDispatcher } from './input/clipboard-dispatcher';
 import { PluginManager } from './plugin/plugin-manager';
+import { CanvasEventHub } from './events/event-hub';
 import { generateId } from './utils/id';
 
 export interface SkyNoteEngineOptions {
@@ -125,6 +129,7 @@ interface PendingAssetTask extends AssetTaskInfo {
   readonly controller: AbortController;
   reason?: AssetTaskCancelReason;
   targets?: ReadonlyMap<string, string>;
+  getTargetSignature?: (node: Readonly<NodeEntity>) => string | undefined;
   committing?: boolean;
 }
 
@@ -145,13 +150,14 @@ export class SkyNoteEngine {
   readonly inputScopes = new InputScopeManager();
   readonly pointer = new PointerDispatcher();
   readonly clipboard = new ClipboardDispatcher();
+  /** 低频跨域事后通知中心：统一承载内核、渲染器、插件与宿主间的单向通知 */
+  readonly events = new CanvasEventHub();
   readonly assets: AssetAdapter | undefined;
   readonly plugins: PluginManager;
 
   private readonly nodeSpatialIndex: SceneSpatialIndex;
   private currentHost: CanvasHost = DETACHED_CANVAS_HOST;
   private hostAttachment: symbol | undefined;
-  private readonly hostListeners = new Set<(available: boolean) => void>();
   private readonly unsubscribeDocument: () => void;
   private readonly unsubscribeNodeTypes: () => void;
   private readonly unsubscribeRouters: () => void;
@@ -186,8 +192,7 @@ export class SkyNoteEngine {
       }
     };
   }
-  private readonly imageReplacementTasks = new Map<string, PendingAssetTask>();
-  private readonly assetTaskListeners = new Set<(event: AssetTaskEvent) => void>();
+  private readonly replacementTasks = new Map<string, PendingAssetTask>();
   private contentEpoch = 0;
 
   get documentEpoch(): number {
@@ -195,8 +200,7 @@ export class SkyNoteEngine {
   }
 
   onAssetTaskEvent(listener: (event: AssetTaskEvent) => void): () => void {
-    this.assetTaskListeners.add(listener);
-    return () => this.assetTaskListeners.delete(listener);
+    return this.events.on('asset:task', listener);
   }
 
   reportAssetFailure(operation: 'copy-nodes' | 'paste-nodes', failure: AssetFailure): void {
@@ -204,19 +208,19 @@ export class SkyNoteEngine {
   }
 
   private emitAssetTaskEvent(event: AssetTaskEvent): void {
-    for (const listener of this.assetTaskListeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        console.error('[SkyNote] 资产结果订阅失败:', error);
-      }
-    }
+    this.events.emit('asset:task', event);
   }
 
   private visibilityRevision = 0;
   private hadCollapsed = false;
 
   constructor(options?: SkyNoteEngineOptions) {
+    this.events.define('host:change', { description: '宿主渲染能力挂载或卸载', source: '@skynote/core' });
+    this.events.define('asset:task', { description: '异步资产任务开始、结束或前置拒绝', source: '@skynote/core' });
+    this.events.define('node:activate', {
+      description: '用户点击激活区或按键触发节点主动作',
+      source: '@skynote/core'
+    });
     this.assets = options?.assets;
     this.documentStore = new DocumentStore(options?.initialDoc, {
       nodeTypes: this.nodeTypes,
@@ -258,7 +262,7 @@ export class SkyNoteEngine {
       } else {
         for (const id of changes.nodes.removed) this.nodeTypes.evictValidationCache(id);
       }
-      if (this.imageReplacementTasks.size) {
+      if (this.replacementTasks.size) {
         for (const id of changes.nodes.removed) this.checkReplacementTarget(id);
         for (const id of changes.nodes.data) this.checkReplacementTarget(id);
       }
@@ -373,86 +377,66 @@ export class SkyNoteEngine {
     return this;
   }
 
-  /** 上传图片并在一个可撤销批次内登记资产与创建节点；失败或销毁时丢弃过期结果 */
-  async insertImage(
-    file: unknown,
-    point: Point,
-    fit: 'fill' | 'cover' | 'contain' | 'none' = 'cover',
-    signal?: AbortSignal
+  /** 经宿主资产适配器上传并在同一次可撤销事务中登记资产与创建节点；失败或销毁时丢弃过期结果 */
+  async createNodeWithAssetTask<T extends string>(
+    options: CreateNodeAssetTaskOptions<T>
   ): Promise<AssetTaskResult<string>> {
-    const position = { ...point };
-    return this.runAssetTask('insert-image', signal, async (task) => {
-      if (!this.assets) throw new AssetAdapterError('unsupported-source', '没有配置图片资产适配器');
-      const uploaded = await this.assets.upload(file, { signal: task.controller.signal });
+    return this.runAssetTask('create-node', options.label, options.signal, async (task) => {
+      if (!this.assets) throw new AssetAdapterError('unsupported-source', '没有配置媒体资产适配器');
+      const upload = (spec: AssetUploadSpec): Promise<CanvasAssetMeta> => this.uploadAssetMeta(spec, task);
+      const { request, assets } = await options.prepare(upload, task.controller.signal);
       this.assertAssetTaskCurrent(task);
-      const meta = createImageAssetMeta(uploaded);
-      const assetId = meta.id;
-      const nodeId = this.documentStore.createNodeWithAsset(
-        {
-          nodeType: 'image',
-          x: position.x,
-          y: position.y,
-          origin: 'center',
-          options: {
-            assetId,
-            fit,
-            intrinsicWidth: uploaded.width ?? 0,
-            intrinsicHeight: uploaded.height ?? 0
-          },
-          label: '插入图片'
-        },
-        meta
+      const nodeId = this.documentStore.createNodeWithAssets(
+        { ...request, label: request.label ?? options.label },
+        assets
       );
-      if (!nodeId) throw new AssetAdapterError('commit-rejected', '无法登记图片资产或创建图片节点');
+      if (!nodeId) throw new AssetAdapterError('commit-rejected', '无法登记资产或创建节点');
       return nodeId;
     });
   }
 
-  /** 上传并原子替换所选图片的资产引用，保留节点几何、样式与各自的显示方式 */
-  async replaceImage(
-    nodeIds: readonly string[],
-    file: unknown,
-    signal?: AbortSignal
-  ): Promise<AssetTaskResult<readonly string[]>> {
-    const targetIds = [...new Set(nodeIds)].filter((id) => {
-      const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId?: unknown } }) | undefined;
-      return !node?.locked && typeof node?.image?.assetId === 'string';
-    });
-    const references = targetIds.map(
-      (id) => this.documentStore.getNode(id) as NodeEntity & { image: { assetId: string } }
-    );
-    const originalAssets = references.map((node) => node.image.assetId);
-    return this.runAssetTask('replace-image', signal, async (task) => {
+  /** 经宿主资产适配器上传并在同一次可撤销事务中更新已有节点的资产引用；目标变更或被覆盖时自动取消 */
+  async updateNodesWithAssetTask(options: UpdateNodesAssetTaskOptions): Promise<AssetTaskResult<readonly string[]>> {
+    const targets = new Map<string, string>();
+    for (const id of new Set(options.nodeIds)) {
+      const node = this.documentStore.getNode(id);
+      if (!node || node.locked) continue;
+      const signature = options.getTargetSignature(node);
+      if (signature !== undefined) targets.set(id, signature);
+    }
+    const targetIds = [...targets.keys()];
+    return this.runAssetTask('update-node', options.label, options.signal, async (task) => {
       if (!this.assets || targetIds.length === 0)
-        throw new AssetAdapterError('unsupported-source', '没有可替换的图片或资产适配器');
-      task.targets = new Map(targetIds.map((id, index) => [id, originalAssets[index]]));
+        throw new AssetAdapterError('unsupported-source', '没有可修改的目标节点或资产适配器');
+      task.targets = targets;
+      task.getTargetSignature = options.getTargetSignature;
       for (const id of targetIds) {
-        const previous = this.imageReplacementTasks.get(id);
+        const previous = this.replacementTasks.get(id);
         if (previous) this.cancelAssetTask(previous, 'superseded');
-        this.imageReplacementTasks.set(id, task);
+        this.replacementTasks.set(id, task);
       }
-      const uploaded = await this.assets.upload(file, { signal: task.controller.signal });
+      for (const id of targetIds) this.checkReplacementTarget(id);
       this.assertAssetTaskCurrent(task);
-      if (
-        targetIds.some((id, index) => {
-          const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId: string } }) | undefined;
-          return (
-            !node ||
-            node.locked ||
-            node.image?.assetId !== originalAssets[index] ||
-            this.imageReplacementTasks.get(id) !== task
-          );
-        })
-      ) {
-        this.cancelAssetTask(task, 'target-changed');
-        this.assertAssetTaskCurrent(task);
+      const upload = (spec: AssetUploadSpec): Promise<CanvasAssetMeta> => this.uploadAssetMeta(spec, task);
+      const { assets, update } = await options.prepare(upload, task.controller.signal);
+      this.assertAssetTaskCurrent(task);
+      for (const id of targetIds) {
+        this.checkReplacementTarget(id);
+        if (this.replacementTasks.get(id) !== task) this.cancelAssetTask(task, 'target-changed');
       }
-      const asset = createImageAssetMeta(uploaded);
+      this.assertAssetTaskCurrent(task);
       task.committing = true;
-      if (!this.documentStore.replaceImagesWithAsset(targetIds, asset))
-        throw new AssetAdapterError('commit-rejected', '图片替换提交被拒绝');
+      if (!this.documentStore.updateNodesWithAssets(targetIds, assets, update, { label: options.label }))
+        throw new AssetAdapterError('commit-rejected', '媒体资产修改提交被拒绝');
       return targetIds;
     });
+  }
+
+  private async uploadAssetMeta(spec: AssetUploadSpec, task: PendingAssetTask): Promise<CanvasAssetMeta> {
+    if (!this.assets) throw new AssetAdapterError('unsupported-source', '没有配置媒体资产适配器');
+    const uploaded = await this.assets.upload(spec.file, { signal: task.controller.signal });
+    this.assertAssetTaskCurrent(task);
+    return createUploadedAssetMeta(uploaded, spec.mimePrefix);
   }
 
   async pasteNodesWithAssets(
@@ -462,7 +446,7 @@ export class SkyNoteEngine {
   ): Promise<AssetTaskResult<EntityIds>> {
     const snapshot = clonePlainData(payload);
     const position = { ...offset };
-    return this.runAssetTask('paste-nodes', signal, async (task) => {
+    return this.runAssetTask('paste-nodes', undefined, signal, async (task) => {
       if (!this.assets?.checkReferences || !snapshot.source)
         throw new AssetAdapterError('unsupported-source', '当前资产库不支持此图片粘贴来源');
       const assetIds = new Set<string>();
@@ -529,11 +513,11 @@ export class SkyNoteEngine {
   }
 
   private checkReplacementTarget(id: string): void {
-    const task = this.imageReplacementTasks.get(id);
-    if (!task || task.committing) return;
-    const node = this.documentStore.getNode(id) as (NodeEntity & { image?: { assetId: string } }) | undefined;
-    if (!node || node.locked || node.image?.assetId !== task.targets?.get(id))
-      this.cancelAssetTask(task, 'target-changed');
+    const task = this.replacementTasks.get(id);
+    if (!task || task.committing || !task.getTargetSignature) return;
+    const node = this.documentStore.getNode(id);
+    const current = node && !node.locked ? task.getTargetSignature(node) : undefined;
+    if (current === undefined || current !== task.targets?.get(id)) this.cancelAssetTask(task, 'target-changed');
   }
 
   private cancelAssetTask(task: PendingAssetTask, reason: AssetTaskCancelReason): void {
@@ -544,6 +528,7 @@ export class SkyNoteEngine {
 
   private async runAssetTask<T extends string | readonly string[] | EntityIds>(
     operation: AssetTaskInfo['operation'],
+    label: string | undefined,
     signal: AbortSignal | undefined,
     run: (task: PendingAssetTask) => Promise<T>
   ): Promise<AssetTaskResult<T>> {
@@ -552,9 +537,15 @@ export class SkyNoteEngine {
       requestId: generateId('task'),
       operation,
       documentEpoch: this.contentEpoch,
+      ...(label !== undefined && { label }),
       controller: new AbortController()
     };
-    const info: AssetTaskInfo = { requestId: task.requestId, operation, documentEpoch: task.documentEpoch };
+    const info: AssetTaskInfo = {
+      requestId: task.requestId,
+      operation,
+      documentEpoch: task.documentEpoch,
+      ...(label !== undefined && { label })
+    };
     this.pendingAssetTasks.add(task);
     const onAbort = () =>
       this.cancelAssetTask(task, signal?.reason === 'owner-disposed' ? 'owner-disposed' : 'caller-aborted');
@@ -612,7 +603,7 @@ export class SkyNoteEngine {
       signal?.removeEventListener('abort', onAbort);
       task.controller.signal.removeEventListener('abort', wake);
       this.pendingAssetTasks.delete(task);
-      for (const [id, owner] of this.imageReplacementTasks) if (owner === task) this.imageReplacementTasks.delete(id);
+      for (const [id, owner] of this.replacementTasks) if (owner === task) this.replacementTasks.delete(id);
     }
     this.emitAssetTaskEvent({ phase: 'settled', task: info, result });
     return result;
@@ -626,20 +617,11 @@ export class SkyNoteEngine {
    * 宿主释放前与就绪后的通知；监听者通过当前宿主回收旧资源或重绘，异常互不影响。
    */
   onHostChange(listener: (available: boolean) => void): () => void {
-    this.hostListeners.add(listener);
-    return () => {
-      this.hostListeners.delete(listener);
-    };
+    return this.events.on('host:change', ({ available }) => listener(available));
   }
 
   private notifyHostChange(available: boolean): void {
-    for (const listener of [...this.hostListeners]) {
-      try {
-        listener(available);
-      } catch (error) {
-        console.error('[SkyNote:Host] 宿主切换订阅异常:', error);
-      }
-    }
+    this.events.emit('host:change', { available });
   }
 
   /** 挂载宿主并返回幂等卸载函数；旧句柄不影响之后挂载的新宿主。 */
@@ -879,7 +861,7 @@ export class SkyNoteEngine {
     this.unsubscribeLayouts();
     this.plugins.destroy();
     this.currentHost = DETACHED_CANVAS_HOST;
-    this.hostListeners.clear();
+    this.events.clear();
     this.routes.clear();
     this.pointer.clear();
     this.nodeSpatialIndex.clear();
@@ -892,8 +874,7 @@ export class SkyNoteEngine {
     this.routers.clear();
     this.documentStore.clearHistory();
     this.pendingAssetTasks.clear();
-    this.imageReplacementTasks.clear();
-    this.assetTaskListeners.clear();
+    this.replacementTasks.clear();
   }
 
   /** 按变更集增量维护空间索引与连线路由，只触达本次提交涉及的实体 */
@@ -987,16 +968,16 @@ function isSameRoute(a: ComputedRoute, b: ComputedRoute): boolean {
   });
 }
 
-function createImageAssetMeta(uploaded: AssetUploadResult): CanvasAssetMeta {
+function createUploadedAssetMeta(uploaded: AssetUploadResult, mimePrefix?: string): CanvasAssetMeta {
   if (
     typeof uploaded.src !== 'string' ||
     uploaded.src.length === 0 ||
     typeof uploaded.mimeType !== 'string' ||
-    !uploaded.mimeType.startsWith('image/') ||
+    (mimePrefix !== undefined && !uploaded.mimeType.startsWith(mimePrefix)) ||
     (uploaded.width !== undefined && (!Number.isFinite(uploaded.width) || uploaded.width <= 0)) ||
     (uploaded.height !== undefined && (!Number.isFinite(uploaded.height) || uploaded.height <= 0))
   )
-    throw new TypeError('图片资产适配器返回了无效元数据');
+    throw new TypeError('宿主资产适配器返回了无效媒体元数据');
   return {
     id: generateId('asset'),
     src: uploaded.src,

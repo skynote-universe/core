@@ -5,6 +5,7 @@
 
 export * from './primitives.protocol';
 export * from './events.protocol';
+export * from './event-hub.protocol';
 export * from './node-type.protocol';
 export * from './arrow-marker.protocol';
 export * from './cursor.protocol';

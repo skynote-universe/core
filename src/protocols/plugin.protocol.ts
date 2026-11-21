@@ -29,7 +29,13 @@ import type { CanvasHit, ConnectorGeometryApi } from '../engine';
 import type { PointerHooks } from '../input/pointer-dispatcher';
 import type { ClipboardHandler } from '../input/clipboard-dispatcher';
 import type { NodeTypeReader } from '../registry/node-type-registry';
-import type { AssetTaskResult, AssetFailure } from './asset.protocol';
+import type {
+  AssetFailure,
+  AssetTaskResult,
+  CreateNodeAssetTaskOptions,
+  UpdateNodesAssetTaskOptions
+} from './asset.protocol';
+import type { CanvasEventHubReader } from './event-hub.protocol';
 import type { EntityIds } from '../types/canvas';
 import type { NodeClipboardPayload } from '../serialization/document-schema';
 
@@ -51,9 +57,14 @@ export interface CanvasPluginContext {
   readonly session: SessionController;
   /** 宿主能力 (覆盖层、光标、指针捕获)；渲染器挂载前为空实现，插件卸载时其覆盖层会话自动清除 */
   readonly host: CanvasHost;
-  /** 经宿主资产适配器上传并创建图片节点；未配置资产适配器时返回 null */
+  /** 低频跨域事后通知中心；经上下文订阅的监听和登记的说明在插件卸载时自动清理 */
+  readonly events: CanvasEventHubReader;
+  /** 宿主资产库引用作用域标识；未配置资产适配器时为 undefined */
   readonly assetReferenceScope: string | undefined;
-  insertImage(file: unknown, point: Point): Promise<AssetTaskResult<string>>;
+  /** 经宿主资产适配器上传并在同一次可撤销事务中创建节点 */
+  createNodeWithAssetTask<T extends string>(options: CreateNodeAssetTaskOptions<T>): Promise<AssetTaskResult<string>>;
+  /** 经宿主资产适配器上传并在同一次可撤销事务中更新已有节点的资产引用 */
+  updateNodesWithAssetTask(options: UpdateNodesAssetTaskOptions): Promise<AssetTaskResult<readonly string[]>>;
   pasteNodesWithAssets(payload: NodeClipboardPayload, offset: Point): Promise<AssetTaskResult<EntityIds>>;
   reportAssetFailure(operation: 'copy-nodes' | 'paste-nodes', failure: AssetFailure): void;
 

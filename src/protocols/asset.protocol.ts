@@ -9,6 +9,8 @@
 
 import type { CanvasAssetMeta } from '../types/asset';
 import type { EntityIds } from '../types/canvas';
+import type { NodeEntity } from '../types/node';
+import type { CreateNodeRequest } from './node-type.protocol';
 
 export type AssetTaskCancelReason =
   | 'document-replaced'
@@ -22,7 +24,7 @@ export type AssetFailureCode =
   | 'unsupported-source'
   | 'missing-asset'
   | 'invalid-reference'
-  | 'invalid-image'
+  | 'invalid-media'
   | 'storage-failed'
   | 'commit-rejected'
   | 'unknown';
@@ -42,11 +44,43 @@ export type AssetTaskResult<T> =
   | { readonly status: 'succeeded'; readonly value: T }
   | { readonly status: 'cancelled'; readonly reason: AssetTaskCancelReason }
   | { readonly status: 'failed'; readonly failure: AssetFailure };
-export type AssetTaskOperation = 'insert-image' | 'replace-image' | 'paste-nodes';
+export type AssetTaskOperation = 'create-node' | 'update-node' | 'paste-nodes';
 export interface AssetTaskInfo {
   readonly requestId: string;
   readonly operation: AssetTaskOperation;
   readonly documentEpoch: number;
+  readonly label?: string;
+}
+export interface AssetUploadSpec {
+  readonly file: unknown;
+  /** 可选的 MIME 主类前缀校验（如 'image/' 或 'video/'） */
+  readonly mimePrefix?: string;
+}
+export type AssetUploader = (spec: AssetUploadSpec) => Promise<CanvasAssetMeta>;
+export interface CreateNodeAssetTaskOptions<T extends string = string> {
+  readonly label?: string;
+  readonly signal?: AbortSignal;
+  readonly prepare: (
+    upload: AssetUploader,
+    signal: AbortSignal
+  ) => Promise<{
+    readonly request: CreateNodeRequest<T>;
+    readonly assets: readonly CanvasAssetMeta[];
+  }>;
+}
+export interface UpdateNodesAssetTaskOptions {
+  readonly nodeIds: readonly string[];
+  readonly label?: string;
+  readonly signal?: AbortSignal;
+  /** 读取目标节点当前指纹；返回 undefined 表示不可更新（已删除、已锁定或类型不匹配） */
+  readonly getTargetSignature: (node: Readonly<NodeEntity>) => string | undefined;
+  readonly prepare: (
+    upload: AssetUploader,
+    signal: AbortSignal
+  ) => Promise<{
+    readonly assets: readonly CanvasAssetMeta[];
+    readonly update: (node: Readonly<NodeEntity>) => Partial<NodeEntity>;
+  }>;
 }
 export type AssetTaskEvent =
   | { readonly phase: 'started'; readonly task: AssetTaskInfo }
